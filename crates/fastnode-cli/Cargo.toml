@@ -1,0 +1,34 @@
+[package]
+name = "fastnode-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI for howth: a deterministic Node toolchain inspector"
+
+[[bin]]
+name = "howth"
+path = "src/main.rs"
+
+[[bin]]
+name = "fastnode"
+path = "src/compat.rs"
+
+[dependencies]
+fastnode-core.workspace = true
+fastnode-daemon.workspace = true
+fastnode-proto.workspace = true
+fastnode-util.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+miette.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+axum.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+flate2.workspace = true
+tar.workspace = true

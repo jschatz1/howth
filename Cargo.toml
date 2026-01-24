@@ -1,0 +1,78 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fastnode-cli",
+    "crates/fastnode-core",
+    "crates/fastnode-util",
+    "crates/fastnode-compat",
+    "crates/fastnode-bench",
+    "crates/fastnode-daemon",
+    "crates/fastnode-proto",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/example/fastnode"
+rust-version = "1.75"
+
+# Feature flags documented here for reference (defined in individual crates):
+# - engine-v8: V8 JavaScript engine
+# - engine-sm: SpiderMonkey engine
+# - engine-jsc: JavaScriptCore engine
+# - daemon: Daemon mode
+# - pm: Package manager
+# - bundler: Bundler
+# - test-runner: Test runner
+
+[workspace.dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+miette = { version = "7", features = ["fancy"] }
+
+# Core
+thiserror = "1"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs-next = "2"
+
+# Util
+blake3 = "1"
+walkdir = "2"
+tempfile = "3"
+
+# Daemon
+notify = { version = "6", default-features = false, features = ["macos_kqueue"] }
+
+# Package manager
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+flate2 = "1"
+tar = "0.4"
+bytes = "1"
+url = "2"
+
+# Bench
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Testing
+axum = "0.7"
+
+# Internal crates
+fastnode-core = { path = "crates/fastnode-core" }
+fastnode-util = { path = "crates/fastnode-util" }
+fastnode-compat = { path = "crates/fastnode-compat" }
+fastnode-proto = { path = "crates/fastnode-proto" }
+fastnode-daemon = { path = "crates/fastnode-daemon" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.bench]
+lto = true

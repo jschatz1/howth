@@ -1,0 +1,13 @@
+[package]
+name = "fastnode-util"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared utilities for fastnode: fs helpers, hashing"
+
+[dependencies]
+blake3.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "fastnode-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core types for fastnode: errors, versioning, paths, config"
+
+[dependencies]
+thiserror.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs-next.workspace = true
+tempfile.workspace = true
+fastnode-util.workspace = true
+reqwest.workspace = true
+flate2.workspace = true
+tar.workspace = true
+bytes.workspace = true
+url.workspace = true
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+junction = "1"

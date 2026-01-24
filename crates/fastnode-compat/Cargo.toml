@@ -1,0 +1,15 @@
+[package]
+name = "fastnode-compat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Node API compatibility layer for fastnode (placeholder)"
+
+[dependencies]
+# No dependencies yet - this is a placeholder for future Node API compat
+
+[features]
+# Feature flags for engine backends (inherited from workspace when wired up)
+engine-v8 = []
+engine-sm = []
+engine-jsc = []
