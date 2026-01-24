@@ -1,9 +1,9 @@
 //! Shared daemon state.
 //!
-//! Holds the resolver cache, file watcher, and package cache, coordinating
-//! cache invalidation when files change.
+//! Holds the resolver cache, file watcher, package cache, and build cache,
+//! coordinating cache invalidation when files change.
 
-use crate::cache::{DaemonPkgJsonCache, DaemonResolverCache};
+use crate::cache::{DaemonBuildCache, DaemonPkgJsonCache, DaemonResolverCache};
 use crate::watch::WatcherState;
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::PackageCache;
@@ -20,6 +20,8 @@ pub struct DaemonState {
     pub pkg_cache: Arc<PackageCache>,
     /// Package.json parse cache for exports/imports resolution.
     pub pkg_json_cache: Arc<DaemonPkgJsonCache>,
+    /// Build cache for incremental builds.
+    pub build_cache: Arc<DaemonBuildCache>,
 }
 
 impl DaemonState {
@@ -36,11 +38,13 @@ impl DaemonState {
         let watcher = Arc::new(WatcherState::new());
         let pkg_cache = Arc::new(PackageCache::new(channel));
         let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
+        let build_cache = Arc::new(DaemonBuildCache::new());
         Self {
             cache,
             watcher,
             pkg_cache,
             pkg_json_cache,
+            build_cache,
         }
     }
 
@@ -50,11 +54,13 @@ impl DaemonState {
         let watcher = Arc::new(WatcherState::new());
         let pkg_cache = Arc::new(PackageCache::new(Channel::Stable));
         let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
+        let build_cache = Arc::new(DaemonBuildCache::new());
         Self {
             cache,
             watcher,
             pkg_cache,
             pkg_json_cache,
+            build_cache,
         }
     }
 }

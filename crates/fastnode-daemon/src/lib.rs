@@ -25,13 +25,18 @@ pub use server::{run_server, DaemonConfig};
 pub use state::DaemonState;
 pub use watch::{WatchError, WatcherState};
 
+use crate::cache::DaemonBuildCache;
+use fastnode_core::build::{
+    build_graph_from_project, execute_graph, ExecOptions, BUILD_RUN_SCHEMA_VERSION,
+};
 use fastnode_core::config::Channel;
 use fastnode_core::resolver::{
     resolve_v0, PkgJsonCache, ResolveContext, ResolverCache, ResolverCacheKey, ResolverConfig,
 };
 use fastnode_core::{build_run_plan, RunPlanInput, RunPlanOutput};
 use fastnode_proto::{
-    codes, FrameResponse, ImportSpec, Request, ResolvedImport, Response, RunPlan,
+    codes, BuildCacheStatus, BuildErrorInfo, BuildNodeResult, BuildRunCounts, BuildRunResult,
+    BuildRunSummary, FrameResponse, ImportSpec, Request, ResolvedImport, Response, RunPlan,
     PROTO_SCHEMA_VERSION,
 };
 use std::path::{Path, PathBuf};
@@ -172,8 +177,25 @@ pub fn handle_request(
             };
             (handle_pkg_doctor(opts, pkg_json_cache.as_ref()), false)
         }
+        // Build request (v2.0)
+        Request::Build {
+            cwd,
+            force,
+            dry_run,
+            max_parallel,
+            profile,
+        } => {
+            let build_cache = state.map(|s| s.build_cache.clone());
+            (
+                handle_build(cwd, *force, *dry_run, *max_parallel, *profile, build_cache),
+                false,
+            )
+        }
         // Pkg operations that need async - return error if called sync
-        Request::PkgAdd { .. } | Request::PkgCacheList { .. } | Request::PkgCachePrune { .. } => (
+        Request::PkgAdd { .. }
+        | Request::PkgCacheList { .. }
+        | Request::PkgCachePrune { .. }
+        | Request::PkgInstall { .. } => (
             Response::error(
                 codes::INTERNAL_ERROR,
                 "Package operations require async handler",
@@ -213,6 +235,16 @@ pub async fn handle_request_async(
         } => (pkg::handle_pkg_add(specs, cwd, channel).await, false),
         Request::PkgCacheList { channel } => (pkg::handle_pkg_cache_list(channel), false),
         Request::PkgCachePrune { channel } => (pkg::handle_pkg_cache_prune(channel), false),
+        Request::PkgInstall {
+            cwd,
+            channel,
+            frozen,
+            include_dev,
+            include_optional,
+        } => (
+            pkg::handle_pkg_install(cwd, channel, *frozen, *include_dev, *include_optional).await,
+            false,
+        ),
         // Non-async operations - should not reach here, but handle gracefully
         _ => (
             Response::error(
@@ -349,6 +381,158 @@ fn handle_watch_status(watcher: Option<&Arc<WatcherState>>) -> Response {
         roots: watcher.roots(),
         running: watcher.is_running(),
         last_event_unix_ms: watcher.last_event_unix_ms(),
+    }
+}
+
+/// Handle a `Build` request (v2.0).
+fn handle_build(
+    cwd: &str,
+    force: bool,
+    dry_run: bool,
+    max_parallel: u32,
+    _profile: bool,
+    build_cache: Option<Arc<DaemonBuildCache>>,
+) -> Response {
+    // Validate cwd
+    let cwd_path = PathBuf::from(cwd);
+    if !cwd_path.exists() {
+        return Response::error(
+            codes::BUILD_CWD_INVALID,
+            format!("Working directory does not exist: {cwd}"),
+        );
+    }
+    if !cwd_path.is_dir() {
+        return Response::error(
+            codes::BUILD_CWD_INVALID,
+            format!("Working directory is not a directory: {cwd}"),
+        );
+    }
+
+    // Build the graph from package.json
+    let graph = match build_graph_from_project(&cwd_path) {
+        Ok(g) => g,
+        Err(e) => {
+            return Response::error(e.code, e.message);
+        }
+    };
+
+    // Set up execution options
+    let options = ExecOptions {
+        force,
+        dry_run,
+        max_parallel: max_parallel as usize,
+        profile: false, // TODO: wire up profiling
+    };
+
+    // Create a wrapper cache that implements BuildCache trait
+    // and delegates to the DaemonBuildCache
+    let mut wrapper_cache: Option<BuildCacheWrapper> =
+        build_cache.as_ref().map(|c| BuildCacheWrapper(c.clone()));
+
+    // Execute the graph
+    let result = match wrapper_cache.as_mut() {
+        Some(cache) => execute_graph(&graph, Some(cache), &options),
+        None => execute_graph(&graph, None, &options),
+    };
+
+    match result {
+        Ok(run_result) => {
+            // Register file dependencies with the build cache for invalidation
+            if let Some(ref cache) = build_cache {
+                for node in &graph.nodes {
+                    for input in &node.inputs {
+                        if let fastnode_core::build::BuildInput::File { path } = input {
+                            cache.add_file_dependency(&node.id, std::path::Path::new(path));
+                        }
+                    }
+                }
+            }
+
+            // Convert to protocol types
+            Response::BuildResult {
+                result: convert_build_result(run_result, cwd),
+            }
+        }
+        Err(e) => Response::error(codes::BUILD_HASH_IO_ERROR, e.to_string()),
+    }
+}
+
+/// Wrapper to implement BuildCache trait for DaemonBuildCache.
+struct BuildCacheWrapper(Arc<DaemonBuildCache>);
+
+impl fastnode_core::build::BuildCache for BuildCacheWrapper {
+    fn get(&self, node_id: &str, hash: &str) -> Option<bool> {
+        self.0.get(node_id, hash)
+    }
+
+    fn set(&mut self, node_id: &str, hash: &str, ok: bool) {
+        self.0.set(node_id, hash, ok);
+    }
+
+    fn invalidate(&mut self, node_id: &str) {
+        // The DaemonBuildCache doesn't have a direct invalidate by node_id
+        // It uses path-based invalidation instead
+        let _ = node_id;
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Convert core's `BuildRunResult` to proto's `BuildRunResult`.
+fn convert_build_result(
+    result: fastnode_core::build::BuildRunResult,
+    cwd: &str,
+) -> BuildRunResult {
+    let results: Vec<BuildNodeResult> = result
+        .results
+        .into_iter()
+        .map(|r| BuildNodeResult {
+            id: r.id,
+            ok: r.ok,
+            cache: match r.cache {
+                fastnode_core::build::CacheStatus::Hit => BuildCacheStatus::Hit,
+                fastnode_core::build::CacheStatus::Miss => BuildCacheStatus::Miss,
+                fastnode_core::build::CacheStatus::Bypass => BuildCacheStatus::Bypass,
+                fastnode_core::build::CacheStatus::Skipped => BuildCacheStatus::Skipped,
+            },
+            hash: r.hash,
+            duration_ms: r.duration_ms,
+            error: r.error.map(|e| BuildErrorInfo {
+                code: e.code.to_string(),
+                message: e.message,
+                detail: e.detail,
+            }),
+            stdout_truncated: r.stdout_truncated,
+            stderr_truncated: r.stderr_truncated,
+            notes: r.notes,
+        })
+        .collect();
+
+    // Map from core's summary structure to proto's flatter structure
+    let summary = &result.summary;
+    let succeeded = summary.nodes_run - summary.counts.error;
+    let failed = summary.counts.error;
+
+    BuildRunResult {
+        schema_version: BUILD_RUN_SCHEMA_VERSION,
+        cwd: cwd.to_string(),
+        ok: result.ok,
+        counts: BuildRunCounts {
+            total: summary.nodes_total,
+            succeeded,
+            failed,
+            skipped: summary.nodes_skipped,
+            cache_hits: summary.cache_hits,
+            executed: summary.nodes_run,
+        },
+        summary: BuildRunSummary {
+            total_duration_ms: summary.duration_ms,
+            saved_duration_ms: 0, // TODO: track saved time
+        },
+        results,
+        notes: result.notes,
     }
 }
 

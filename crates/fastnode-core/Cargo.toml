@@ -19,6 +19,9 @@ tar.workspace = true
 bytes.workspace = true
 url.workspace = true
 tokio.workspace = true
+blake3.workspace = true
+walkdir.workspace = true
+glob = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

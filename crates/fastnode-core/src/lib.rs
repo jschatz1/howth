@@ -3,6 +3,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod bench;
+pub mod build;
 pub mod config;
 pub mod doctor;
 pub mod error;

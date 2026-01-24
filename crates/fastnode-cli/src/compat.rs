@@ -1,6 +1,9 @@
 //! Backward compatibility shim for `fastnode` → `howth` rename.
 //!
 //! This binary prints a deprecation notice and then delegates to the main CLI.
+//!
+//! Environment variables:
+//! - `HOWTH_BIN`: Override path to howth binary (for testing)
 
 use std::process::ExitCode;
 
@@ -15,8 +18,11 @@ fn main() -> ExitCode {
         eprintln!();
     }
 
+    // Allow override for testing (HOWTH_BIN env var)
+    let howth_bin = std::env::var("HOWTH_BIN").unwrap_or_else(|_| "howth".to_string());
+
     // Re-exec as howth with same args
-    let status = std::process::Command::new("howth")
+    let status = std::process::Command::new(&howth_bin)
         .args(&args[1..])
         .status();
 

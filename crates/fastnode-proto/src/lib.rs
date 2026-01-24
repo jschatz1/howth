@@ -36,6 +36,15 @@ pub const PKG_WHY_SCHEMA_VERSION: u32 = 1;
 /// Package doctor schema version.
 pub const PKG_DOCTOR_SCHEMA_VERSION: u32 = 1;
 
+/// Package install schema version.
+pub const PKG_INSTALL_SCHEMA_VERSION: u32 = 1;
+
+/// Build graph schema version (v2.0).
+pub const BUILD_GRAPH_SCHEMA_VERSION: u32 = 1;
+
+/// Build run result schema version (v2.0).
+pub const BUILD_RUN_SCHEMA_VERSION: u32 = 1;
+
 /// Error codes for protocol errors.
 pub mod codes {
     pub const PROTO_VERSION_MISMATCH: &str = "PROTO_VERSION_MISMATCH";
@@ -95,6 +104,23 @@ pub mod codes {
     pub const PKG_DOCTOR_CWD_INVALID: &str = "PKG_DOCTOR_CWD_INVALID";
     pub const PKG_DOCTOR_SEVERITY_INVALID: &str = "PKG_DOCTOR_SEVERITY_INVALID";
     pub const PKG_DOCTOR_FORMAT_INVALID: &str = "PKG_DOCTOR_FORMAT_INVALID";
+
+    // v1.9: pkg install error codes
+    pub const PKG_INSTALL_LOCKFILE_NOT_FOUND: &str = "PKG_INSTALL_LOCKFILE_NOT_FOUND";
+    pub const PKG_INSTALL_LOCKFILE_INVALID: &str = "PKG_INSTALL_LOCKFILE_INVALID";
+    pub const PKG_INSTALL_LOCKFILE_STALE: &str = "PKG_INSTALL_LOCKFILE_STALE";
+    pub const PKG_INSTALL_INTEGRITY_MISMATCH: &str = "PKG_INSTALL_INTEGRITY_MISMATCH";
+    pub const PKG_INSTALL_PACKAGE_MISSING: &str = "PKG_INSTALL_PACKAGE_MISSING";
+
+    // v2.0: build error codes
+    pub const BUILD_CWD_INVALID: &str = "BUILD_CWD_INVALID";
+    pub const BUILD_SCRIPT_NOT_FOUND: &str = "BUILD_SCRIPT_NOT_FOUND";
+    pub const BUILD_SCRIPT_FAILED: &str = "BUILD_SCRIPT_FAILED";
+    pub const BUILD_HASH_IO_ERROR: &str = "BUILD_HASH_IO_ERROR";
+    pub const BUILD_WATCH_ERROR: &str = "BUILD_WATCH_ERROR";
+    pub const BUILD_GRAPH_INTERNAL_ERROR: &str = "BUILD_GRAPH_INTERNAL_ERROR";
+    pub const BUILD_PACKAGE_JSON_INVALID: &str = "BUILD_PACKAGE_JSON_INVALID";
+    pub const BUILD_PACKAGE_JSON_NOT_FOUND: &str = "BUILD_PACKAGE_JSON_NOT_FOUND";
 }
 
 /// Resolver reason codes for unresolved imports.
@@ -283,6 +309,41 @@ pub enum Request {
         #[serde(default = "default_doctor_max_items")]
         max_items: u32,
     },
+
+    /// Install packages from lockfile (v1.9).
+    PkgInstall {
+        /// Working directory (project root).
+        cwd: String,
+        /// Channel for cache directory.
+        channel: String,
+        /// Frozen mode: fail if lockfile is out of date or missing.
+        #[serde(default)]
+        frozen: bool,
+        /// Include devDependencies.
+        #[serde(default = "default_install_include_dev")]
+        include_dev: bool,
+        /// Include optionalDependencies.
+        #[serde(default = "default_install_include_optional")]
+        include_optional: bool,
+    },
+
+    /// Execute a build (v2.0).
+    Build {
+        /// Working directory (project root with package.json).
+        cwd: String,
+        /// Force rebuild (bypass cache).
+        #[serde(default)]
+        force: bool,
+        /// Dry run (don't execute, just plan).
+        #[serde(default)]
+        dry_run: bool,
+        /// Maximum parallel jobs.
+        #[serde(default = "default_build_max_parallel")]
+        max_parallel: u32,
+        /// Include profiling information.
+        #[serde(default)]
+        profile: bool,
+    },
 }
 
 fn default_max_chains() -> u32 {
@@ -303,6 +364,21 @@ fn default_doctor_severity() -> String {
 
 fn default_doctor_max_items() -> u32 {
     200
+}
+
+fn default_install_include_dev() -> bool {
+    true
+}
+
+fn default_install_include_optional() -> bool {
+    true
+}
+
+fn default_build_max_parallel() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+        .clamp(1, 64)
 }
 
 /// Import specifier found in source code.
@@ -816,6 +892,176 @@ pub struct PkgDoctorReport {
     pub notes: Vec<String>,
 }
 
+// =============================================================================
+// Package Install types (v1.9)
+// =============================================================================
+
+/// Summary of an install operation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstallSummary {
+    /// Total packages in lockfile.
+    pub total_packages: u32,
+    /// Packages downloaded from registry.
+    pub downloaded: u32,
+    /// Packages reused from cache.
+    pub cached: u32,
+    /// Packages linked into node_modules.
+    pub linked: u32,
+    /// Packages that failed.
+    pub failed: u32,
+}
+
+/// Information about a package that was installed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstallPackageInfo {
+    /// Package name.
+    pub name: String,
+    /// Resolved version.
+    pub version: String,
+    /// Whether this came from cache.
+    pub from_cache: bool,
+    /// Path in node_modules.
+    pub link_path: String,
+}
+
+/// Error for a specific package during install.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstallPackageError {
+    /// Package name.
+    pub name: String,
+    /// Version that was attempted.
+    pub version: String,
+    /// Error code.
+    pub code: String,
+    /// Error message.
+    pub message: String,
+}
+
+/// Result of a package install operation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PkgInstallResult {
+    /// Schema version.
+    pub schema_version: u32,
+    /// Working directory used.
+    pub cwd: String,
+    /// Whether the operation succeeded overall.
+    pub ok: bool,
+    /// Summary statistics.
+    pub summary: InstallSummary,
+    /// Successfully installed packages.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub installed: Vec<InstallPackageInfo>,
+    /// Packages that failed to install.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub errors: Vec<InstallPackageError>,
+    /// Notes/warnings.
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+// =============================================================================
+// Build types (v2.0)
+// =============================================================================
+
+/// Cache status for a build node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildCacheStatus {
+    /// Cache hit - result reused from previous build.
+    Hit,
+    /// Cache miss - node was executed.
+    Miss,
+    /// Cache bypassed (--force).
+    Bypass,
+    /// Node was skipped due to dependency failure.
+    Skipped,
+}
+
+/// Result of executing a single build node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuildNodeResult {
+    /// Node ID (e.g., "script:build").
+    pub id: String,
+    /// Whether the node succeeded.
+    pub ok: bool,
+    /// Cache status.
+    pub cache: BuildCacheStatus,
+    /// Content hash for this node.
+    pub hash: String,
+    /// Execution duration in milliseconds.
+    pub duration_ms: u64,
+    /// Error information if failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<BuildErrorInfo>,
+    /// Whether stdout was truncated.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub stdout_truncated: bool,
+    /// Whether stderr was truncated.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub stderr_truncated: bool,
+    /// Additional notes about the execution.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub notes: Vec<String>,
+}
+
+/// Error information for a build failure.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuildErrorInfo {
+    /// Stable error code.
+    pub code: String,
+    /// Human-readable message.
+    pub message: String,
+    /// Additional detail (e.g., last 20 lines of stderr).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Summary of a build run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuildRunSummary {
+    /// Total execution time in milliseconds.
+    pub total_duration_ms: u64,
+    /// Execution time saved by cache hits.
+    pub saved_duration_ms: u64,
+}
+
+/// Counts of build nodes by status.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuildRunCounts {
+    /// Total number of nodes.
+    pub total: u32,
+    /// Nodes that succeeded.
+    pub succeeded: u32,
+    /// Nodes that failed.
+    pub failed: u32,
+    /// Nodes that were skipped.
+    pub skipped: u32,
+    /// Nodes served from cache.
+    pub cache_hits: u32,
+    /// Nodes that executed (cache miss or bypass).
+    pub executed: u32,
+}
+
+/// Result of executing a build graph.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuildRunResult {
+    /// Schema version.
+    pub schema_version: u32,
+    /// Working directory.
+    pub cwd: String,
+    /// Whether the build succeeded overall.
+    pub ok: bool,
+    /// Node execution counts.
+    pub counts: BuildRunCounts,
+    /// Summary statistics.
+    pub summary: BuildRunSummary,
+    /// Results for each node (in execution order).
+    pub results: Vec<BuildNodeResult>,
+    /// Notes (always present, may be empty).
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
 /// A response from daemon to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -912,6 +1158,18 @@ pub enum Response {
     PkgDoctorResult {
         /// The doctor report.
         report: PkgDoctorReport,
+    },
+
+    /// Result of package install request (v1.9).
+    PkgInstallResult {
+        /// The install result.
+        result: PkgInstallResult,
+    },
+
+    /// Result of build request (v2.0).
+    BuildResult {
+        /// The build result.
+        result: BuildRunResult,
     },
 }
 
@@ -1843,5 +2101,167 @@ mod tests {
             }
             _ => panic!("Expected PkgDoctor"),
         }
+    }
+
+    // v1.9: PkgInstall tests
+
+    #[test]
+    fn test_pkg_install_schema_version_is_stable() {
+        assert_eq!(PKG_INSTALL_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn test_pkg_install_codes_are_uppercase() {
+        let install_codes = [
+            codes::PKG_INSTALL_LOCKFILE_NOT_FOUND,
+            codes::PKG_INSTALL_LOCKFILE_INVALID,
+            codes::PKG_INSTALL_LOCKFILE_STALE,
+            codes::PKG_INSTALL_INTEGRITY_MISMATCH,
+            codes::PKG_INSTALL_PACKAGE_MISSING,
+        ];
+
+        for code in install_codes {
+            assert!(
+                code.chars().all(|c| c.is_uppercase() || c == '_'),
+                "Install code '{code}' should be SCREAMING_SNAKE_CASE"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pkg_install_request_serialization() {
+        let req = Request::PkgInstall {
+            cwd: "/home/user/project".to_string(),
+            channel: "stable".to_string(),
+            frozen: true,
+            include_dev: true,
+            include_optional: false,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("pkg_install"));
+        assert!(json.contains("/home/user/project"));
+        assert!(json.contains("frozen"));
+    }
+
+    #[test]
+    fn test_pkg_install_request_roundtrip() {
+        let frame = Frame::new(
+            "0.1.0",
+            Request::PkgInstall {
+                cwd: "/tmp/project".to_string(),
+                channel: "stable".to_string(),
+                frozen: true,
+                include_dev: false,
+                include_optional: true,
+            },
+        );
+
+        let encoded = encode_frame(&frame).unwrap();
+        let decoded: Frame = decode_frame(&encoded[4..]).unwrap();
+
+        match decoded.request {
+            Request::PkgInstall {
+                cwd,
+                channel,
+                frozen,
+                include_dev,
+                include_optional,
+            } => {
+                assert_eq!(cwd, "/tmp/project");
+                assert_eq!(channel, "stable");
+                assert!(frozen);
+                assert!(!include_dev);
+                assert!(include_optional);
+            }
+            _ => panic!("Expected PkgInstall"),
+        }
+    }
+
+    #[test]
+    fn test_install_summary_serialization() {
+        let summary = InstallSummary {
+            total_packages: 100,
+            downloaded: 50,
+            cached: 45,
+            linked: 95,
+            failed: 5,
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("total_packages"));
+        assert!(json.contains("100"));
+        assert!(json.contains("downloaded"));
+    }
+
+    #[test]
+    fn test_install_package_info_serialization() {
+        let info = InstallPackageInfo {
+            name: "lodash".to_string(),
+            version: "4.17.21".to_string(),
+            from_cache: true,
+            link_path: "/project/node_modules/lodash".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("lodash"));
+        assert!(json.contains("4.17.21"));
+        assert!(json.contains("from_cache"));
+    }
+
+    #[test]
+    fn test_install_package_error_serialization() {
+        let err = InstallPackageError {
+            name: "bad-package".to_string(),
+            version: "1.0.0".to_string(),
+            code: codes::PKG_INSTALL_INTEGRITY_MISMATCH.to_string(),
+            message: "Integrity check failed".to_string(),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains("bad-package"));
+        assert!(json.contains("PKG_INSTALL_INTEGRITY_MISMATCH"));
+    }
+
+    #[test]
+    fn test_pkg_install_result_serialization() {
+        let result = PkgInstallResult {
+            schema_version: PKG_INSTALL_SCHEMA_VERSION,
+            cwd: "/home/user/project".to_string(),
+            ok: true,
+            summary: InstallSummary {
+                total_packages: 10,
+                downloaded: 2,
+                cached: 8,
+                linked: 10,
+                failed: 0,
+            },
+            installed: vec![InstallPackageInfo {
+                name: "react".to_string(),
+                version: "18.2.0".to_string(),
+                from_cache: true,
+                link_path: "/project/node_modules/react".to_string(),
+            }],
+            errors: vec![],
+            notes: vec!["All packages installed successfully".to_string()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("schema_version"));
+        assert!(json.contains("react"));
+        assert!(json.contains("All packages installed"));
+    }
+
+    #[test]
+    fn test_pkg_install_result_response() {
+        let resp = Response::PkgInstallResult {
+            result: PkgInstallResult {
+                schema_version: PKG_INSTALL_SCHEMA_VERSION,
+                cwd: "/project".to_string(),
+                ok: true,
+                summary: InstallSummary::default(),
+                installed: vec![],
+                errors: vec![],
+                notes: vec![],
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("pkg_install_result"));
+        assert!(json.contains("schema_version"));
     }
 }

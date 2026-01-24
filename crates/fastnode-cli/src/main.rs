@@ -67,11 +67,47 @@ enum Commands {
         args: Vec<String>,
     },
 
-    /// Install dependencies
-    Install,
+    /// Install dependencies from lockfile
+    Install {
+        /// Fail if lockfile is missing or out of date
+        #[arg(long)]
+        frozen_lockfile: bool,
+
+        /// Include devDependencies
+        #[arg(long, default_value_t = true)]
+        dev: bool,
+
+        /// Skip devDependencies
+        #[arg(long, conflicts_with = "dev")]
+        no_dev: bool,
+
+        /// Include optionalDependencies
+        #[arg(long, default_value_t = true)]
+        optional: bool,
+
+        /// Skip optionalDependencies
+        #[arg(long, conflicts_with = "optional")]
+        no_optional: bool,
+    },
 
     /// Build the project
-    Build,
+    Build {
+        /// Force rebuild (bypass cache)
+        #[arg(long)]
+        force: bool,
+
+        /// Dry run (plan only, don't execute)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Maximum parallel jobs
+        #[arg(long)]
+        max_parallel: Option<u32>,
+
+        /// Include profiling information
+        #[arg(long)]
+        profile: bool,
+    },
 
     /// Run tests
     Test,
@@ -412,6 +448,41 @@ fn main() -> Result<()> {
         return commands::pkg::run(action, Channel::Stable, cli.json);
     }
 
+    if let Some(Commands::Install {
+        frozen_lockfile,
+        dev,
+        no_dev,
+        optional,
+        no_optional,
+    }) = &cli.command
+    {
+        let action = commands::pkg::PkgAction::Install {
+            cwd: cwd.clone(),
+            frozen: *frozen_lockfile,
+            include_dev: *dev && !*no_dev,
+            include_optional: *optional && !*no_optional,
+        };
+        return commands::pkg::run(action, Channel::Stable, cli.json);
+    }
+
+    // Handle build command early (like other daemon commands)
+    if let Some(Commands::Build {
+        force,
+        dry_run,
+        max_parallel,
+        profile,
+    }) = &cli.command
+    {
+        let action = commands::build::BuildAction {
+            cwd: cwd.clone(),
+            force: *force,
+            dry_run: *dry_run,
+            max_parallel: *max_parallel,
+            profile: *profile,
+        };
+        return commands::build::run(action, Channel::Stable, cli.json);
+    }
+
     // Initialize logging for other commands
     logging::init(config.verbosity, config.json_logs);
 
@@ -425,19 +496,11 @@ fn main() -> Result<()> {
             | Commands::Ping
             | Commands::Run { .. }
             | Commands::Watch { .. }
-            | Commands::Pkg { .. },
+            | Commands::Pkg { .. }
+            | Commands::Install { .. }
+            | Commands::Build { .. },
         ) => {
             unreachable!() // Handled above
-        }
-        Some(Commands::Install) => {
-            let span = tracing::info_span!("install", cmd = "install", cwd = %cwd.display());
-            let _guard = span.enter();
-            commands::install::run(&config)
-        }
-        Some(Commands::Build) => {
-            let span = tracing::info_span!("build", cmd = "build", cwd = %cwd.display());
-            let _guard = span.enter();
-            commands::build::run(&config)
         }
         Some(Commands::Test) => {
             let span = tracing::info_span!("test", cmd = "test", cwd = %cwd.display());

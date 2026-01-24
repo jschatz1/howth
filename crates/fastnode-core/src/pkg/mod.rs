@@ -11,6 +11,7 @@
 //! - Building dependency graphs from `node_modules` (v1.4)
 //! - Explaining why packages are installed (v1.6)
 //! - Health diagnostics for installed packages (v1.7)
+//! - Deterministic lockfile generation and installation (v1.9)
 
 pub mod cache;
 pub mod deps;
@@ -19,6 +20,7 @@ pub mod error;
 pub mod explain;
 pub mod graph;
 pub mod link;
+pub mod lockfile;
 pub mod registry;
 pub mod spec;
 pub mod tarball;
@@ -40,6 +42,10 @@ pub use graph::{
     PackageId, PackageNode, PKG_GRAPH_SCHEMA_VERSION,
 };
 pub use link::link_into_node_modules;
+pub use lockfile::{
+    codes as lockfile_codes, LockDep, LockDepEdge, LockMeta, LockPackage, LockResolution, LockRoot,
+    Lockfile, LockfileError, LOCKFILE_NAME, PKG_LOCK_SCHEMA_VERSION,
+};
 pub use registry::{get_tarball_url, RegistryClient, DEFAULT_REGISTRY, REGISTRY_ENV};
 pub use spec::PackageSpec;
 pub use tarball::{download_tarball, extract_tgz_atomic, MAX_TARBALL_SIZE};

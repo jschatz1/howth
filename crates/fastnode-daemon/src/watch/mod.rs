@@ -2,7 +2,7 @@
 //!
 //! Watches directories for file changes and invalidates resolver cache entries.
 
-use crate::cache::{DaemonPkgJsonCache, DaemonResolverCache};
+use crate::cache::{DaemonBuildCache, DaemonPkgJsonCache, DaemonResolverCache};
 use notify::{
     event::{CreateKind, ModifyKind, RemoveKind, RenameMode},
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher,
@@ -36,6 +36,8 @@ pub struct WatcherState {
     cache: Mutex<Option<Arc<DaemonResolverCache>>>,
     /// Optional reference to package.json cache for invalidation.
     pkg_json_cache: Mutex<Option<Arc<DaemonPkgJsonCache>>>,
+    /// Optional reference to build cache for invalidation.
+    build_cache: Mutex<Option<Arc<DaemonBuildCache>>>,
 }
 
 /// Watcher event for internal processing.
@@ -87,6 +89,7 @@ impl WatcherState {
             event_tx: Mutex::new(None),
             cache: Mutex::new(None),
             pkg_json_cache: Mutex::new(None),
+            build_cache: Mutex::new(None),
         }
     }
 
@@ -98,6 +101,11 @@ impl WatcherState {
     /// Set the package.json cache to use for invalidation.
     pub fn set_pkg_json_cache(&self, cache: Arc<DaemonPkgJsonCache>) {
         *self.pkg_json_cache.lock().unwrap() = Some(cache);
+    }
+
+    /// Set the build cache to use for invalidation.
+    pub fn set_build_cache(&self, cache: Arc<DaemonBuildCache>) {
+        *self.build_cache.lock().unwrap() = Some(cache);
     }
 
     /// Check if the watcher is running.
@@ -198,6 +206,7 @@ impl WatcherState {
         // Get cache references for event processor
         let cache = self.cache.lock().unwrap().clone();
         let pkg_json_cache = self.pkg_json_cache.lock().unwrap().clone();
+        let build_cache = self.build_cache.lock().unwrap().clone();
         let last_event_store = self.last_event_unix_ms.clone();
 
         // Spawn event processor
@@ -206,6 +215,7 @@ impl WatcherState {
                 &mut rx,
                 cache.as_ref(),
                 pkg_json_cache.as_ref(),
+                build_cache.as_ref(),
                 &last_event_store,
             )
             .await;
@@ -242,6 +252,7 @@ async fn process_events(
     rx: &mut mpsc::UnboundedReceiver<WatchEvent>,
     cache: Option<&Arc<DaemonResolverCache>>,
     pkg_json_cache: Option<&Arc<DaemonPkgJsonCache>>,
+    build_cache: Option<&Arc<DaemonBuildCache>>,
     last_event_store: &Arc<AtomicU64>,
 ) {
     let mut pending_paths: HashSet<PathBuf> = HashSet::new();
@@ -277,6 +288,7 @@ async fn process_events(
 
                     let mut total_invalidated = 0;
                     let mut pkg_json_invalidated = 0;
+                    let mut build_invalidated = 0;
 
                     for path in &pending_paths {
                         debug!(path = %path.display(), "File changed");
@@ -293,6 +305,12 @@ async fn process_events(
                                 pkg_json_invalidated += 1;
                             }
                         }
+
+                        // Invalidate build cache entries for this path
+                        if let Some(build_cache) = build_cache {
+                            let count = build_cache.invalidate_path(path);
+                            build_invalidated += count;
+                        }
                     }
 
                     if total_invalidated > 0 {
@@ -305,6 +323,12 @@ async fn process_events(
                         debug!(
                             count = pkg_json_invalidated,
                             "Package.json cache entries invalidated"
+                        );
+                    }
+                    if build_invalidated > 0 {
+                        debug!(
+                            count = build_invalidated,
+                            "Build cache entries invalidated"
                         );
                     }
 

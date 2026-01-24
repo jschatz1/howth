@@ -1,23 +1,26 @@
 //! Package manager handlers for the daemon.
 //!
-//! Handles PkgAdd, PkgCacheList, PkgCachePrune, PkgGraph, PkgExplain, PkgWhy, and PkgDoctor requests.
+//! Handles PkgAdd, PkgCacheList, PkgCachePrune, PkgGraph, PkgExplain, PkgWhy, PkgDoctor,
+//! and PkgInstall requests.
 
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
     build_doctor_report, build_pkg_graph, download_tarball, extract_tgz_atomic, get_tarball_url,
     link_into_node_modules, resolve_version, why_from_graph, DoctorOptions, DoctorSeverity,
-    GraphOptions, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
-    RegistryClient, WhyOptions, MAX_TARBALL_SIZE,
+    GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
+    RegistryClient, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
 };
 use fastnode_proto::{
     codes, CachedPackage, DoctorCounts, DoctorFinding, DoctorSummary, GraphDepEdge, GraphErrorInfo,
-    GraphPackageId, GraphPackageNode, InstalledPackage, PackageGraph, PkgDoctorReport,
-    PkgErrorInfo, PkgExplainResult, PkgExplainTraceStep, PkgExplainWarning, PkgWhyChain,
-    PkgWhyErrorInfo, PkgWhyLink, PkgWhyResult, PkgWhyTarget, Response, PKG_DOCTOR_SCHEMA_VERSION,
-    PKG_EXPLAIN_SCHEMA_VERSION, PKG_GRAPH_SCHEMA_VERSION, PKG_WHY_SCHEMA_VERSION,
+    GraphPackageId, GraphPackageNode, InstallPackageError, InstallPackageInfo, InstalledPackage,
+    InstallSummary, PackageGraph, PkgDoctorReport, PkgErrorInfo, PkgExplainResult,
+    PkgExplainTraceStep, PkgExplainWarning, PkgInstallResult, PkgWhyChain, PkgWhyErrorInfo,
+    PkgWhyLink, PkgWhyResult, PkgWhyTarget, Response, PKG_DOCTOR_SCHEMA_VERSION,
+    PKG_EXPLAIN_SCHEMA_VERSION, PKG_GRAPH_SCHEMA_VERSION, PKG_INSTALL_SCHEMA_VERSION,
+    PKG_WHY_SCHEMA_VERSION,
 };
 use std::path::Path;
 use tracing::{debug, warn};
@@ -186,6 +189,220 @@ pub fn handle_pkg_cache_prune(channel: &str) -> Response {
         removed_count: 0,
         freed_bytes: 0,
     }
+}
+
+/// Handle a PkgInstall request (v1.9).
+///
+/// Installs packages from the lockfile (`howth.lock`).
+pub async fn handle_pkg_install(
+    cwd: &str,
+    channel: &str,
+    frozen: bool,
+    include_dev: bool,
+    include_optional: bool,
+) -> Response {
+    use std::path::PathBuf;
+
+    let project_root = PathBuf::from(cwd);
+
+    // Canonicalize the path
+    let project_root = match project_root.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return Response::error(
+                codes::CWD_INVALID,
+                format!("Invalid working directory '{}': {}", cwd, e),
+            );
+        }
+    };
+
+    // Check for lockfile
+    let lockfile_path = project_root.join(LOCKFILE_NAME);
+    if !lockfile_path.exists() {
+        if frozen {
+            return Response::error(
+                codes::PKG_INSTALL_LOCKFILE_NOT_FOUND,
+                format!(
+                    "Lockfile not found at '{}' (--frozen requires lockfile)",
+                    lockfile_path.display()
+                ),
+            );
+        }
+
+        // No lockfile and not frozen - return empty success for now
+        // In the future, this would generate a lockfile from package.json
+        return Response::PkgInstallResult {
+            result: PkgInstallResult {
+                schema_version: PKG_INSTALL_SCHEMA_VERSION,
+                cwd: project_root.to_string_lossy().into_owned(),
+                ok: true,
+                summary: InstallSummary::default(),
+                installed: vec![],
+                errors: vec![],
+                notes: vec!["No lockfile found. Run `howth install` without --frozen to generate one.".to_string()],
+            },
+        };
+    }
+
+    // Read the lockfile
+    let lockfile = match Lockfile::read_from(&lockfile_path) {
+        Ok(lf) => lf,
+        Err(e) => {
+            return Response::error(codes::PKG_INSTALL_LOCKFILE_INVALID, e.to_string());
+        }
+    };
+
+    debug!(
+        lockfile = %lockfile_path.display(),
+        packages = lockfile.packages.len(),
+        "Read lockfile"
+    );
+
+    // Create package cache for this channel
+    let chan = parse_channel(channel);
+    let cache = PackageCache::new(chan);
+
+    // Create registry client
+    let registry = match RegistryClient::from_env() {
+        Ok(r) => r,
+        Err(e) => {
+            return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
+        }
+    };
+
+    let mut installed = Vec::new();
+    let mut errors = Vec::new();
+    let mut downloaded = 0u32;
+    let mut cached = 0u32;
+    let mut linked = 0u32;
+
+    // Install each package from the lockfile
+    for (key, lock_pkg) in &lockfile.packages {
+        // Parse package name from key (format: "name@version")
+        let name = key.rsplit_once('@').map(|(n, _)| n).unwrap_or(key);
+
+        // Check dependency kind - skip dev/optional if not requested
+        let is_root_dep = lockfile.dependencies.contains_key(name);
+        if is_root_dep {
+            if let Some(dep) = lockfile.dependencies.get(name) {
+                if dep.kind == "dev" && !include_dev {
+                    continue;
+                }
+                if dep.kind == "optional" && !include_optional {
+                    continue;
+                }
+            }
+        }
+
+        match install_from_lockfile(name, lock_pkg, &project_root, &cache, &registry).await {
+            Ok((pkg_info, from_cache)) => {
+                if from_cache {
+                    cached += 1;
+                } else {
+                    downloaded += 1;
+                }
+                linked += 1;
+                installed.push(pkg_info);
+            }
+            Err(e) => {
+                errors.push(InstallPackageError {
+                    name: name.to_string(),
+                    version: lock_pkg.version.clone(),
+                    code: e.code().to_string(),
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
+
+    let ok = errors.is_empty();
+    let total_packages = lockfile.packages.len() as u32;
+
+    debug!(
+        total = total_packages,
+        downloaded,
+        cached,
+        linked,
+        failed = errors.len(),
+        "Install completed"
+    );
+
+    Response::PkgInstallResult {
+        result: PkgInstallResult {
+            schema_version: PKG_INSTALL_SCHEMA_VERSION,
+            cwd: project_root.to_string_lossy().into_owned(),
+            ok,
+            summary: InstallSummary {
+                total_packages,
+                downloaded,
+                cached,
+                linked,
+                failed: errors.len() as u32,
+            },
+            installed,
+            errors,
+            notes: vec![],
+        },
+    }
+}
+
+/// Install a single package from lockfile.
+async fn install_from_lockfile(
+    name: &str,
+    lock_pkg: &fastnode_core::pkg::LockPackage,
+    project_root: &Path,
+    cache: &PackageCache,
+    registry: &RegistryClient,
+) -> Result<(InstallPackageInfo, bool), PkgError> {
+    let version = &lock_pkg.version;
+
+    debug!(name = %name, version = %version, "Installing package from lockfile");
+
+    // Check if already cached
+    let package_dir = cache.package_dir(name, version);
+    let was_cached = cache.is_cached(name, version);
+
+    if !was_cached {
+        // Fetch packument to get tarball URL
+        let packument = registry.fetch_packument(name).await?;
+
+        // Get tarball URL
+        let tarball_url = get_tarball_url(&packument, version).ok_or_else(|| {
+            PkgError::download_failed(format!("No tarball URL for {}@{}", name, version))
+        })?;
+
+        debug!(url = %tarball_url, "Downloading tarball");
+
+        // Download tarball
+        let bytes = download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE).await?;
+
+        // TODO: Verify integrity hash matches lock_pkg.integrity
+        // For now, just extract
+
+        debug!(size = bytes.len(), "Downloaded tarball");
+
+        // Extract to cache
+        extract_tgz_atomic(&bytes, &package_dir)?;
+
+        debug!(path = %package_dir.display(), "Extracted to cache");
+    } else {
+        debug!(path = %package_dir.display(), "Using cached package");
+    }
+
+    // Link into node_modules
+    let link_path = link_into_node_modules(project_root, name, &package_dir)?;
+
+    debug!(link = %link_path.display(), "Linked into node_modules");
+
+    Ok((
+        InstallPackageInfo {
+            name: name.to_string(),
+            version: version.to_string(),
+            from_cache: was_cached,
+            link_path: link_path.to_string_lossy().into_owned(),
+        },
+        was_cached,
+    ))
 }
 
 /// Handle a PkgGraph request.

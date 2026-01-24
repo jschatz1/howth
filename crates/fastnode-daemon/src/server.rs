@@ -40,8 +40,10 @@ pub async fn run_server(config: DaemonConfig) -> io::Result<()> {
     // Create daemon state (cache + watcher)
     let state = Arc::new(DaemonState::new());
 
-    // Wire cache to watcher for invalidation
+    // Wire caches to watcher for invalidation
     state.watcher.set_cache(state.cache.clone());
+    state.watcher.set_pkg_json_cache(state.pkg_json_cache.clone());
+    state.watcher.set_build_cache(state.build_cache.clone());
 
     // Accept loop
     loop {

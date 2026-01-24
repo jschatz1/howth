@@ -1,8 +1,9 @@
-//! Resolver cache for daemon.
+//! Caches for daemon.
 //!
-//! Provides a thread-safe cache for resolver results with support for
-//! file-based invalidation via reverse index.
+//! Provides thread-safe caches for resolver results and build results
+//! with support for file-based invalidation via reverse index.
 
+use fastnode_core::build::{BuildCache, MemoryCache};
 use fastnode_core::resolver::{
     CachedResolveResult, FileStamp, PkgJsonCache, PkgJsonStamp, ResolveResult, ResolveStatus,
     ResolverCache, ResolverCacheKey,
@@ -267,6 +268,105 @@ impl PkgJsonCache for DaemonPkgJsonCache {
 #[derive(Debug, Clone, Copy)]
 pub struct PkgJsonCacheStats {
     pub entry_count: usize,
+}
+
+/// Daemon build cache with thread-safe access.
+///
+/// Wraps the core `MemoryCache` with a RwLock for concurrent access
+/// and provides path-based invalidation for file watcher integration.
+#[derive(Debug, Default)]
+pub struct DaemonBuildCache {
+    /// Inner cache behind a RwLock.
+    cache: RwLock<MemoryCache>,
+    /// Reverse index: file path -> set of node IDs that include that file
+    reverse_index: RwLock<HashMap<PathBuf, HashSet<String>>>,
+}
+
+impl DaemonBuildCache {
+    /// Create a new empty build cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if a node hash is cached and was successful.
+    pub fn get(&self, node_id: &str, hash: &str) -> Option<bool> {
+        let cache = self.cache.read().unwrap();
+        cache.get(node_id, hash)
+    }
+
+    /// Store a result for a node.
+    pub fn set(&self, node_id: &str, hash: &str, ok: bool) {
+        let mut cache = self.cache.write().unwrap();
+        cache.set(node_id, hash, ok);
+    }
+
+    /// Add a file path to the reverse index for a node.
+    pub fn add_file_dependency(&self, node_id: &str, path: &Path) {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let mut index = self.reverse_index.write().unwrap();
+        index
+            .entry(canonical)
+            .or_default()
+            .insert(node_id.to_string());
+    }
+
+    /// Invalidate all node caches that depend on a given file path.
+    ///
+    /// Returns the number of entries invalidated.
+    pub fn invalidate_path(&self, path: &Path) -> usize {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        // Get node IDs to invalidate
+        let node_ids: Vec<String> = {
+            let index = self.reverse_index.read().unwrap();
+            index
+                .get(&canonical)
+                .map(|ids| ids.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+
+        let count = node_ids.len();
+
+        if count > 0 {
+            debug!(path = %canonical.display(), count, "Invalidating build cache entries for path");
+
+            // Invalidate each node
+            let mut cache = self.cache.write().unwrap();
+            for node_id in &node_ids {
+                cache.invalidate(node_id);
+            }
+
+            // Remove from reverse index
+            let mut index = self.reverse_index.write().unwrap();
+            index.remove(&canonical);
+        }
+
+        count
+    }
+
+    /// Clear all cache entries.
+    pub fn clear(&self) {
+        let mut cache = self.cache.write().unwrap();
+        let mut index = self.reverse_index.write().unwrap();
+        cache.clear();
+        index.clear();
+    }
+
+    /// Get cache statistics.
+    #[must_use]
+    pub fn stats(&self) -> BuildCacheStats {
+        let index = self.reverse_index.read().unwrap();
+        BuildCacheStats {
+            reverse_index_paths: index.len(),
+        }
+    }
+}
+
+/// Build cache statistics.
+#[derive(Debug, Clone, Copy)]
+pub struct BuildCacheStats {
+    pub reverse_index_paths: usize,
 }
 
 #[cfg(test)]

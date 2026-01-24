@@ -817,6 +817,184 @@ fn test_doctor_json_no_extra_stdout() {
     assert!(json.get("ok").is_some(), "parsed JSON must have 'ok' field");
 }
 
+/// Get path to the howth binary built by cargo.
+/// Builds in debug mode and returns the path.
+fn get_howth_bin_path() -> String {
+    // Build howth first to ensure it exists
+    let build_output = Command::new(env!("CARGO"))
+        .args(["build", "-p", "fastnode-cli", "--bin", "howth"])
+        .output()
+        .expect("Failed to build howth");
+
+    assert!(
+        build_output.status.success(),
+        "Failed to build howth: {}",
+        String::from_utf8_lossy(&build_output.stderr)
+    );
+
+    // Get the target directory
+    let cargo_metadata = Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .output()
+        .expect("Failed to get cargo metadata");
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&cargo_metadata.stdout).expect("Failed to parse cargo metadata");
+
+    let target_dir = metadata["target_directory"]
+        .as_str()
+        .expect("No target_directory in metadata");
+
+    format!("{}/debug/howth", target_dir)
+}
+
+/// Helper to run the `fastnode` compat shim binary with HOWTH_BIN set.
+fn cargo_bin_fastnode_with_howth(howth_bin: &str) -> Command {
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args(["run", "-p", "fastnode-cli", "--bin", "fastnode", "--"]);
+    cmd.env("HOWTH_BIN", howth_bin);
+    cmd
+}
+
+/// **LOCKED v1.8.0+**: The `fastnode` compat shim forwards to `howth` with deprecation warning.
+#[test]
+fn test_fastnode_shim_forwards() {
+    let endpoint = test_endpoint();
+    cleanup_endpoint(&endpoint);
+
+    let project = create_project_with_issues();
+
+    // Build howth and get its path
+    let howth_bin = get_howth_bin_path();
+
+    // Start daemon (using howth)
+    let mut daemon = start_daemon(&endpoint);
+    assert!(wait_for_daemon(&endpoint), "Daemon should start");
+
+    // Run `fastnode pkg doctor --json` (the compat shim)
+    let fastnode_output = cargo_bin_fastnode_with_howth(&howth_bin)
+        .args([
+            "--json",
+            "pkg",
+            "doctor",
+            "--cwd",
+            project.path().to_str().unwrap(),
+        ])
+        .env("HOWTH_IPC_ENDPOINT", &endpoint)
+        .output()
+        .expect("Failed to run fastnode shim");
+
+    // Run `howth pkg doctor --json` (direct)
+    let howth_output = cargo_bin()
+        .args([
+            "--json",
+            "pkg",
+            "doctor",
+            "--cwd",
+            project.path().to_str().unwrap(),
+        ])
+        .env("HOWTH_IPC_ENDPOINT", &endpoint)
+        .output()
+        .expect("Failed to run howth");
+
+    // Cleanup
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    cleanup_endpoint(&endpoint);
+
+    // 1. Exit codes must match
+    assert_eq!(
+        fastnode_output.status.code(),
+        howth_output.status.code(),
+        "fastnode shim exit code must match howth"
+    );
+
+    // 2. Stdout JSON must be valid and contain { ok, doctor }
+    let fastnode_stdout = String::from_utf8_lossy(&fastnode_output.stdout);
+    let fastnode_json: serde_json::Value = serde_json::from_str(&fastnode_stdout)
+        .expect("fastnode shim stdout should be valid JSON");
+
+    assert!(
+        fastnode_json.get("ok").is_some(),
+        "fastnode shim JSON must have 'ok' field"
+    );
+    assert!(
+        fastnode_json.get("doctor").is_some(),
+        "fastnode shim JSON must have 'doctor' field"
+    );
+
+    // 3. In --json mode, deprecation warning is suppressed (by design)
+    //    Verify no warning in stderr (filtered for cargo messages)
+    let fastnode_stderr = String::from_utf8_lossy(&fastnode_output.stderr);
+    let stderr_lines: Vec<&str> = fastnode_stderr
+        .lines()
+        .filter(|l| {
+            !l.contains("Compiling")
+                && !l.contains("Finished")
+                && !l.contains("Running")
+                && !l.contains("Blocking waiting")
+        })
+        .collect();
+    let stderr_content = stderr_lines.join("\n");
+
+    // In --json mode, the deprecation warning should NOT appear
+    assert!(
+        !stderr_content.contains("renamed"),
+        "In --json mode, deprecation warning should be suppressed. Got: {}",
+        stderr_content
+    );
+
+    // 4. Stdout should be identical between fastnode and howth
+    let howth_stdout = String::from_utf8_lossy(&howth_output.stdout);
+    let howth_json: serde_json::Value =
+        serde_json::from_str(&howth_stdout).expect("howth stdout should be valid JSON");
+
+    // Compare the doctor objects (they should be identical)
+    assert_eq!(
+        fastnode_json["doctor"], howth_json["doctor"],
+        "fastnode shim doctor output must match howth"
+    );
+}
+
+/// **LOCKED v1.8.0+**: The `fastnode` shim shows deprecation warning in non-JSON mode.
+#[test]
+fn test_fastnode_shim_deprecation_warning() {
+    // Build howth and get its path
+    let howth_bin = get_howth_bin_path();
+
+    // Run `fastnode --version` (non-JSON mode, should show deprecation)
+    let fastnode_output = cargo_bin_fastnode_with_howth(&howth_bin)
+        .args(["--version"])
+        .output()
+        .expect("Failed to run fastnode shim");
+
+    // Filter stderr for deprecation warning
+    let fastnode_stderr = String::from_utf8_lossy(&fastnode_output.stderr);
+    let stderr_lines: Vec<&str> = fastnode_stderr
+        .lines()
+        .filter(|l| {
+            !l.contains("Compiling")
+                && !l.contains("Finished")
+                && !l.contains("Running")
+                && !l.contains("Blocking waiting")
+        })
+        .collect();
+    let stderr_content = stderr_lines.join("\n");
+
+    // In non-JSON mode, the deprecation warning MUST appear
+    assert!(
+        stderr_content.contains("fastnode") && stderr_content.contains("renamed"),
+        "In non-JSON mode, stderr must contain deprecation warning. Got: {}",
+        stderr_content
+    );
+
+    // Should exit successfully
+    assert!(
+        fastnode_output.status.success(),
+        "fastnode --version should succeed"
+    );
+}
+
 /// **LOCKED v1.7.1+**: Deterministic sort order is severity_rank desc, code asc, package asc, path asc.
 #[test]
 fn test_doctor_v171_deterministic_sort_order() {

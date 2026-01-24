@@ -8,7 +8,7 @@ use fastnode_daemon::ipc::{IpcStream, MAX_FRAME_SIZE};
 use fastnode_proto::{
     encode_frame, CachedPackage, DoctorFinding, Frame, FrameResponse, GraphDepEdge,
     GraphPackageNode, InstalledPackage, PackageGraph, PkgDoctorReport, PkgErrorInfo,
-    PkgExplainResult, PkgWhyChain, PkgWhyResult, Request, Response,
+    PkgExplainResult, PkgInstallResult, PkgWhyChain, PkgWhyResult, Request, Response,
 };
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
@@ -60,6 +60,12 @@ pub enum PkgAction {
         max_items: u32,
         min_severity: String,
         format: String,
+    },
+    Install {
+        cwd: PathBuf,
+        frozen: bool,
+        include_dev: bool,
+        include_optional: bool,
     },
     CacheList,
     CachePrune,
@@ -128,6 +134,15 @@ struct PkgWhyJsonResult {
 struct PkgDoctorJsonResult {
     ok: bool,
     doctor: Option<PkgDoctorReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Install result for JSON output (locked format: { ok, install }).
+#[derive(Serialize)]
+struct PkgInstallJsonResult {
+    ok: bool,
+    install: Option<PkgInstallResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -301,6 +316,14 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
                         let result = PkgDoctorJsonResult {
                             ok: false,
                             doctor: None,
+                            error: Some(format!("Failed to connect: {e}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Install { .. } => {
+                        let result = PkgInstallJsonResult {
+                            ok: false,
+                            install: None,
                             error: Some(format!("Failed to connect: {e}")),
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -507,6 +530,52 @@ fn handle_response(
             let _ = has_errors; // silence warning; we don't exit non-zero for findings
             Ok(())
         }
+        Response::PkgInstallResult { result } => {
+            let has_errors = !result.errors.is_empty();
+
+            if json {
+                let output = PkgInstallJsonResult {
+                    ok: result.ok,
+                    install: Some(result),
+                    error: None,
+                };
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                // Print human-readable output
+                println!("howth install");
+                println!(
+                    "  packages: {} total, {} cached, {} downloaded",
+                    result.summary.total_packages,
+                    result.summary.cached,
+                    result.summary.downloaded
+                );
+
+                if !result.installed.is_empty() {
+                    for pkg in &result.installed {
+                        let source = if pkg.from_cache { "cached" } else { "downloaded" };
+                        println!("  + {}@{} ({})", pkg.name, pkg.version, source);
+                    }
+                }
+
+                if !result.errors.is_empty() {
+                    for err in &result.errors {
+                        eprintln!("  ! {}@{}: {} {}", err.name, err.version, err.code, err.message);
+                    }
+                }
+
+                if !result.notes.is_empty() {
+                    for note in &result.notes {
+                        println!("  note: {note}");
+                    }
+                }
+            }
+
+            // Exit with code 2 if any errors
+            if has_errors {
+                std::process::exit(2);
+            }
+            Ok(())
+        }
         Response::Error { code, message } => {
             if json {
                 match action {
@@ -566,6 +635,14 @@ fn handle_response(
                         let result = PkgDoctorJsonResult {
                             ok: false,
                             doctor: None,
+                            error: Some(format!("{code}: {message}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Install { .. } => {
+                        let result = PkgInstallJsonResult {
+                            ok: false,
+                            install: None,
                             error: Some(format!("{code}: {message}")),
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -635,6 +712,14 @@ fn handle_response(
                         let result = PkgDoctorJsonResult {
                             ok: false,
                             doctor: None,
+                            error: Some("Unexpected response type".to_string()),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Install { .. } => {
+                        let result = PkgInstallJsonResult {
+                            ok: false,
+                            install: None,
                             error: Some("Unexpected response type".to_string()),
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -1245,6 +1330,18 @@ async fn send_pkg_request(
             max_items: *max_items,
             min_severity: min_severity.clone(),
             format: format.clone(),
+        },
+        PkgAction::Install {
+            cwd,
+            frozen,
+            include_dev,
+            include_optional,
+        } => Request::PkgInstall {
+            cwd: cwd.to_string_lossy().into_owned(),
+            channel: channel.as_str().to_string(),
+            frozen: *frozen,
+            include_dev: *include_dev,
+            include_optional: *include_optional,
         },
     };
 
