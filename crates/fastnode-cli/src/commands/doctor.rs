@@ -157,13 +157,12 @@ fn print_human(report: &DoctorReport) -> Result<()> {
     )?;
 
     #[cfg(target_os = "linux")]
-    w(
-        &mut out,
-        &format!(
-            "  io_uring:       {}\n",
-            yes_no(report.capabilities.io_uring_supported)
-        ),
-    )?;
+    if let Some(supported) = report.capabilities.io_uring_supported {
+        w(
+            &mut out,
+            &format!("  io_uring:       {}\n", yes_no(supported)),
+        )?;
+    }
 
     #[cfg(unix)]
     if let Some(ref rlimit) = report.capabilities.rlimit_nofile {
