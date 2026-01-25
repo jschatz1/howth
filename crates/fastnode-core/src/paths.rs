@@ -110,10 +110,10 @@ pub fn ipc_endpoint(channel: Channel) -> String {
 ///
 /// # Errors
 /// Returns an error if the directory cannot be created.
-pub fn ensure_ipc_dir(channel: Channel) -> std::io::Result<()> {
+pub fn ensure_ipc_dir(_channel: Channel) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        let dir = data_dir(channel).join("ipc");
+        let dir = data_dir(_channel).join("ipc");
         std::fs::create_dir_all(dir)?;
     }
     Ok(())

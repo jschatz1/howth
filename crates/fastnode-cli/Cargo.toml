@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "CLI for howth: a deterministic Node toolchain inspector"
+default-run = "howth"
 
 [[bin]]
 name = "howth"
