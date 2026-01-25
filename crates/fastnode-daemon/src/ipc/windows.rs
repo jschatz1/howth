@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 const PIPE_PREFIX: &str = r"\\.\pipe\";
 
 /// Maximum number of server instances (concurrent connections).
-const MAX_INSTANCES: u32 = 64;
+const MAX_INSTANCES: usize = 64;
 
 /// Connection timeout for clients.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);

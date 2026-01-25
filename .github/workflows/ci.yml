@@ -99,6 +99,9 @@ jobs:
       - name: Smoke test - help
         run: cargo run -p fastnode-cli --release -- --help
 
+      - name: Create test file for smoke tests
+        run: echo 'console.log("hello");' > test.js
+
       - name: Smoke test - run placeholder
         run: cargo run -p fastnode-cli --release -- run test.js
 
