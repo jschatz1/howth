@@ -167,6 +167,36 @@ enum BenchCommands {
         #[arg(long, default_value_t = commands::bench::smoke::DEFAULT_SIZE_MIB)]
         size: u32,
     },
+
+    /// Benchmark transpile performance
+    Transpile {
+        /// Number of measured iterations
+        #[arg(long, default_value_t = commands::bench::build::DEFAULT_ITERS)]
+        iters: u32,
+
+        /// Number of warmup iterations (not measured)
+        #[arg(long, default_value_t = commands::bench::build::DEFAULT_WARMUP)]
+        warmup: u32,
+
+        /// Project directory to benchmark (uses temp project if not specified)
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Benchmark full dev loop performance
+    Devloop {
+        /// Number of measured iterations
+        #[arg(long, default_value_t = commands::bench::build::DEFAULT_ITERS)]
+        iters: u32,
+
+        /// Number of warmup iterations (not measured)
+        #[arg(long, default_value_t = commands::bench::build::DEFAULT_WARMUP)]
+        warmup: u32,
+
+        /// Project directory to benchmark (uses temp project if not specified)
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -335,6 +365,16 @@ fn main() -> Result<()> {
                 warmup,
                 size,
             } => commands::bench::smoke::run(*iters, *warmup, *size, cli.json),
+            BenchCommands::Transpile {
+                iters,
+                warmup,
+                project,
+            } => commands::bench::build::run_transpile(*iters, *warmup, project.clone(), cli.json),
+            BenchCommands::Devloop {
+                iters,
+                warmup,
+                project,
+            } => commands::bench::build::run_devloop(*iters, *warmup, project.clone(), cli.json),
         };
     }
 

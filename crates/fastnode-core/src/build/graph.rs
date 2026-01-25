@@ -8,6 +8,7 @@
 //! - Schema version 1 (v2.0): Initial build graph format (single node)
 //! - Schema version 2 (v2.1): Multi-node graph with defaults and targets
 
+use crate::compiler::TranspileSpec;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -43,6 +44,7 @@ pub const TARGET_ALIASES: &[(&str, &str)] = &[
     ("lint", "script:lint"),
     ("typecheck", "script:typecheck"),
     ("dev", "script:dev"),
+    // Note: "transpile" is a direct node ID, not an alias
 ];
 
 /// Resolve a target alias to its full node ID.
@@ -86,6 +88,10 @@ pub enum BuildNodeKind {
     Bundle,
     /// Test execution (reserved).
     Test,
+    /// JSX/TSX transpilation (v3.1).
+    Transpile,
+    /// TypeScript type checking (v3.2).
+    Typecheck,
 }
 
 impl BuildNodeKind {
@@ -97,6 +103,8 @@ impl BuildNodeKind {
             Self::Ts => "ts",
             Self::Bundle => "bundle",
             Self::Test => "test",
+            Self::Transpile => "transpile",
+            Self::Typecheck => "typecheck",
         }
     }
 }
@@ -414,6 +422,16 @@ impl BuildOutput {
             optional: false,
         }
     }
+
+    /// Create a glob output.
+    #[must_use]
+    pub fn glob(pattern: impl Into<String>) -> Self {
+        Self {
+            kind: "glob".to_string(),
+            path: pattern.into(),
+            optional: false,
+        }
+    }
 }
 
 /// Environment variable for a build node (v2.1).
@@ -462,6 +480,9 @@ pub struct BuildNode {
     /// Script specification (legacy v2.0 compat).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<BuildScriptSpec>,
+    /// Transpilation specification (v3.1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transpile: Option<TranspileSpec>,
     /// Node IDs this depends on (sorted).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deps: Vec<String>,
@@ -487,6 +508,89 @@ impl BuildNode {
                 .collect(),
             command: Some(BuildCommand::shell(cmd)),
             script: Some(BuildScriptSpec::new(name, cmd)),
+            transpile: None,
+            deps: Vec::new(),
+            cache: BuildCachePolicy::default(),
+        }
+    }
+
+    /// Create a new transpile node for a single file (v3.1).
+    ///
+    /// Transpile nodes use the compiler backend to transform JSX/TSX files
+    /// to JavaScript without spawning external processes.
+    #[must_use]
+    pub fn transpile(input_path: &str, output_path: &str, spec: TranspileSpec) -> Self {
+        let input_file = std::path::Path::new(input_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(input_path);
+
+        Self {
+            id: format!("transpile:{input_path}"),
+            kind: BuildNodeKind::Transpile,
+            label: format!("transpile {input_file}"),
+            inputs: vec![BuildInput::file(input_path)],
+            outputs: vec![BuildOutput::file(output_path)],
+            env: Vec::new(),
+            env_allowlist: Vec::new(),
+            command: None,
+            script: None,
+            transpile: Some(spec),
+            deps: Vec::new(),
+            cache: BuildCachePolicy::default(),
+        }
+    }
+
+    /// Create a new batch transpile node (v3.1.1).
+    ///
+    /// Batch transpile nodes process all matching files in a source directory
+    /// and output to a target directory, preserving directory structure.
+    ///
+    /// The spec should be created with `TranspileSpec::batch()`.
+    #[must_use]
+    pub fn transpile_batch(spec: &TranspileSpec) -> Self {
+        let input_dir = spec.input_path.to_string_lossy();
+        let output_dir = spec.output_path.to_string_lossy();
+
+        Self {
+            id: "transpile".to_string(),
+            kind: BuildNodeKind::Transpile,
+            label: format!("transpile {input_dir}/ → {output_dir}/"),
+            inputs: Vec::new(), // Will be populated by caller with globs
+            outputs: vec![BuildOutput::glob(format!("{output_dir}/**/*.js"))],
+            env: Vec::new(),
+            env_allowlist: Vec::new(),
+            command: None,
+            script: None,
+            transpile: Some(spec.clone()),
+            deps: Vec::new(),
+            cache: BuildCachePolicy::default(),
+        }
+    }
+
+    /// Create a new typecheck node (v3.2).
+    ///
+    /// Typecheck nodes run `tsc --noEmit` to validate TypeScript types
+    /// without producing output files.
+    ///
+    /// The actual command is resolved at execution time to prefer local
+    /// `node_modules/.bin/tsc` and fallback to `npx --no-install tsc`.
+    #[must_use]
+    pub fn typecheck() -> Self {
+        Self {
+            id: "typecheck".to_string(),
+            kind: BuildNodeKind::Typecheck,
+            label: "typecheck".to_string(),
+            inputs: Vec::new(), // Will be populated by caller
+            outputs: Vec::new(), // No outputs - validation only
+            env: Vec::new(),
+            env_allowlist: DEFAULT_ENV_ALLOWLIST
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            command: None, // Command resolved at execution time
+            script: None,
+            transpile: None,
             deps: Vec::new(),
             cache: BuildCachePolicy::default(),
         }
@@ -985,6 +1089,12 @@ pub struct BuildNodeResult {
     /// Notes (always present).
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Number of files processed (for batch transpile nodes, v3.1.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_count: Option<u32>,
+    /// Whether this node was auto-discovered (v3.1.2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_discovered: bool,
 }
 
 impl BuildNodeResult {
@@ -1002,6 +1112,8 @@ impl BuildNodeResult {
             stderr_truncated: false,
             error: None,
             notes: Vec::new(),
+            files_count: None,
+            auto_discovered: false,
         }
     }
 
@@ -1019,6 +1131,8 @@ impl BuildNodeResult {
             stderr_truncated: false,
             error: None,
             notes: Vec::new(),
+            files_count: None,
+            auto_discovered: false,
         }
     }
 
@@ -1041,6 +1155,8 @@ impl BuildNodeResult {
             stderr_truncated: false,
             error: None,
             notes: Vec::new(),
+            files_count: None,
+            auto_discovered: false,
         }
     }
 
@@ -1063,6 +1179,8 @@ impl BuildNodeResult {
             stderr_truncated: false,
             error: Some(error),
             notes: Vec::new(),
+            files_count: None,
+            auto_discovered: false,
         }
     }
 
@@ -1080,7 +1198,23 @@ impl BuildNodeResult {
             stderr_truncated: false,
             error: None,
             notes: vec!["skipped due to dependency failure".to_string()],
+            files_count: None,
+            auto_discovered: false,
         }
+    }
+
+    /// Set the files count (for batch transpile nodes).
+    #[must_use]
+    pub fn with_files_count(mut self, count: u32) -> Self {
+        self.files_count = Some(count);
+        self
+    }
+
+    /// Mark this result as from an auto-discovered node.
+    #[must_use]
+    pub fn with_auto_discovered(mut self, auto_discovered: bool) -> Self {
+        self.auto_discovered = auto_discovered;
+        self
     }
 }
 
@@ -1235,6 +1369,51 @@ mod tests {
         assert_eq!(node.label, "script:build");
         assert!(node.script.is_some());
         assert!(node.command.is_some());
+        assert!(node.transpile.is_none());
+    }
+
+    #[test]
+    fn test_build_node_transpile() {
+        use crate::compiler::{JsxRuntime, TranspileSpec};
+
+        let spec = TranspileSpec::new("src/App.tsx", "dist/App.js")
+            .with_jsx_runtime(JsxRuntime::Automatic);
+        let node = BuildNode::transpile("src/App.tsx", "dist/App.js", spec);
+
+        assert_eq!(node.id, "transpile:src/App.tsx");
+        assert_eq!(node.kind, BuildNodeKind::Transpile);
+        assert_eq!(node.label, "transpile App.tsx");
+        assert!(node.transpile.is_some());
+        assert!(node.script.is_none());
+        assert!(node.command.is_none());
+
+        // Should have input and output set
+        assert_eq!(node.inputs.len(), 1);
+        assert_eq!(node.outputs.len(), 1);
+
+        // Verify transpile spec
+        let transpile_spec = node.transpile.unwrap();
+        assert_eq!(transpile_spec.jsx_runtime, JsxRuntime::Automatic);
+    }
+
+    #[test]
+    fn test_build_node_transpile_serialization() {
+        use crate::compiler::{JsxRuntime, ModuleKind, SourceMapKind, TranspileSpec};
+
+        let spec = TranspileSpec::new("src/App.tsx", "dist/App.js")
+            .with_jsx_runtime(JsxRuntime::Automatic)
+            .with_module(ModuleKind::ESM)
+            .with_sourcemaps(SourceMapKind::Inline);
+        let node = BuildNode::transpile("src/App.tsx", "dist/App.js", spec);
+
+        let json = serde_json::to_string_pretty(&node).unwrap();
+
+        // Verify JSON structure matches plan
+        assert!(json.contains("\"kind\": \"transpile\""));
+        assert!(json.contains("\"transpile\":"));
+        assert!(json.contains("\"jsx_runtime\": \"automatic\""));
+        assert!(json.contains("\"module\": \"esm\""));
+        assert!(json.contains("\"sourcemaps\": \"inline\""));
     }
 
     #[test]

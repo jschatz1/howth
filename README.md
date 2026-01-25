@@ -200,6 +200,29 @@ With `--json`, stdout contains exactly one JSON object:
 - Finding objects always include `{code, severity, message}` and may include `{package, path, detail, related}`
 - Output ordering is deterministic; truncation appends a final `PKG_DOCTOR_MAX_ITEMS_REACHED` finding
 
+## Trust Guarantees
+
+howth is designed to be predictable and non-surprising:
+
+### JSON Output Contract
+
+- **`--json` produces exactly one JSON object** to stdout. No logs, no progress output, no extra lines.
+- This is a **stable contract** - parsers can rely on `stdout | jq` always working.
+- `--watch --json` is currently disallowed because watch mode streams multiple results.
+  - Future: `--json-stream` will emit newline-delimited JSON objects.
+
+### No Surprise Network
+
+- howth **never makes network calls** except during explicit install commands.
+- `howth build`, `howth doctor`, `howth pkg doctor` are fully offline.
+- `npx --no-install` is used where possible to fail fast if dependencies are missing (instead of fetching).
+
+### Deterministic Output
+
+- All commands produce **deterministic output** for the same inputs.
+- Findings, warnings, and results are sorted by stable keys.
+- Timestamps and random values are never included in hashes or output.
+
 ## Project Structure
 
 ```

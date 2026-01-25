@@ -11,9 +11,14 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod build;
 pub mod smoke;
 pub mod stats;
 
+pub use build::{
+    run_build_bench, BaselineResult, BenchTarget, BuildBenchParams, BuildBenchReport,
+    BuildBenchResult, MachineInfo, WorkDoneStats, BUILD_BENCH_SCHEMA_VERSION,
+};
 pub use smoke::run_smoke_benchmarks;
 pub use stats::compute_stats;
 

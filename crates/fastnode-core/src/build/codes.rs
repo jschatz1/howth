@@ -32,6 +32,21 @@ pub const BUILD_TARGET_INVALID: &str = "BUILD_TARGET_INVALID";
 /// No targets specified and no defaults in graph (v2.1).
 pub const BUILD_NO_DEFAULT_TARGETS: &str = "BUILD_NO_DEFAULT_TARGETS";
 
+/// Failed to read input file for transpilation (v3.1).
+pub const BUILD_TRANSPILE_READ_ERROR: &str = "BUILD_TRANSPILE_READ_ERROR";
+
+/// Transpilation failed (v3.1).
+pub const BUILD_TRANSPILE_FAILED: &str = "BUILD_TRANSPILE_FAILED";
+
+/// Failed to write transpiled output (v3.1).
+pub const BUILD_TRANSPILE_WRITE_ERROR: &str = "BUILD_TRANSPILE_WRITE_ERROR";
+
+/// No compiler backend available for transpilation (v3.1).
+pub const BUILD_NO_COMPILER_BACKEND: &str = "BUILD_NO_COMPILER_BACKEND";
+
+/// TypeScript type checking failed (v3.2).
+pub const BUILD_TYPECHECK_FAILED: &str = "BUILD_TYPECHECK_FAILED";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,6 +64,11 @@ mod tests {
             BUILD_PACKAGE_JSON_NOT_FOUND,
             BUILD_TARGET_INVALID,
             BUILD_NO_DEFAULT_TARGETS,
+            BUILD_TRANSPILE_READ_ERROR,
+            BUILD_TRANSPILE_FAILED,
+            BUILD_TRANSPILE_WRITE_ERROR,
+            BUILD_NO_COMPILER_BACKEND,
+            BUILD_TYPECHECK_FAILED,
         ];
 
         for code in codes {
