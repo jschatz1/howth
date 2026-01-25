@@ -340,13 +340,6 @@ pub fn execute_node(
             if entry.ok {
                 // v2.2: If outputs are declared, verify fingerprint matches
                 if has_outputs {
-                    // v3.5: Lazy fingerprinting - if cached fingerprint is None,
-                    // trust the cache entry (first build used lazy fingerprinting).
-                    // This avoids fingerprint computation on warm builds when input hash matches.
-                    if entry.fingerprint.is_none() {
-                        return BuildNodeResult::cache_hit(&node.id, hash);
-                    }
-
                     // Compute current output fingerprint
                     let current_fingerprint = compute_fingerprint(&node.outputs, cwd).ok();
 
@@ -451,9 +444,7 @@ pub fn execute_node(
     }
 
     // Success - compute output fingerprint if outputs are declared
-    // v3.5: Skip fingerprint on first build (lazy fingerprinting)
-    // On first build, store None - fingerprint will be computed lazily on next cache lookup
-    let fingerprint = if has_outputs && rebuild_reason != BuildNodeReason::FirstBuild {
+    let fingerprint = if has_outputs {
         compute_fingerprint(&node.outputs, cwd).ok().flatten()
     } else {
         None

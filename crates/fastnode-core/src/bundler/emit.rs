@@ -546,9 +546,10 @@ mod tests {
     #[test]
     fn test_rewrite_import_side_effect() {
         let graph = empty_graph();
+        // CSS imports are handled separately (bundled CSS), not require'd
         assert_eq!(
             rewrite_import("import './styles.css';", "/test/file.ts", &graph),
-            "require('./styles.css');"
+            "/* CSS: ./styles.css */"
         );
     }
 

@@ -24,6 +24,8 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
 use super::spec::{JsxRuntime, SourceMapKind};
+#[cfg(not(feature = "swc"))]
+use super::spec::ModuleKind;
 use super::{CompilerBackend, CompilerError, TranspileOutput, TranspileSpec};
 
 #[cfg(feature = "swc")]
