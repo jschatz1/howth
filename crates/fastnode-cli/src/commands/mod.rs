@@ -1,6 +1,8 @@
 pub mod bench;
 pub mod build;
+pub mod bundle;
 pub mod daemon;
+pub mod dev;
 pub mod doctor;
 pub mod install;
 pub mod ping;

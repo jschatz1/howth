@@ -99,6 +99,74 @@ enum Commands {
         no_optional: bool,
     },
 
+    /// Bundle JavaScript/TypeScript modules
+    Bundle {
+        /// Entry point file
+        entry: PathBuf,
+
+        /// Output file (if not specified, prints to stdout)
+        #[arg(long, short = 'o')]
+        outfile: Option<PathBuf>,
+
+        /// Output format: esm, cjs, or iife
+        #[arg(long, default_value = "esm")]
+        format: String,
+
+        /// Minify output
+        #[arg(long)]
+        minify: bool,
+
+        /// Generate source maps
+        #[arg(long)]
+        sourcemap: bool,
+
+        /// External packages (don't bundle, keep as imports)
+        #[arg(long, value_delimiter = ',')]
+        external: Vec<String>,
+
+        /// Enable tree shaking (dead code elimination) - enabled by default
+        #[arg(long, default_value_t = true)]
+        treeshake: bool,
+
+        /// Disable tree shaking
+        #[arg(long, conflicts_with = "treeshake")]
+        no_treeshake: bool,
+
+        /// Enable code splitting for dynamic imports
+        #[arg(long)]
+        splitting: bool,
+
+        /// Define global replacements (e.g., --define __DEV__=false)
+        #[arg(long, value_delimiter = ',')]
+        define: Vec<String>,
+
+        /// Import path aliases (e.g., --alias @=./src)
+        #[arg(long = "alias", value_delimiter = ',')]
+        aliases: Vec<String>,
+
+        /// Banner text to prepend to output
+        #[arg(long)]
+        banner: Option<String>,
+    },
+
+    /// Start development server with HMR
+    Dev {
+        /// Entry point file
+        entry: PathBuf,
+
+        /// Port to listen on
+        #[arg(long, short = 'p', default_value = "3000")]
+        port: u16,
+
+        /// Host to bind to
+        #[arg(long, default_value = "localhost")]
+        host: String,
+
+        /// Open browser automatically
+        #[arg(long)]
+        open: bool,
+    },
+
     /// Build the project
     Build {
         /// Force rebuild (bypass cache)
@@ -536,6 +604,70 @@ fn main() -> Result<()> {
         return commands::pkg::run(action, Channel::Stable, cli.json);
     }
 
+    // Handle bundle command
+    if let Some(Commands::Bundle {
+        entry,
+        outfile,
+        format,
+        minify,
+        sourcemap,
+        external,
+        treeshake,
+        no_treeshake,
+        splitting,
+        define,
+        aliases,
+        banner,
+    }) = &cli.command
+    {
+        let bundle_format = commands::bundle::parse_format(format).unwrap_or_else(|| {
+            eprintln!("error: invalid format '{}'. Use: esm, cjs, or iife", format);
+            std::process::exit(2);
+        });
+
+        let action = commands::bundle::BundleAction {
+            entry: entry.clone(),
+            cwd: cwd.clone(),
+            outfile: outfile.clone(),
+            format: bundle_format,
+            minify: *minify,
+            sourcemap: *sourcemap,
+            external: external.clone(),
+            treeshake: *treeshake && !*no_treeshake,
+            splitting: *splitting,
+            define: define.clone(),
+            alias: aliases.clone(),
+            banner: banner.clone(),
+        };
+        return commands::bundle::run(action, cli.json);
+    }
+
+    // Handle dev command
+    if let Some(Commands::Dev {
+        entry,
+        port,
+        host,
+        open,
+    }) = &cli.command
+    {
+        // For dev server, use entry file's parent directory as cwd
+        // (watches only the project directory, not unrelated dirs)
+        let dev_cwd = entry.parent()
+            .map(|p| if p.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { p.to_path_buf() })
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+        let action = commands::dev::DevAction {
+            entry: entry.clone(),
+            cwd: dev_cwd,
+            port: *port,
+            host: host.clone(),
+            open: *open,
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        return rt.block_on(commands::dev::run(action));
+    }
+
     // Handle build command early (like other daemon commands)
     if let Some(Commands::Build {
         force,
@@ -600,7 +732,9 @@ fn main() -> Result<()> {
         Some(
             Commands::Doctor
             | Commands::Bench { .. }
+            | Commands::Bundle { .. }
             | Commands::Daemon
+            | Commands::Dev { .. }
             | Commands::Ping
             | Commands::Run { .. }
             | Commands::Watch { .. }

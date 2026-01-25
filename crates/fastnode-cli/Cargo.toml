@@ -14,7 +14,7 @@ name = "fastnode"
 path = "src/compat.rs"
 
 [dependencies]
-fastnode-core.workspace = true
+fastnode-core = { workspace = true, features = ["swc"] }
 fastnode-daemon.workspace = true
 fastnode-proto.workspace = true
 fastnode-util.workspace = true
@@ -25,6 +25,8 @@ tracing-subscriber.workspace = true
 miette.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+axum.workspace = true
+notify.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

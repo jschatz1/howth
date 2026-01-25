@@ -143,40 +143,45 @@ fn strip_simple_types(source: &str) -> String {
 
     // Remove interface declarations (very naive)
     // interface Foo { ... }
-    let re_interface = regex_lite::Regex::new(r"(?m)^interface\s+\w+\s*\{[^}]*\}\s*").ok();
-    if let Some(re) = re_interface {
+    if let Ok(re) = regex_lite::Regex::new(r"(?m)^interface\s+\w+\s*\{[^}]*\}\s*") {
         result = re.replace_all(&result, "").to_string();
     }
 
     // Remove type declarations (very naive)
     // type Foo = ...;
-    let re_type = regex_lite::Regex::new(r"(?m)^type\s+\w+\s*=\s*[^;]+;\s*").ok();
-    if let Some(re) = re_type {
+    if let Ok(re) = regex_lite::Regex::new(r"(?m)^type\s+\w+\s*=\s*[^;]+;\s*") {
         result = re.replace_all(&result, "").to_string();
     }
 
-    // Remove simple type annotations like `: string`, `: number`
-    // This is extremely naive and won't handle complex types
-    let re_annotation = regex_lite::Regex::new(r":\s*\w+(?:\s*\[\s*\])?(?=\s*[=,);])").ok();
-    if let Some(re) = re_annotation {
-        result = re.replace_all(&result, "").to_string();
+    // Remove function return types: ): type { -> ) {
+    // Note: regex-lite doesn't support lookahead, so we capture and replace
+    if let Ok(re) = regex_lite::Regex::new(r"\)\s*:\s*\w+(\s*\[\s*\])?\s*\{") {
+        result = re.replace_all(&result, ") {").to_string();
     }
 
-    // Remove function return types
-    let re_return = regex_lite::Regex::new(r"\)\s*:\s*\w+(?:\s*\[\s*\])?(?=\s*\{)").ok();
-    if let Some(re) = re_return {
-        result = re.replace_all(&result, ")").to_string();
+    // Remove parameter type annotations: (a: type, -> (a,
+    // Simple approach: match param: type patterns
+    if let Ok(re) = regex_lite::Regex::new(r"(\w+)\s*:\s*\w+(\s*\[\s*\])?\s*,") {
+        result = re.replace_all(&result, "$1,").to_string();
+    }
+
+    // Remove last parameter type annotation: (a: type) -> (a)
+    if let Ok(re) = regex_lite::Regex::new(r"(\w+)\s*:\s*\w+(\s*\[\s*\])?\s*\)") {
+        result = re.replace_all(&result, "$1)").to_string();
+    }
+
+    // Remove variable type annotations: const x: type = -> const x =
+    if let Ok(re) = regex_lite::Regex::new(r"(const|let|var)\s+(\w+)\s*:\s*\w+(\s*\[\s*\])?\s*=") {
+        result = re.replace_all(&result, "$1 $2 =").to_string();
     }
 
     // Remove generic type parameters
-    let re_generic = regex_lite::Regex::new(r"<[^>]+>").ok();
-    if let Some(re) = re_generic {
+    if let Ok(re) = regex_lite::Regex::new(r"<[^>]+>") {
         result = re.replace_all(&result, "").to_string();
     }
 
     // Remove `as` type assertions
-    let re_as = regex_lite::Regex::new(r"\s+as\s+\w+").ok();
-    if let Some(re) = re_as {
+    if let Ok(re) = regex_lite::Regex::new(r"\s+as\s+\w+") {
         result = re.replace_all(&result, "").to_string();
     }
 

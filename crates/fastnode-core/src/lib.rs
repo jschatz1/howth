@@ -9,6 +9,7 @@
 
 pub mod bench;
 pub mod build;
+pub mod bundler;
 pub mod compiler;
 pub mod config;
 pub mod doctor;

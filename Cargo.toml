@@ -61,8 +61,8 @@ url = "2"
 # Bench
 criterion = { version = "0.5", features = ["html_reports"] }
 
-# Testing
-axum = "0.7"
+# Testing / Dev server
+axum = { version = "0.7", features = ["ws"] }
 
 # Internal crates
 fastnode-core = { path = "crates/fastnode-core" }
