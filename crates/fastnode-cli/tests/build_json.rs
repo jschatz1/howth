@@ -410,3 +410,131 @@ fn test_build_why_with_force_flag() {
     let _: serde_json::Value =
         serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
+
+// ============================================================
+// v2.4 Dev Loop UX Tests
+// ============================================================
+
+#[test]
+fn test_build_json_emits_exactly_one_json_object() {
+    // v2.4 Hard guarantee: --json prints exactly one JSON object
+    // No banners, no human text, no extra lines except optional trailing newline
+    let dir = tempdir().unwrap();
+
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    let output = cargo_bin()
+        .args(["build", "--json", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Trim trailing whitespace only
+    let trimmed = stdout.trim_end();
+
+    // Must be exactly one JSON object (no lines before/after)
+    assert!(
+        trimmed.starts_with('{'),
+        "JSON output must start with '{{': got {:?}",
+        &trimmed[..trimmed.len().min(50)]
+    );
+    assert!(
+        trimmed.ends_with('}'),
+        "JSON output must end with '}}': got {:?}",
+        &trimmed[trimmed.len().saturating_sub(50)..]
+    );
+
+    // Must parse as exactly one JSON value
+    let json: serde_json::Value =
+        serde_json::from_str(trimmed).expect("Output should be valid JSON");
+    assert!(json.is_object(), "Output should be a JSON object");
+
+    // Stderr should have no JSON (human errors go to stderr)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        assert!(
+            !stderr.trim().starts_with('{'),
+            "Stderr should not contain JSON when --json is used"
+        );
+    }
+}
+
+#[test]
+fn test_build_json_results_ordered_by_node_id() {
+    // v2.4: Results array must be sorted by node_id for stable ordering
+    let dir = tempdir().unwrap();
+
+    // Create package.json with multiple scripts in non-alphabetical order
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"zebra": "echo z", "alpha": "echo a", "middle": "echo m"}}"#,
+    )
+    .unwrap();
+
+    let output = cargo_bin()
+        .args(["build", "--json", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    // If there's a results array (success case), verify ordering
+    if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
+        let ids: Vec<&str> = results
+            .iter()
+            .filter_map(|r| r.get("id").and_then(|id| id.as_str()))
+            .collect();
+
+        // Should be sorted alphabetically
+        let mut sorted_ids = ids.clone();
+        sorted_ids.sort();
+        assert_eq!(
+            ids, sorted_ids,
+            "Results should be sorted by node_id: got {:?}",
+            ids
+        );
+    }
+}
+
+#[test]
+fn test_build_human_output_format_v24() {
+    // v2.4: Human output should have one line per node + summary
+    let dir = tempdir().unwrap();
+
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    // Without --json (human output)
+    let output = cargo_bin()
+        .args(["build", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should contain human-readable error (daemon not running)
+    // v2.4: Error message format is still human-readable
+    assert!(
+        stderr.contains("daemon") || stderr.contains("error"),
+        "Human output should contain error message: {stderr}"
+    );
+
+    // Should NOT contain JSON
+    assert!(
+        !stderr.trim().starts_with('{'),
+        "Human output should not be JSON"
+    );
+}

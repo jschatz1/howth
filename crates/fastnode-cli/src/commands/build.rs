@@ -181,79 +181,72 @@ fn handle_response(response: Response, json: bool, show_why: bool) -> Result<()>
 }
 
 fn print_human_output(result: &BuildRunResult, show_why: bool) {
-    // "Instant" UX: single checkmark on all cache hits (unless --why)
-    let all_cache_hits = result
-        .results
-        .iter()
-        .all(|r| r.cache == BuildCacheStatus::Hit);
+    // v2.4: One line per node, stable ordering (already sorted by node_id from daemon)
+    // Vocabulary: (cached) / (rebuilt) / (failed)
 
-    if all_cache_hits && result.ok && !show_why {
-        println!("\u{2714} build (cached)");
-        return;
-    }
+    // Collect nodes that need --why explanation (rebuilt or failed)
+    let mut why_nodes: Vec<(&str, &str)> = Vec::new();
 
-    // Show each node result
     for node_result in &result.results {
-        let status = if node_result.ok {
+        let (symbol, status_text) = if node_result.ok {
             match node_result.cache {
-                BuildCacheStatus::Hit => "\u{2714}",  // checkmark
-                BuildCacheStatus::Miss => "\u{2714}", // checkmark
-                BuildCacheStatus::Bypass => "\u{2714}",
-                BuildCacheStatus::Skipped => "-",
+                BuildCacheStatus::Hit => ("\u{2713}", "(cached)"),      // ✓
+                BuildCacheStatus::Miss => ("\u{2713}", "(rebuilt)"),    // ✓
+                BuildCacheStatus::Bypass => ("\u{2713}", "(rebuilt)"),  // forced = rebuilt
+                BuildCacheStatus::Skipped => ("-", "(skipped)"),
             }
         } else {
-            "\u{2718}" // X mark
+            ("\u{2717}", "(failed)") // ✗
         };
 
-        let cache_note = match node_result.cache {
-            BuildCacheStatus::Hit => " (cached)",
-            BuildCacheStatus::Miss => "",
-            BuildCacheStatus::Bypass => " (forced)",
-            BuildCacheStatus::Skipped => " (skipped)",
-        };
+        println!("{} {} {}", symbol, node_result.id, status_text);
 
-        let duration = if node_result.duration_ms > 0 {
-            format!(" [{:.2}s]", node_result.duration_ms as f64 / 1000.0)
-        } else {
-            String::new()
-        };
-
-        println!("{} {}{}{}", status, node_result.id, cache_note, duration);
-
-        // Show reason if --why flag is set (v2.3)
-        if show_why {
-            if let Some(ref reason) = node_result.reason {
-                println!("  reason: {}", reason.to_human_string());
-            }
-        }
-
-        // Show error if failed
+        // Show error details immediately for failed nodes
         if !node_result.ok {
             if let Some(error) = &node_result.error {
                 eprintln!("  error: {}: {}", error.code, error.message);
                 if let Some(detail) = &error.detail {
-                    // Show last few lines of detail (stderr)
                     for line in detail.lines().take(10) {
                         eprintln!("  | {}", line);
                     }
                 }
             }
         }
+
+        // Collect --why info for non-cached nodes
+        if show_why && node_result.cache != BuildCacheStatus::Hit {
+            if let Some(ref reason) = node_result.reason {
+                why_nodes.push((&node_result.id, reason.to_human_string()));
+            }
+        }
     }
 
-    // Summary
+    // Summary line (always)
+    println!();
+    let rebuilt = result.counts.executed;
+    let total = result.counts.total;
+    let duration_ms = result.summary.total_duration_ms;
+
     if result.ok {
-        println!(
-            "\nbuild succeeded ({} nodes, {} cached, {:.2}s)",
-            result.counts.total,
-            result.counts.cache_hits,
-            result.summary.total_duration_ms as f64 / 1000.0
-        );
+        if rebuilt == 0 {
+            println!("Rebuilt 0/{} targets (cached)", total);
+        } else {
+            println!("Rebuilt {}/{} targets ({}ms)", rebuilt, total, duration_ms);
+        }
     } else {
         println!(
-            "\nbuild failed ({}/{} nodes failed)",
-            result.counts.failed, result.counts.total
+            "Build failed: {}/{} targets failed",
+            result.counts.failed, total
         );
+    }
+
+    // --why explanation block (v2.3, separate from node lines)
+    if show_why && !why_nodes.is_empty() {
+        println!();
+        for (node_id, reason) in &why_nodes {
+            println!("{} rebuilt because:", node_id);
+            println!("  - {}", reason);
+        }
     }
 }
 
