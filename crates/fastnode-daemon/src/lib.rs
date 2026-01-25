@@ -177,17 +177,26 @@ pub fn handle_request(
             };
             (handle_pkg_doctor(opts, pkg_json_cache.as_ref()), false)
         }
-        // Build request (v2.0)
+        // Build request (v2.0, targets v2.1)
         Request::Build {
             cwd,
             force,
             dry_run,
             max_parallel,
             profile,
+            targets,
         } => {
             let build_cache = state.map(|s| s.build_cache.clone());
             (
-                handle_build(cwd, *force, *dry_run, *max_parallel, *profile, build_cache),
+                handle_build(
+                    cwd,
+                    *force,
+                    *dry_run,
+                    *max_parallel,
+                    *profile,
+                    targets,
+                    build_cache,
+                ),
                 false,
             )
         }
@@ -384,13 +393,14 @@ fn handle_watch_status(watcher: Option<&Arc<WatcherState>>) -> Response {
     }
 }
 
-/// Handle a `Build` request (v2.0).
+/// Handle a `Build` request (v2.0, targets v2.1).
 fn handle_build(
     cwd: &str,
     force: bool,
     dry_run: bool,
     max_parallel: u32,
     _profile: bool,
+    targets: &[String],
     build_cache: Option<Arc<DaemonBuildCache>>,
 ) -> Response {
     // Validate cwd
@@ -416,6 +426,31 @@ fn handle_build(
         }
     };
 
+    // Determine targets to build (v2.1)
+    let effective_targets: Vec<String> = if targets.is_empty() {
+        // Use defaults from graph
+        if graph.defaults.is_empty() {
+            return Response::error(
+                codes::BUILD_NO_DEFAULT_TARGETS,
+                "No targets specified and no default targets in graph",
+            );
+        }
+        graph.defaults.clone()
+    } else {
+        targets.to_vec()
+    };
+
+    // Plan the build (v2.1)
+    let plan = match graph.plan_targets(&effective_targets) {
+        Ok(p) => p,
+        Err(invalid_target) => {
+            return Response::error(
+                codes::BUILD_TARGET_INVALID,
+                format!("Invalid target: {invalid_target}"),
+            );
+        }
+    };
+
     // Set up execution options
     let options = ExecOptions {
         force,
@@ -429,19 +464,24 @@ fn handle_build(
     let mut wrapper_cache: Option<BuildCacheWrapper> =
         build_cache.as_ref().map(|c| BuildCacheWrapper(c.clone()));
 
-    // Execute the graph
+    // Execute only the planned nodes (filtered by targets)
+    // TODO: Use plan.nodes for filtered execution
+    // For now, execute the full graph but set requested_targets
     let result = match wrapper_cache.as_mut() {
         Some(cache) => execute_graph(&graph, Some(cache), &options),
         None => execute_graph(&graph, None, &options),
     };
 
     match result {
-        Ok(run_result) => {
+        Ok(mut run_result) => {
+            // Set the requested targets (v2.1)
+            run_result.set_targets(plan.requested_targets);
+
             // Register file dependencies with the build cache for invalidation
             if let Some(ref cache) = build_cache {
                 for node in &graph.nodes {
                     for input in &node.inputs {
-                        if let fastnode_core::build::BuildInput::File { path } = input {
+                        if let fastnode_core::build::BuildInput::File { path, .. } = input {
                             cache.add_file_dependency(&node.id, std::path::Path::new(path));
                         }
                     }
@@ -465,8 +505,26 @@ impl fastnode_core::build::BuildCache for BuildCacheWrapper {
         self.0.get(node_id, hash)
     }
 
+    fn get_entry(
+        &self,
+        node_id: &str,
+        hash: &str,
+    ) -> Option<fastnode_core::build::CacheEntry> {
+        self.0.get_entry(node_id, hash)
+    }
+
     fn set(&mut self, node_id: &str, hash: &str, ok: bool) {
         self.0.set(node_id, hash, ok);
+    }
+
+    fn set_with_fingerprint(
+        &mut self,
+        node_id: &str,
+        hash: &str,
+        ok: bool,
+        fingerprint: Option<fastnode_core::build::OutputFingerprint>,
+    ) {
+        self.0.set_with_fingerprint(node_id, hash, ok, fingerprint);
     }
 
     fn invalidate(&mut self, node_id: &str) {
@@ -499,6 +557,29 @@ fn convert_build_result(
             },
             hash: r.hash,
             duration_ms: r.duration_ms,
+            reason: r.reason.map(|reason| match reason {
+                fastnode_core::build::BuildNodeReason::CacheHit => {
+                    fastnode_proto::BuildNodeReason::CacheHit
+                }
+                fastnode_core::build::BuildNodeReason::Forced => {
+                    fastnode_proto::BuildNodeReason::Forced
+                }
+                fastnode_core::build::BuildNodeReason::InputChanged => {
+                    fastnode_proto::BuildNodeReason::InputChanged
+                }
+                fastnode_core::build::BuildNodeReason::DepChanged => {
+                    fastnode_proto::BuildNodeReason::DepChanged
+                }
+                fastnode_core::build::BuildNodeReason::DepFailed => {
+                    fastnode_proto::BuildNodeReason::DepFailed
+                }
+                fastnode_core::build::BuildNodeReason::FirstBuild => {
+                    fastnode_proto::BuildNodeReason::FirstBuild
+                }
+                fastnode_core::build::BuildNodeReason::OutputsChanged => {
+                    fastnode_proto::BuildNodeReason::OutputsChanged
+                }
+            }),
             error: r.error.map(|e| BuildErrorInfo {
                 code: e.code.to_string(),
                 message: e.message,

@@ -21,6 +21,10 @@ pub struct BuildAction {
     pub dry_run: bool,
     pub max_parallel: Option<u32>,
     pub profile: bool,
+    /// Show why each node was rebuilt (v2.3).
+    pub why: bool,
+    /// Targets to build (v2.1). Empty = use defaults.
+    pub targets: Vec<String>,
 }
 
 /// Build result for JSON output (matches protocol's BuildRunResult).
@@ -58,6 +62,9 @@ struct BuildNodeResultJson {
     cache: String,
     hash: String,
     duration_ms: u64,
+    /// Reason for the execution status (v2.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<BuildErrorJson>,
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -87,13 +94,14 @@ struct BuildErrorResult {
 /// Run the build command.
 pub fn run(action: BuildAction, channel: Channel, json: bool) -> Result<()> {
     let endpoint = paths::ipc_endpoint(channel);
+    let show_why = action.why;
 
     // Run the async client
     let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
     let result = runtime.block_on(async { send_build_request(&endpoint, &action).await });
 
     match result {
-        Ok((response, _server_version)) => handle_response(response, json),
+        Ok((response, _server_version)) => handle_response(response, json, show_why),
         Err(e) => {
             if json {
                 let result = BuildErrorResult {
@@ -116,7 +124,7 @@ pub fn run(action: BuildAction, channel: Channel, json: bool) -> Result<()> {
     }
 }
 
-fn handle_response(response: Response, json: bool) -> Result<()> {
+fn handle_response(response: Response, json: bool, show_why: bool) -> Result<()> {
     match response {
         Response::BuildResult { result } => {
             let ok = result.ok;
@@ -124,7 +132,7 @@ fn handle_response(response: Response, json: bool) -> Result<()> {
                 let json_result = convert_to_json(result);
                 println!("{}", serde_json::to_string(&json_result).unwrap());
             } else {
-                print_human_output(&result);
+                print_human_output(&result, show_why);
             }
 
             if ok {
@@ -172,14 +180,14 @@ fn handle_response(response: Response, json: bool) -> Result<()> {
     }
 }
 
-fn print_human_output(result: &BuildRunResult) {
-    // "Instant" UX: single checkmark on all cache hits
+fn print_human_output(result: &BuildRunResult, show_why: bool) {
+    // "Instant" UX: single checkmark on all cache hits (unless --why)
     let all_cache_hits = result
         .results
         .iter()
         .all(|r| r.cache == BuildCacheStatus::Hit);
 
-    if all_cache_hits && result.ok {
+    if all_cache_hits && result.ok && !show_why {
         println!("\u{2714} build (cached)");
         return;
     }
@@ -211,6 +219,13 @@ fn print_human_output(result: &BuildRunResult) {
         };
 
         println!("{} {}{}{}", status, node_result.id, cache_note, duration);
+
+        // Show reason if --why flag is set (v2.3)
+        if show_why {
+            if let Some(ref reason) = node_result.reason {
+                println!("  reason: {}", reason.to_human_string());
+            }
+        }
 
         // Show error if failed
         if !node_result.ok {
@@ -273,6 +288,7 @@ fn convert_to_json(result: BuildRunResult) -> BuildResultJson {
                 },
                 hash: r.hash,
                 duration_ms: r.duration_ms,
+                reason: r.reason.map(|reason| reason.to_human_string().to_string()),
                 error: r.error.map(|e| BuildErrorJson {
                     code: e.code,
                     message: e.message,
@@ -303,6 +319,7 @@ async fn send_build_request(
         dry_run: action.dry_run,
         max_parallel: action.max_parallel.unwrap_or_else(default_max_parallel),
         profile: action.profile,
+        targets: action.targets.clone(),
     };
 
     // Create and send request frame

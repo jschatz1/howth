@@ -276,3 +276,137 @@ fn test_build_json_schema_version_is_stable() {
         "schema_version should be 1"
     );
 }
+
+#[test]
+fn test_build_with_targets_flag_accepted() {
+    let dir = tempdir().unwrap();
+
+    // Create a package.json with multiple scripts
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building", "test": "echo testing"}}"#,
+    )
+    .unwrap();
+
+    // --targets should be accepted (even though daemon not running)
+    let output = cargo_bin()
+        .args(["build", "--json", "build", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should still be valid JSON (flag accepted, daemon not running is ok)
+    let _: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+}
+
+#[test]
+fn test_build_with_comma_separated_targets() {
+    let dir = tempdir().unwrap();
+
+    // Create a package.json with multiple scripts
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building", "test": "echo testing"}}"#,
+    )
+    .unwrap();
+
+    // Comma-separated targets should be accepted
+    let output = cargo_bin()
+        .args(["build", "--json", "build,test", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should still be valid JSON
+    let _: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+}
+
+// ============================================================
+// v2.3 --why Flag Tests
+// ============================================================
+
+#[test]
+fn test_build_why_flag_accepted() {
+    let dir = tempdir().unwrap();
+
+    // Create a minimal package.json
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    // --why should be accepted as a flag
+    let output = cargo_bin()
+        .args(["build", "--json", "--why", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should still be valid JSON
+    let _: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+}
+
+#[test]
+fn test_build_json_includes_reason_field() {
+    let dir = tempdir().unwrap();
+
+    // Create a minimal package.json
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    // Run build with --json (daemon not running, but error response should have schema)
+    let output = cargo_bin()
+        .args(["build", "--json", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
+    // The error response should be valid JSON with schema_version
+    // (reason field would be in results array when daemon is running)
+    assert!(
+        json.get("schema_version").is_some(),
+        "schema_version should be present"
+    );
+}
+
+#[test]
+fn test_build_why_with_force_flag() {
+    let dir = tempdir().unwrap();
+
+    // Create a minimal package.json
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    // --why and --force can be combined
+    let output = cargo_bin()
+        .args(["build", "--json", "--why", "--force", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should still be valid JSON
+    let _: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+}

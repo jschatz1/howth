@@ -1,11 +1,25 @@
 //! Build execution engine.
 //!
 //! Executes build nodes, respecting dependencies and caching.
+//!
+//! ## Cache with Output Fingerprinting (v2.2)
+//!
+//! The build cache stores both input hashes and output fingerprints:
+//! - When a node has declared outputs, a cache hit requires BOTH:
+//!   1. Input hash matches cached input hash
+//!   2. Output fingerprint matches cached output fingerprint
+//! - When no outputs are declared, only input hash is checked (legacy behavior)
+//!
+//! ## Build Reasons (v2.3)
+//!
+//! The `BuildNodeReason` enum explains why a node was rebuilt or skipped,
+//! enabling deterministic "why" explanations for debugging builds.
 
 use super::codes;
+use super::fingerprint::{compute_fingerprint, OutputFingerprint};
 use super::graph::{
-    BuildErrorInfo, BuildGraph, BuildNode, BuildNodeResult, BuildRunResult, CacheStatus,
-    MAX_OUTPUT_SIZE,
+    BuildErrorInfo, BuildGraph, BuildNode, BuildNodeReason, BuildNodeResult, BuildRunResult,
+    CacheStatus, MAX_OUTPUT_SIZE,
 };
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
@@ -61,13 +75,63 @@ fn num_cpus() -> usize {
         .clamp(1, 64)
 }
 
+/// Cache entry with fingerprint support (v2.2).
+#[derive(Debug, Clone)]
+pub struct CacheEntry {
+    /// Input hash.
+    pub hash: String,
+    /// Whether the build succeeded.
+    pub ok: bool,
+    /// Output fingerprint (None if no outputs declared).
+    pub fingerprint: Option<OutputFingerprint>,
+}
+
+impl CacheEntry {
+    /// Create a new cache entry without fingerprint (legacy).
+    #[must_use]
+    pub fn new(hash: &str, ok: bool) -> Self {
+        Self {
+            hash: hash.to_string(),
+            ok,
+            fingerprint: None,
+        }
+    }
+
+    /// Create a new cache entry with fingerprint.
+    #[must_use]
+    pub fn with_fingerprint(hash: &str, ok: bool, fingerprint: Option<OutputFingerprint>) -> Self {
+        Self {
+            hash: hash.to_string(),
+            ok,
+            fingerprint,
+        }
+    }
+}
+
 /// Cache interface for build results.
 pub trait BuildCache {
     /// Check if a node hash is cached and was successful.
+    ///
+    /// Returns `Some(true)` if cached and successful, `Some(false)` if cached and failed,
+    /// `None` if not cached or hash doesn't match.
     fn get(&self, node_id: &str, hash: &str) -> Option<bool>;
+
+    /// Get the full cache entry for a node.
+    ///
+    /// Returns the entry if the hash matches, None otherwise.
+    fn get_entry(&self, node_id: &str, hash: &str) -> Option<CacheEntry>;
 
     /// Store a result for a node.
     fn set(&mut self, node_id: &str, hash: &str, ok: bool);
+
+    /// Store a result with fingerprint for a node (v2.2).
+    fn set_with_fingerprint(
+        &mut self,
+        node_id: &str,
+        hash: &str,
+        ok: bool,
+        fingerprint: Option<OutputFingerprint>,
+    );
 
     /// Invalidate cache for a node.
     fn invalidate(&mut self, node_id: &str);
@@ -76,11 +140,11 @@ pub trait BuildCache {
     fn clear(&mut self);
 }
 
-/// In-memory build cache.
+/// In-memory build cache with fingerprint support (v2.2).
 #[derive(Debug, Default)]
 pub struct MemoryCache {
-    /// Map of node_id -> (hash, ok)
-    entries: HashMap<String, (String, bool)>,
+    /// Map of node_id -> CacheEntry
+    entries: HashMap<String, CacheEntry>,
 }
 
 impl MemoryCache {
@@ -89,18 +153,45 @@ impl MemoryCache {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Get an entry directly (for testing).
+    #[cfg(test)]
+    pub fn get_raw(&self, node_id: &str) -> Option<&CacheEntry> {
+        self.entries.get(node_id)
+    }
 }
 
 impl BuildCache for MemoryCache {
     fn get(&self, node_id: &str, hash: &str) -> Option<bool> {
         self.entries
             .get(node_id)
-            .filter(|(cached_hash, _)| cached_hash == hash)
-            .map(|(_, ok)| *ok)
+            .filter(|entry| entry.hash == hash)
+            .map(|entry| entry.ok)
+    }
+
+    fn get_entry(&self, node_id: &str, hash: &str) -> Option<CacheEntry> {
+        self.entries
+            .get(node_id)
+            .filter(|entry| entry.hash == hash)
+            .cloned()
     }
 
     fn set(&mut self, node_id: &str, hash: &str, ok: bool) {
-        self.entries.insert(node_id.to_string(), (hash.to_string(), ok));
+        self.entries
+            .insert(node_id.to_string(), CacheEntry::new(hash, ok));
+    }
+
+    fn set_with_fingerprint(
+        &mut self,
+        node_id: &str,
+        hash: &str,
+        ok: bool,
+        fingerprint: Option<OutputFingerprint>,
+    ) {
+        self.entries.insert(
+            node_id.to_string(),
+            CacheEntry::with_fingerprint(hash, ok, fingerprint),
+        );
     }
 
     fn invalidate(&mut self, node_id: &str) {
@@ -186,6 +277,21 @@ pub fn run_script(command: &str, cwd: &Path) -> io::Result<ScriptOutput> {
 }
 
 /// Execute a single build node.
+///
+/// ## Cache with Fingerprint Verification (v2.2)
+///
+/// When a node has declared outputs:
+/// 1. Input hash must match cached input hash
+/// 2. Output fingerprint must match cached output fingerprint
+///
+/// When no outputs are declared, only input hash is checked.
+///
+/// ## Build Reasons (v2.3)
+///
+/// The function tracks why a node was rebuilt:
+/// - `Forced`: --force flag was used
+/// - `FirstBuild`: No cache entry existed
+/// - `OutputsChanged`: Fingerprint mismatch (outputs modified externally)
 pub fn execute_node(
     node: &BuildNode,
     cwd: &Path,
@@ -193,20 +299,47 @@ pub fn execute_node(
     cache: Option<&mut dyn BuildCache>,
     options: &ExecOptions,
 ) -> BuildNodeResult {
+    let has_outputs = !node.outputs.is_empty();
+
+    // Track reason for rebuild (v2.3)
+    let mut rebuild_reason = BuildNodeReason::FirstBuild; // Default: cache cold
+
     // Check cache unless force
-    if !options.force {
-        if let Some(cache) = cache.as_ref() {
-            if let Some(ok) = cache.get(&node.id, hash) {
-                if ok {
+    if options.force {
+        rebuild_reason = BuildNodeReason::Forced;
+    } else if let Some(cache) = cache.as_ref() {
+        if let Some(entry) = cache.get_entry(&node.id, hash) {
+            if entry.ok {
+                // v2.2: If outputs are declared, verify fingerprint matches
+                if has_outputs {
+                    // Compute current output fingerprint
+                    let current_fingerprint = compute_fingerprint(&node.outputs, cwd).ok();
+
+                    // Check if fingerprint matches cached
+                    let fingerprint_matches = match (&current_fingerprint, &entry.fingerprint) {
+                        (Some(Some(current)), Some(cached)) => current.hash == cached.hash,
+                        (Some(None), None) => true, // Both have no outputs
+                        _ => false,
+                    };
+
+                    if fingerprint_matches {
+                        return BuildNodeResult::cache_hit(&node.id, hash);
+                    }
+                    // Fingerprint mismatch - need to rebuild
+                    rebuild_reason = BuildNodeReason::OutputsChanged;
+                } else {
+                    // No outputs declared - legacy behavior
                     return BuildNodeResult::cache_hit(&node.id, hash);
                 }
             }
+            // Entry exists but failed - rebuild
         }
+        // No cache entry - FirstBuild (already set)
     }
 
     // Dry run - don't execute
     if options.dry_run {
-        let mut result = BuildNodeResult::cache_miss(&node.id, hash, 0);
+        let mut result = BuildNodeResult::cache_miss_with_reason(&node.id, hash, 0, rebuild_reason);
         result.cache = if options.force {
             CacheStatus::Bypass
         } else {
@@ -271,7 +404,7 @@ pub fn execute_node(
             CacheStatus::Miss
         };
 
-        // Update cache with failure
+        // Update cache with failure (no fingerprint for failures)
         if let Some(cache) = cache {
             cache.set(&node.id, hash, false);
         }
@@ -279,8 +412,17 @@ pub fn execute_node(
         return result;
     }
 
-    // Success
-    let mut result = BuildNodeResult::cache_miss(&node.id, hash, duration_ms);
+    // Success - compute output fingerprint if outputs are declared
+    let fingerprint = if has_outputs {
+        compute_fingerprint(&node.outputs, cwd)
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
+    let mut result =
+        BuildNodeResult::cache_miss_with_reason(&node.id, hash, duration_ms, rebuild_reason);
     result.stdout_truncated = output.stdout_truncated;
     result.stderr_truncated = output.stderr_truncated;
     result.cache = if options.force {
@@ -289,9 +431,9 @@ pub fn execute_node(
         CacheStatus::Miss
     };
 
-    // Update cache
+    // Update cache with fingerprint
     if let Some(cache) = cache {
-        cache.set(&node.id, hash, true);
+        cache.set_with_fingerprint(&node.id, hash, true, fingerprint);
     }
 
     result
@@ -473,7 +615,7 @@ mod tests {
         };
         let node = BuildNode::script("build", cmd);
         graph.add_node(node);
-        graph.add_entrypoint("script:build");
+        graph.add_default("script:build");
         graph.normalize();
 
         let options = ExecOptions::new();
@@ -501,7 +643,7 @@ mod tests {
         node2.deps = vec!["script:first".to_string()];
         graph.add_node(node2);
 
-        graph.add_entrypoint("script:second");
+        graph.add_default("script:second");
         graph.normalize();
 
         let options = ExecOptions::new();
@@ -513,5 +655,264 @@ mod tests {
         let second_result = result.results.iter().find(|r| r.id == "script:second").unwrap();
         assert!(!second_result.ok);
         assert_eq!(second_result.cache, CacheStatus::Skipped);
+    }
+
+    // ============================================================
+    // v2.2 Output Fingerprinting Tests
+    // ============================================================
+
+    use super::super::graph::BuildOutput;
+
+    #[test]
+    fn test_cache_entry_with_fingerprint() {
+        let mut cache = MemoryCache::new();
+
+        // Create entry with fingerprint
+        let fingerprint = OutputFingerprint {
+            schema_version: 1,
+            hash: "abc123".to_string(),
+            output_count: 2,
+            total_size: 1024,
+        };
+
+        cache.set_with_fingerprint("node1", "hash1", true, Some(fingerprint.clone()));
+
+        // Get entry should return full entry
+        let entry = cache.get_entry("node1", "hash1").unwrap();
+        assert!(entry.ok);
+        assert_eq!(entry.hash, "hash1");
+        assert!(entry.fingerprint.is_some());
+        assert_eq!(entry.fingerprint.as_ref().unwrap().hash, "abc123");
+    }
+
+    #[test]
+    fn test_fingerprint_cache_hit_when_outputs_unchanged() {
+        let dir = tempdir().unwrap();
+        let output_file = dir.path().join("output.txt");
+
+        // Create a node with outputs
+        let mut node = BuildNode::script("build", "echo built > output.txt");
+        node.outputs.push(BuildOutput::file("output.txt"));
+
+        // First execution - creates the output file
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        let result1 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result1.ok);
+        assert_eq!(result1.cache, CacheStatus::Miss);
+
+        // Verify output file exists
+        assert!(output_file.exists());
+
+        // Second execution - should be cache hit (outputs unchanged)
+        let result2 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result2.ok);
+        assert_eq!(result2.cache, CacheStatus::Hit);
+    }
+
+    #[test]
+    fn test_fingerprint_cache_miss_when_outputs_modified() {
+        let dir = tempdir().unwrap();
+        let output_file = dir.path().join("output.txt");
+
+        // Create a node with outputs
+        let mut node = BuildNode::script("build", "echo built > output.txt");
+        node.outputs.push(BuildOutput::file("output.txt"));
+
+        // First execution - creates the output file
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        let result1 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result1.ok);
+        assert_eq!(result1.cache, CacheStatus::Miss);
+
+        // Modify the output file (simulate external modification)
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&output_file, "modified content").unwrap();
+
+        // Second execution - should be cache miss (fingerprint changed)
+        let result2 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result2.ok);
+        assert_eq!(result2.cache, CacheStatus::Miss);
+    }
+
+    #[test]
+    fn test_fingerprint_cache_miss_when_outputs_deleted() {
+        let dir = tempdir().unwrap();
+        let output_file = dir.path().join("output.txt");
+
+        // Create a node with outputs
+        let mut node = BuildNode::script("build", "echo built > output.txt");
+        node.outputs.push(BuildOutput::file("output.txt"));
+
+        // First execution - creates the output file
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        let result1 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result1.ok);
+        assert_eq!(result1.cache, CacheStatus::Miss);
+
+        // Delete the output file
+        std::fs::remove_file(&output_file).unwrap();
+
+        // Second execution - should be cache miss (output deleted)
+        let result2 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result2.ok);
+        assert_eq!(result2.cache, CacheStatus::Miss);
+    }
+
+    #[test]
+    fn test_legacy_cache_hit_without_outputs() {
+        let dir = tempdir().unwrap();
+
+        // Create a node WITHOUT outputs (legacy behavior)
+        let node = BuildNode::script("build", "echo built");
+
+        // First execution
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        let result1 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result1.ok);
+        assert_eq!(result1.cache, CacheStatus::Miss);
+
+        // Second execution - should be cache hit (no fingerprint check needed)
+        let result2 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result2.ok);
+        assert_eq!(result2.cache, CacheStatus::Hit);
+    }
+
+    #[test]
+    fn test_fingerprint_stored_after_successful_build() {
+        let dir = tempdir().unwrap();
+
+        // Create a node with outputs
+        let mut node = BuildNode::script("build", "echo built > output.txt");
+        node.outputs.push(BuildOutput::file("output.txt"));
+
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+
+        // Verify fingerprint was stored
+        let entry = cache.get_raw("script:build").unwrap();
+        assert!(entry.fingerprint.is_some());
+        let fp = entry.fingerprint.as_ref().unwrap();
+        assert_eq!(fp.schema_version, 1);
+        assert_eq!(fp.output_count, 1);
+    }
+
+    // ============================================================
+    // v2.3 Build Reason Tests
+    // ============================================================
+
+    use super::super::graph::BuildNodeReason;
+
+    #[test]
+    fn test_reason_first_build_on_cache_cold() {
+        let dir = tempdir().unwrap();
+
+        let node = BuildNode::script("build", "echo built");
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        // First execution - cache is cold
+        let result = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result.ok);
+        assert_eq!(result.reason, Some(BuildNodeReason::FirstBuild));
+    }
+
+    #[test]
+    fn test_reason_forced_on_force_flag() {
+        let dir = tempdir().unwrap();
+
+        let node = BuildNode::script("build", "echo built");
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+
+        // Pre-populate cache
+        cache.set(&node.id, hash, true);
+
+        // Execute with --force
+        let options = ExecOptions::new().with_force(true);
+        let result = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+
+        assert!(result.ok);
+        assert_eq!(result.reason, Some(BuildNodeReason::Forced));
+        assert_eq!(result.cache, CacheStatus::Bypass);
+    }
+
+    #[test]
+    fn test_reason_outputs_changed_on_fingerprint_mismatch() {
+        let dir = tempdir().unwrap();
+        let output_file = dir.path().join("output.txt");
+
+        // Create a node with outputs
+        let mut node = BuildNode::script("build", "echo built > output.txt");
+        node.outputs.push(BuildOutput::file("output.txt"));
+
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        // First execution
+        let result1 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result1.ok);
+        assert_eq!(result1.reason, Some(BuildNodeReason::FirstBuild));
+
+        // Modify the output file
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&output_file, "modified content").unwrap();
+
+        // Second execution - should show OutputsChanged reason
+        let result2 = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result2.ok);
+        assert_eq!(result2.reason, Some(BuildNodeReason::OutputsChanged));
+    }
+
+    #[test]
+    fn test_reason_cache_hit() {
+        let dir = tempdir().unwrap();
+
+        let node = BuildNode::script("build", "echo built");
+        let hash = "abc123";
+        let mut cache = MemoryCache::new();
+        let options = ExecOptions::new();
+
+        // First execution
+        let _ = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+
+        // Second execution - cache hit
+        let result = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        assert!(result.ok);
+        assert_eq!(result.cache, CacheStatus::Hit);
+        assert_eq!(result.reason, Some(BuildNodeReason::CacheHit));
+    }
+
+    #[test]
+    fn test_reason_human_readable() {
+        assert_eq!(
+            BuildNodeReason::FirstBuild.to_human_string(),
+            "first build (cache cold)"
+        );
+        assert_eq!(
+            BuildNodeReason::Forced.to_human_string(),
+            "forced rebuild (--force)"
+        );
+        assert_eq!(
+            BuildNodeReason::OutputsChanged.to_human_string(),
+            "outputs changed (fingerprint mismatch)"
+        );
+        assert_eq!(BuildNodeReason::CacheHit.to_human_string(), "cache hit");
     }
 }

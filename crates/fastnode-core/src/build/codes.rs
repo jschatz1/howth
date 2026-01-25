@@ -26,6 +26,12 @@ pub const BUILD_PACKAGE_JSON_INVALID: &str = "BUILD_PACKAGE_JSON_INVALID";
 /// Package.json not found.
 pub const BUILD_PACKAGE_JSON_NOT_FOUND: &str = "BUILD_PACKAGE_JSON_NOT_FOUND";
 
+/// Invalid build target specified (v2.1).
+pub const BUILD_TARGET_INVALID: &str = "BUILD_TARGET_INVALID";
+
+/// No targets specified and no defaults in graph (v2.1).
+pub const BUILD_NO_DEFAULT_TARGETS: &str = "BUILD_NO_DEFAULT_TARGETS";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,6 +47,8 @@ mod tests {
             BUILD_GRAPH_INTERNAL_ERROR,
             BUILD_PACKAGE_JSON_INVALID,
             BUILD_PACKAGE_JSON_NOT_FOUND,
+            BUILD_TARGET_INVALID,
+            BUILD_NO_DEFAULT_TARGETS,
         ];
 
         for code in codes {

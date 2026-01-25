@@ -240,16 +240,27 @@ fn encode_input(input: &BuildInput) -> Vec<u8> {
     let mut buf = Vec::new();
 
     match input {
-        BuildInput::File { path } => {
+        BuildInput::File { path, optional } => {
             buf.extend_from_slice(b"file\0");
             buf.extend_from_slice(path.as_bytes());
             buf.push(0);
+            buf.extend_from_slice(if *optional { b"optional" } else { b"required" });
+            buf.push(0);
         }
-        BuildInput::Glob { pattern, root } => {
+        BuildInput::Glob { pattern, root, optional } => {
             buf.extend_from_slice(b"glob\0");
             buf.extend_from_slice(pattern.as_bytes());
             buf.push(0);
             buf.extend_from_slice(root.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(if *optional { b"optional" } else { b"required" });
+            buf.push(0);
+        }
+        BuildInput::Dir { path, optional } => {
+            buf.extend_from_slice(b"dir\0");
+            buf.extend_from_slice(path.as_bytes());
+            buf.push(0);
+            buf.extend_from_slice(if *optional { b"optional" } else { b"required" });
             buf.push(0);
         }
         BuildInput::Package { name, version } => {
@@ -271,6 +282,11 @@ fn encode_input(input: &BuildInput) -> Vec<u8> {
             buf.extend_from_slice(key.as_bytes());
             buf.push(0);
         }
+        BuildInput::Node { id } => {
+            buf.extend_from_slice(b"node\0");
+            buf.extend_from_slice(id.as_bytes());
+            buf.push(0);
+        }
     }
 
     buf
@@ -279,7 +295,7 @@ fn encode_input(input: &BuildInput) -> Vec<u8> {
 /// Hash a single build input.
 pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
     match input {
-        BuildInput::File { path } => {
+        BuildInput::File { path, optional } => {
             let full_path = if Path::new(path).is_absolute() {
                 PathBuf::from(path)
             } else {
@@ -288,19 +304,43 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
 
             if full_path.exists() {
                 hash_file(&full_path)
+            } else if *optional {
+                // Optional missing file - stable marker
+                Ok(hash_string(&format!("optional-missing:{}", normalize_path(&full_path))))
             } else {
-                // Missing file - include marker in hash
+                // Required missing file - include marker in hash
                 Ok(hash_string(&format!("missing:{}", normalize_path(&full_path))))
             }
         }
-        BuildInput::Glob { pattern, root } => {
+        BuildInput::Glob { pattern, root, optional } => {
             let root_path = if Path::new(root).is_absolute() {
                 PathBuf::from(root)
             } else {
                 cwd.join(root)
             };
 
+            if !root_path.exists() && *optional {
+                // Optional glob with missing root - stable marker
+                return Ok(hash_string(&format!("optional-missing-glob:{}", normalize_path(&root_path))));
+            }
+
             hash_glob(pattern, &root_path, DEFAULT_GLOB_EXCLUSIONS)
+        }
+        BuildInput::Dir { path, optional } => {
+            let full_path = if Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                cwd.join(path)
+            };
+
+            if full_path.exists() && full_path.is_dir() {
+                // Hash directory contents as glob
+                hash_glob("**/*", &full_path, DEFAULT_GLOB_EXCLUSIONS)
+            } else if *optional {
+                Ok(hash_string(&format!("optional-missing-dir:{}", normalize_path(&full_path))))
+            } else {
+                Ok(hash_string(&format!("missing-dir:{}", normalize_path(&full_path))))
+            }
         }
         BuildInput::Package { name, version } => {
             Ok(hash_string(&format!(
@@ -326,10 +366,39 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
             let value = std::env::var(key).unwrap_or_default();
             Ok(hash_string(&format!("env:{}={}", key, value)))
         }
+        BuildInput::Node { id } => {
+            // Node inputs are handled separately in hash_input_with_deps
+            // This fallback is for backwards compatibility
+            Ok(hash_string(&format!("node:{}", id)))
+        }
     }
 }
 
-/// Compute the hash for a build node.
+/// Hash a single build input with dependency hash resolution.
+///
+/// For `BuildInput::Node` inputs, looks up the actual hash of the dependency
+/// from the provided map. This enables cache invalidation propagation.
+pub fn hash_input_with_deps(
+    input: &BuildInput,
+    cwd: &Path,
+    dep_hashes: &BTreeMap<String, String>,
+) -> HashResult<String> {
+    match input {
+        BuildInput::Node { id } => {
+            // Look up the actual hash of the dependency node
+            if let Some(dep_hash) = dep_hashes.get(id) {
+                Ok(hash_string(&format!("dep:{}:{}", id, dep_hash)))
+            } else {
+                // Dependency not yet computed - use placeholder
+                Ok(hash_string(&format!("node:{}", id)))
+            }
+        }
+        // All other inputs delegate to the base function
+        other => hash_input(other, cwd),
+    }
+}
+
+/// Compute the hash for a build node (without dependency hash inclusion).
 ///
 /// The hash is computed from:
 /// - Schema version
@@ -339,7 +408,25 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
 /// - Environment hash
 /// - Script specification
 /// - Dependencies
+///
+/// For dep-hash inclusion (v2.1), use `hash_node_with_deps` instead.
 pub fn hash_node(node: &BuildNode, cwd: &Path) -> HashResult<String> {
+    hash_node_with_deps(node, cwd, &BTreeMap::new())
+}
+
+/// Compute the hash for a build node with dependency hash inclusion (v2.1).
+///
+/// For `BuildInput::Node` inputs, substitutes the actual hash of the dependency
+/// from the provided map. This enables cache invalidation to propagate through
+/// the DAG - when a dependency changes, all dependents also get new hashes.
+///
+/// The `dep_hashes` map should contain the already-computed hashes of all
+/// dependency nodes. Compute hashes in topological order to build this map.
+pub fn hash_node_with_deps(
+    node: &BuildNode,
+    cwd: &Path,
+    dep_hashes: &BTreeMap<String, String>,
+) -> HashResult<String> {
     let mut hasher = Hasher::new();
 
     // Schema version
@@ -358,10 +445,11 @@ pub fn hash_node(node: &BuildNode, cwd: &Path) -> HashResult<String> {
     hasher.update(b"\0");
 
     // Inputs (sorted by canonical encoding)
+    // Use hash_input_with_deps to include dependency hashes
     let mut input_hashes: Vec<(Vec<u8>, String)> = Vec::new();
     for input in &node.inputs {
         let encoded = encode_input(input);
-        let hash = hash_input(input, cwd)?;
+        let hash = hash_input_with_deps(input, cwd, dep_hashes)?;
         input_hashes.push((encoded, hash));
     }
     // Sort by encoding for determinism
@@ -390,26 +478,45 @@ pub fn hash_node(node: &BuildNode, cwd: &Path) -> HashResult<String> {
         hasher.update(b"\0");
     }
 
-    // Dependencies (sorted)
+    // Dependencies (sorted) - include dep hashes for additional invalidation
     let mut deps = node.deps.clone();
     deps.sort();
     hasher.update(b"deps:");
     for dep in &deps {
         hasher.update(dep.as_bytes());
+        hasher.update(b":");
+        // Include the dependency's hash if available
+        if let Some(dep_hash) = dep_hashes.get(dep) {
+            hasher.update(dep_hash.as_bytes());
+        }
         hasher.update(b"\0");
     }
 
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-/// Compute hashes for all nodes in a graph.
+/// Compute hashes for all nodes in a graph (v2.1 with dep-hash inclusion).
+///
+/// Computes hashes in topological order so that dependency hashes are
+/// available when computing each node's hash. This ensures cache invalidation
+/// propagates correctly through the DAG.
 pub fn hash_graph(graph: &super::graph::BuildGraph) -> HashResult<BTreeMap<String, String>> {
     let cwd = Path::new(&graph.cwd);
     let mut hashes = BTreeMap::new();
 
-    for node in &graph.nodes {
-        let hash = hash_node(node, cwd)?;
-        hashes.insert(node.id.clone(), hash);
+    // Get nodes in topological order (dependencies first)
+    let sorted_ids = graph.toposort();
+
+    // Build a map from id to node for fast lookup
+    let node_map: BTreeMap<&str, &super::graph::BuildNode> =
+        graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+
+    // Compute hashes in topological order
+    for id in sorted_ids {
+        if let Some(node) = node_map.get(id) {
+            let hash = hash_node_with_deps(node, cwd, &hashes)?;
+            hashes.insert(id.to_string(), hash);
+        }
     }
 
     Ok(hashes)
@@ -417,6 +524,7 @@ pub fn hash_graph(graph: &super::graph::BuildGraph) -> HashResult<BTreeMap<Strin
 
 #[cfg(test)]
 mod tests {
+    use super::super::graph::BuildGraph;
     use super::*;
     use tempfile::tempdir;
 
@@ -566,5 +674,97 @@ mod tests {
 
         // Should not error, but include "missing" marker
         assert!(!hash.is_empty());
+    }
+
+    #[test]
+    fn test_hash_node_with_deps_includes_dep_hash() {
+        
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+
+        // Create a node with a dependency
+        let mut node = BuildNode::script("test", "npm test");
+        node.add_dep("script:build");
+
+        // Hash without dep hashes
+        let hash_no_deps = hash_node(&node, dir.path()).unwrap();
+
+        // Hash with dep hashes
+        let mut dep_hashes = BTreeMap::new();
+        dep_hashes.insert("script:build".to_string(), "abc123".to_string());
+
+        let hash_with_deps = hash_node_with_deps(&node, dir.path(), &dep_hashes).unwrap();
+
+        // Should be different because dep hash is included
+        assert_ne!(hash_no_deps, hash_with_deps);
+    }
+
+    #[test]
+    fn test_hash_graph_with_dependencies_propagates() {
+        
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+
+        let mut graph = BuildGraph::new(dir.path().to_string_lossy().to_string());
+
+        // Build depends on nothing
+        let build_node = BuildNode::script("build", "echo build");
+        graph.add_node(build_node);
+
+        // Test depends on build
+        let mut test_node = BuildNode::script("test", "echo test");
+        test_node.add_dep("script:build");
+        graph.add_node(test_node);
+
+        graph.normalize();
+
+        // Compute hashes
+        let hashes = hash_graph(&graph).unwrap();
+
+        assert!(hashes.contains_key("script:build"));
+        assert!(hashes.contains_key("script:test"));
+
+        // Both should have valid hashes
+        assert_eq!(hashes["script:build"].len(), 64);
+        assert_eq!(hashes["script:test"].len(), 64);
+    }
+
+    #[test]
+    fn test_dep_hash_changes_when_dependency_changes() {
+        
+        let dir = tempdir().unwrap();
+        let pkg_json = dir.path().join("package.json");
+        std::fs::write(&pkg_json, "{}").unwrap();
+
+        let mut graph = BuildGraph::new(dir.path().to_string_lossy().to_string());
+
+        // Build node with package.json input
+        let mut build_node = BuildNode::script("build", "echo build");
+        build_node.add_input(BuildInput::file(pkg_json.to_string_lossy().to_string()));
+        graph.add_node(build_node);
+
+        // Test depends on build
+        let mut test_node = BuildNode::script("test", "echo test");
+        test_node.add_dep("script:build");
+        graph.add_node(test_node);
+
+        graph.normalize();
+
+        // Get initial hashes
+        let hashes1 = hash_graph(&graph).unwrap();
+        let test_hash1 = hashes1["script:test"].clone();
+
+        // Modify the file that build depends on
+        std::fs::write(&pkg_json, "{\"name\": \"changed\"}").unwrap();
+
+        // Get new hashes
+        let hashes2 = hash_graph(&graph).unwrap();
+        let test_hash2 = hashes2["script:test"].clone();
+
+        // Build hash should change
+        assert_ne!(hashes1["script:build"], hashes2["script:build"]);
+
+        // Test hash should ALSO change (dep-hash propagation)
+        assert_ne!(test_hash1, test_hash2);
     }
 }

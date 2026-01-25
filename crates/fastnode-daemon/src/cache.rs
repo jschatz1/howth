@@ -3,7 +3,7 @@
 //! Provides thread-safe caches for resolver results and build results
 //! with support for file-based invalidation via reverse index.
 
-use fastnode_core::build::{BuildCache, MemoryCache};
+use fastnode_core::build::{BuildCache, CacheEntry, MemoryCache, OutputFingerprint};
 use fastnode_core::resolver::{
     CachedResolveResult, FileStamp, PkgJsonCache, PkgJsonStamp, ResolveResult, ResolveStatus,
     ResolverCache, ResolverCacheKey,
@@ -295,10 +295,28 @@ impl DaemonBuildCache {
         cache.get(node_id, hash)
     }
 
+    /// Get the full cache entry for a node (v2.2).
+    pub fn get_entry(&self, node_id: &str, hash: &str) -> Option<CacheEntry> {
+        let cache = self.cache.read().unwrap();
+        cache.get_entry(node_id, hash)
+    }
+
     /// Store a result for a node.
     pub fn set(&self, node_id: &str, hash: &str, ok: bool) {
         let mut cache = self.cache.write().unwrap();
         cache.set(node_id, hash, ok);
+    }
+
+    /// Store a result with fingerprint for a node (v2.2).
+    pub fn set_with_fingerprint(
+        &self,
+        node_id: &str,
+        hash: &str,
+        ok: bool,
+        fingerprint: Option<OutputFingerprint>,
+    ) {
+        let mut cache = self.cache.write().unwrap();
+        cache.set_with_fingerprint(node_id, hash, ok, fingerprint);
     }
 
     /// Add a file path to the reverse index for a node.

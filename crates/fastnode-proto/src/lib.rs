@@ -121,6 +121,10 @@ pub mod codes {
     pub const BUILD_GRAPH_INTERNAL_ERROR: &str = "BUILD_GRAPH_INTERNAL_ERROR";
     pub const BUILD_PACKAGE_JSON_INVALID: &str = "BUILD_PACKAGE_JSON_INVALID";
     pub const BUILD_PACKAGE_JSON_NOT_FOUND: &str = "BUILD_PACKAGE_JSON_NOT_FOUND";
+
+    // v2.1: build target error codes
+    pub const BUILD_TARGET_INVALID: &str = "BUILD_TARGET_INVALID";
+    pub const BUILD_NO_DEFAULT_TARGETS: &str = "BUILD_NO_DEFAULT_TARGETS";
 }
 
 /// Resolver reason codes for unresolved imports.
@@ -327,7 +331,7 @@ pub enum Request {
         include_optional: bool,
     },
 
-    /// Execute a build (v2.0).
+    /// Execute a build (v2.0, targets in v2.1).
     Build {
         /// Working directory (project root with package.json).
         cwd: String,
@@ -343,6 +347,9 @@ pub enum Request {
         /// Include profiling information.
         #[serde(default)]
         profile: bool,
+        /// Target nodes to build (v2.1). Empty = use defaults.
+        #[serde(default)]
+        targets: Vec<String>,
     },
 }
 
@@ -977,6 +984,42 @@ pub enum BuildCacheStatus {
     Skipped,
 }
 
+/// Reason why a build node was executed or skipped (v2.3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildNodeReason {
+    /// Node was served from cache.
+    CacheHit,
+    /// Forced rebuild (--force).
+    Forced,
+    /// Input files changed.
+    InputChanged,
+    /// A dependency changed.
+    DepChanged,
+    /// Dependency failed, node skipped.
+    DepFailed,
+    /// First build (no cache entry).
+    FirstBuild,
+    /// Output fingerprint mismatch (v2.2+).
+    OutputsChanged,
+}
+
+impl BuildNodeReason {
+    /// Get a human-readable description.
+    #[must_use]
+    pub fn to_human_string(&self) -> &'static str {
+        match self {
+            Self::CacheHit => "cache hit",
+            Self::Forced => "forced rebuild (--force)",
+            Self::InputChanged => "inputs changed",
+            Self::DepChanged => "dependency changed",
+            Self::DepFailed => "dependency failed",
+            Self::FirstBuild => "first build (cache cold)",
+            Self::OutputsChanged => "outputs changed (fingerprint mismatch)",
+        }
+    }
+}
+
 /// Result of executing a single build node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildNodeResult {
@@ -990,6 +1033,9 @@ pub struct BuildNodeResult {
     pub hash: String,
     /// Execution duration in milliseconds.
     pub duration_ms: u64,
+    /// Reason for the execution status (v2.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<BuildNodeReason>,
     /// Error information if failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<BuildErrorInfo>,

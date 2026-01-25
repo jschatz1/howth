@@ -107,6 +107,15 @@ enum Commands {
         /// Include profiling information
         #[arg(long)]
         profile: bool,
+
+        /// Show why each node was rebuilt or skipped (v2.3)
+        #[arg(long)]
+        why: bool,
+
+        /// Targets to build (comma-separated, e.g., "build,test" or "script:build")
+        /// If not specified, uses default targets from the graph.
+        #[arg(value_delimiter = ',')]
+        targets: Vec<String>,
     },
 
     /// Run tests
@@ -471,6 +480,8 @@ fn main() -> Result<()> {
         dry_run,
         max_parallel,
         profile,
+        why,
+        targets,
     }) = &cli.command
     {
         let action = commands::build::BuildAction {
@@ -479,6 +490,8 @@ fn main() -> Result<()> {
             dry_run: *dry_run,
             max_parallel: *max_parallel,
             profile: *profile,
+            why: *why,
+            targets: targets.clone(),
         };
         return commands::build::run(action, Channel::Stable, cli.json);
     }
