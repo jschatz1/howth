@@ -38,6 +38,8 @@ pub struct WatcherState {
     pkg_json_cache: Mutex<Option<Arc<DaemonPkgJsonCache>>>,
     /// Optional reference to build cache for invalidation.
     build_cache: Mutex<Option<Arc<DaemonBuildCache>>>,
+    /// Build watch subscribers (v3.0): directory path -> notification senders.
+    build_watchers: Arc<Mutex<Vec<(PathBuf, mpsc::Sender<()>)>>>,
 }
 
 /// Watcher event for internal processing.
@@ -90,6 +92,7 @@ impl WatcherState {
             cache: Mutex::new(None),
             pkg_json_cache: Mutex::new(None),
             build_cache: Mutex::new(None),
+            build_watchers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -208,6 +211,7 @@ impl WatcherState {
         let pkg_json_cache = self.pkg_json_cache.lock().unwrap().clone();
         let build_cache = self.build_cache.lock().unwrap().clone();
         let last_event_store = self.last_event_unix_ms.clone();
+        let build_watchers = self.build_watchers.clone();
 
         // Spawn event processor
         tokio::spawn(async move {
@@ -217,6 +221,7 @@ impl WatcherState {
                 pkg_json_cache.as_ref(),
                 build_cache.as_ref(),
                 &last_event_store,
+                &build_watchers,
             )
             .await;
         });
@@ -245,6 +250,67 @@ impl WatcherState {
 
         Ok(())
     }
+
+    /// Watch a directory for build mode (v3.0).
+    /// Notifications are sent to the provided channel when files change.
+    ///
+    /// # Errors
+    /// Returns an error if the path is invalid or watcher cannot be set up.
+    pub fn watch_for_build(&self, path: &PathBuf, tx: mpsc::Sender<()>) -> Result<(), WatchError> {
+        // Validate path
+        if !path.exists() || !path.is_dir() {
+            return Err(WatchError::InvalidRoot(path.display().to_string()));
+        }
+
+        // Add subscriber
+        {
+            let mut watchers = self.build_watchers.lock().unwrap();
+            watchers.push((path.clone(), tx));
+        }
+
+        // If watcher not running, start it for this path
+        if !self.running.load(Ordering::Relaxed) {
+            self.start(vec![path.display().to_string()])?;
+        } else {
+            // Add path to existing watcher if not already watching
+            let mut roots = self.roots.write().unwrap();
+            let path_str = path.display().to_string();
+            if !roots.contains(&path_str) {
+                if let Some(watcher) = self.watcher.lock().unwrap().as_mut() {
+                    watcher
+                        .watch(path, RecursiveMode::Recursive)
+                        .map_err(|e| WatchError::WatcherFailed(e.to_string()))?;
+                    roots.push(path_str);
+                    info!(root = %path.display(), "Added directory to watcher");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Stop watching a specific directory (v3.0).
+    pub fn unwatch(&self, path: &PathBuf) {
+        // Remove subscriber
+        {
+            let mut watchers = self.build_watchers.lock().unwrap();
+            watchers.retain(|(p, _)| p != path);
+        }
+
+        // Optionally unwatch from file system if no other subscribers for this path
+        let has_other_subscribers = {
+            let watchers = self.build_watchers.lock().unwrap();
+            watchers.iter().any(|(p, _)| p == path)
+        };
+
+        if !has_other_subscribers {
+            if let Some(watcher) = self.watcher.lock().unwrap().as_mut() {
+                let _ = watcher.unwatch(path);
+                info!(root = %path.display(), "Removed directory from watcher");
+            }
+        }
+    }
+
 }
 
 /// Process events with coalescing.
@@ -254,6 +320,7 @@ async fn process_events(
     pkg_json_cache: Option<&Arc<DaemonPkgJsonCache>>,
     build_cache: Option<&Arc<DaemonBuildCache>>,
     last_event_store: &Arc<AtomicU64>,
+    build_watchers: &Arc<Mutex<Vec<(PathBuf, mpsc::Sender<()>)>>>,
 ) {
     let mut pending_paths: HashSet<PathBuf> = HashSet::new();
     let mut last_event_time = std::time::Instant::now();
@@ -339,6 +406,21 @@ async fn process_events(
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
                     last_event_store.store(now, Ordering::Relaxed);
+
+                    // Notify build watchers (v3.0)
+                    {
+                        let watchers = build_watchers.lock().unwrap();
+                        for (watch_path, tx) in watchers.iter() {
+                            // Check if any changed path is under this watch path
+                            for changed in &pending_paths {
+                                if changed.starts_with(watch_path) {
+                                    // Send notification (non-blocking)
+                                    let _ = tx.try_send(());
+                                    break; // Only need to notify once per watcher
+                                }
+                            }
+                        }
+                    }
 
                     pending_paths.clear();
                 }

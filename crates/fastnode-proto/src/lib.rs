@@ -125,6 +125,10 @@ pub mod codes {
     // v2.1: build target error codes
     pub const BUILD_TARGET_INVALID: &str = "BUILD_TARGET_INVALID";
     pub const BUILD_NO_DEFAULT_TARGETS: &str = "BUILD_NO_DEFAULT_TARGETS";
+
+    // v3.0: watch build error codes
+    pub const BUILD_WATCH_JSON_UNSUPPORTED: &str = "BUILD_WATCH_JSON_UNSUPPORTED";
+    pub const BUILD_WATCH_ALREADY_ACTIVE: &str = "BUILD_WATCH_ALREADY_ACTIVE";
 }
 
 /// Resolver reason codes for unresolved imports.
@@ -351,6 +355,22 @@ pub enum Request {
         #[serde(default)]
         targets: Vec<String>,
     },
+
+    /// Watch for file changes and rebuild (v3.0).
+    /// Streams BuildResult responses for each rebuild wave.
+    WatchBuild {
+        /// Working directory (project root with package.json).
+        cwd: String,
+        /// Target nodes to build. Empty = use defaults.
+        #[serde(default)]
+        targets: Vec<String>,
+        /// Debounce delay in milliseconds (default 100ms).
+        #[serde(default = "default_watch_debounce_ms")]
+        debounce_ms: u32,
+        /// Maximum parallel jobs.
+        #[serde(default = "default_build_max_parallel")]
+        max_parallel: u32,
+    },
 }
 
 fn default_max_chains() -> u32 {
@@ -386,6 +406,10 @@ fn default_build_max_parallel() -> u32 {
         .map(|n| n.get() as u32)
         .unwrap_or(1)
         .clamp(1, 64)
+}
+
+fn default_watch_debounce_ms() -> u32 {
+    100
 }
 
 /// Import specifier found in source code.
@@ -1216,6 +1240,24 @@ pub enum Response {
     BuildResult {
         /// The build result.
         result: BuildRunResult,
+    },
+
+    /// Watch build session started (v3.0).
+    /// After this, BuildResult responses will be streamed for each rebuild wave.
+    WatchBuildStarted {
+        /// Working directory being watched.
+        cwd: String,
+        /// Targets being built.
+        targets: Vec<String>,
+        /// Debounce delay in milliseconds.
+        debounce_ms: u32,
+    },
+
+    /// Watch build session ended (v3.0).
+    /// Sent when watch mode is terminated (client disconnect, error, etc).
+    WatchBuildStopped {
+        /// Reason for stopping.
+        reason: String,
     },
 }
 

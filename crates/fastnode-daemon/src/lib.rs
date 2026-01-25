@@ -200,6 +200,14 @@ pub fn handle_request(
                 false,
             )
         }
+        // WatchBuild requires streaming handler (v3.0)
+        Request::WatchBuild { .. } => (
+            Response::error(
+                codes::INTERNAL_ERROR,
+                "WatchBuild requires streaming handler",
+            ),
+            false,
+        ),
         // Pkg operations that need async - return error if called sync
         Request::PkgAdd { .. }
         | Request::PkgCacheList { .. }

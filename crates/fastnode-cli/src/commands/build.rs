@@ -23,6 +23,10 @@ pub struct BuildAction {
     pub profile: bool,
     /// Show why each node was rebuilt (v2.3).
     pub why: bool,
+    /// Watch for file changes and rebuild (v3.0).
+    pub watch: bool,
+    /// Debounce delay in milliseconds for watch mode.
+    pub debounce_ms: u32,
     /// Targets to build (v2.1). Empty = use defaults.
     pub targets: Vec<String>,
 }
@@ -98,28 +102,42 @@ pub fn run(action: BuildAction, channel: Channel, json: bool) -> Result<()> {
 
     // Run the async client
     let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
-    let result = runtime.block_on(async { send_build_request(&endpoint, &action).await });
 
-    match result {
-        Ok((response, _server_version)) => handle_response(response, json, show_why),
-        Err(e) => {
-            if json {
-                let result = BuildErrorResult {
-                    schema_version: BUILD_RUN_SCHEMA_VERSION,
-                    ok: false,
-                    error: BuildErrorJson {
-                        code: "BUILD_DAEMON_CONNECT_FAILED".to_string(),
-                        message: format!("Failed to connect: {e}"),
-                        detail: None,
-                    },
-                    notes: vec!["hint: start the daemon with `howth daemon`".to_string()],
-                };
-                println!("{}", serde_json::to_string(&result).unwrap());
-            } else {
-                eprintln!("error: daemon not running");
-                eprintln!("hint: start with `howth daemon`");
+    if action.watch {
+        // v3.0: Watch mode - stream results
+        let result = runtime.block_on(async { run_watch_build(&endpoint, &action).await });
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
             }
-            std::process::exit(1);
+        }
+    } else {
+        // Single build
+        let result = runtime.block_on(async { send_build_request(&endpoint, &action).await });
+
+        match result {
+            Ok((response, _server_version)) => handle_response(response, json, show_why),
+            Err(e) => {
+                if json {
+                    let result = BuildErrorResult {
+                        schema_version: BUILD_RUN_SCHEMA_VERSION,
+                        ok: false,
+                        error: BuildErrorJson {
+                            code: "BUILD_DAEMON_CONNECT_FAILED".to_string(),
+                            message: format!("Failed to connect: {e}"),
+                            detail: None,
+                        },
+                        notes: vec!["hint: start the daemon with `howth daemon`".to_string()],
+                    };
+                    println!("{}", serde_json::to_string(&result).unwrap());
+                } else {
+                    eprintln!("error: daemon not running");
+                    eprintln!("hint: start with `howth daemon`");
+                }
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -348,4 +366,113 @@ fn default_max_parallel() -> u32 {
         .map(|n| n.get() as u32)
         .unwrap_or(1)
         .clamp(1, 64)
+}
+
+/// Run watch build mode (v3.0).
+/// Streams build results as files change.
+async fn run_watch_build(endpoint: &str, action: &BuildAction) -> io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    use tokio::signal;
+
+    // Connect using cross-platform IpcStream
+    let mut stream = IpcStream::connect(endpoint).await?;
+
+    // Create watch build request
+    let request = Request::WatchBuild {
+        cwd: action.cwd.to_string_lossy().into_owned(),
+        targets: action.targets.clone(),
+        debounce_ms: action.debounce_ms,
+        max_parallel: action.max_parallel.unwrap_or_else(default_max_parallel),
+    };
+
+    // Create and send request frame
+    let frame = Frame::new(VERSION, request);
+    let encoded = encode_frame(&frame)?;
+
+    stream.write_all(&encoded).await?;
+    stream.flush().await?;
+
+    println!("Watching... (ctrl+c to exit)");
+    println!();
+
+    // Set up Ctrl+C handler
+    let ctrl_c = signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+
+    loop {
+        // Read next response or wait for Ctrl+C
+        tokio::select! {
+            _ = &mut ctrl_c => {
+                println!();
+                println!("Watch stopped.");
+                return Ok(());
+            }
+            result = read_watch_response(&mut stream) => {
+                match result {
+                    Ok(response) => {
+                        match response {
+                            Response::WatchBuildStarted { cwd, targets, debounce_ms } => {
+                                // Confirmation received, wait for build results
+                                let targets_str = if targets.is_empty() {
+                                    "defaults".to_string()
+                                } else {
+                                    targets.join(", ")
+                                };
+                                eprintln!("watching: {} (targets: {}, debounce: {}ms)", cwd, targets_str, debounce_ms);
+                            }
+                            Response::BuildResult { result } => {
+                                // Print build result
+                                print_human_output(&result, action.why);
+                                println!();
+                            }
+                            Response::WatchBuildStopped { reason } => {
+                                println!("Watch stopped: {}", reason);
+                                return Ok(());
+                            }
+                            Response::Error { code, message } => {
+                                eprintln!("error: {}: {}", code, message);
+                                return Err(io::Error::new(io::ErrorKind::Other, message));
+                            }
+                            _ => {
+                                eprintln!("warning: unexpected response type");
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                        println!("Connection closed.");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Read a single response frame from the stream.
+async fn read_watch_response(stream: &mut IpcStream) -> io::Result<Response> {
+    use tokio::io::AsyncReadExt;
+
+    // Read length prefix
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+
+    if len > MAX_FRAME_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("response frame too large: {len} bytes"),
+        ));
+    }
+
+    // Read JSON payload
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await?;
+
+    let response: FrameResponse =
+        serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    Ok(response.response)
 }

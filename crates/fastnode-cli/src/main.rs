@@ -112,6 +112,14 @@ enum Commands {
         #[arg(long)]
         why: bool,
 
+        /// Watch for file changes and rebuild (v3.0)
+        #[arg(long)]
+        watch: bool,
+
+        /// Debounce delay in milliseconds for watch mode (default 100ms)
+        #[arg(long, default_value = "100")]
+        debounce_ms: u32,
+
         /// Targets to build (comma-separated, e.g., "build,test" or "script:build")
         /// If not specified, uses default targets from the graph.
         #[arg(value_delimiter = ',')]
@@ -481,9 +489,18 @@ fn main() -> Result<()> {
         max_parallel,
         profile,
         why,
+        watch,
+        debounce_ms,
         targets,
     }) = &cli.command
     {
+        // v3.0: --watch --json is disallowed (violates "one JSON object" contract)
+        if *watch && cli.json {
+            eprintln!("error: --watch and --json cannot be combined");
+            eprintln!("hint: --json requires exactly one output object; watch mode streams multiple results");
+            std::process::exit(2);
+        }
+
         let action = commands::build::BuildAction {
             cwd: cwd.clone(),
             force: *force,
@@ -491,6 +508,8 @@ fn main() -> Result<()> {
             max_parallel: *max_parallel,
             profile: *profile,
             why: *why,
+            watch: *watch,
+            debounce_ms: *debounce_ms,
             targets: targets.clone(),
         };
         return commands::build::run(action, Channel::Stable, cli.json);

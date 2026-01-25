@@ -538,3 +538,92 @@ fn test_build_human_output_format_v24() {
         "Human output should not be JSON"
     );
 }
+
+// ============================================================
+// v3.0 Watch Mode Tests
+// ============================================================
+
+#[test]
+fn test_build_watch_flag_accepted() {
+    let dir = tempdir().unwrap();
+
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    // --watch should be accepted (will fail to connect to daemon, but flag is parsed)
+    let output = cargo_bin()
+        .args(["build", "--watch", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should not error on unknown flag
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--watch flag should be accepted"
+    );
+}
+
+#[test]
+fn test_build_debounce_ms_flag_accepted() {
+    let dir = tempdir().unwrap();
+
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    // --debounce-ms should be accepted with a value
+    let output = cargo_bin()
+        .args(["build", "--watch", "--debounce-ms", "200", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should not error on unknown flag
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "--debounce-ms flag should be accepted"
+    );
+}
+
+#[test]
+fn test_build_watch_json_disallowed() {
+    // v3.0: --watch --json is explicitly disallowed
+    let dir = tempdir().unwrap();
+
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"name": "test", "scripts": {"build": "echo building"}}"#,
+    )
+    .unwrap();
+
+    let output = cargo_bin()
+        .args(["build", "--watch", "--json", "--cwd"])
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run build command");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should error with specific message about --watch --json
+    assert!(
+        stderr.contains("--watch") && stderr.contains("--json"),
+        "Should error about --watch --json combination: {stderr}"
+    );
+
+    // Exit code should be 2 (argument error)
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "Exit code should be 2 for argument error"
+    );
+}

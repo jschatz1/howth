@@ -2,12 +2,14 @@
 
 use crate::ipc::{cleanup_socket, IpcListener, IpcStream};
 use crate::state::DaemonState;
-use crate::{handle_request, handle_request_async, make_response_frame};
+use crate::{handle_build, handle_request, handle_request_async, make_response_frame};
 use fastnode_proto::{codes, encode_frame, Frame, Request, Response};
 use std::io;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 /// Maximum frame size for sanity checking (16 MiB).
@@ -93,6 +95,159 @@ fn is_pkg_request(request: &Request) -> bool {
     )
 }
 
+/// Check if a request is a watch build (requires streaming).
+fn is_watch_build(request: &Request) -> bool {
+    matches!(request, Request::WatchBuild { .. })
+}
+
+/// Handle watch build with streaming responses (v3.0).
+async fn handle_watch_build_streaming(
+    mut stream: IpcStream,
+    frame: Frame,
+    state: Arc<DaemonState>,
+) -> io::Result<()> {
+    // Extract watch build parameters
+    let (cwd, targets, debounce_ms, max_parallel) = match &frame.request {
+        Request::WatchBuild {
+            cwd,
+            targets,
+            debounce_ms,
+            max_parallel,
+        } => (cwd.clone(), targets.clone(), *debounce_ms, *max_parallel),
+        _ => {
+            // Should not happen - we checked is_watch_build
+            let response = make_response_frame(Response::error(
+                codes::INTERNAL_ERROR,
+                "Expected WatchBuild request",
+            ));
+            let encoded = encode_frame(&response)?;
+            stream.write_all(&encoded).await?;
+            return Ok(());
+        }
+    };
+
+    // Validate cwd
+    let cwd_path = PathBuf::from(&cwd);
+    if !cwd_path.exists() || !cwd_path.is_dir() {
+        let response = make_response_frame(Response::error(
+            codes::BUILD_CWD_INVALID,
+            format!("Invalid working directory: {cwd}"),
+        ));
+        let encoded = encode_frame(&response)?;
+        stream.write_all(&encoded).await?;
+        return Ok(());
+    }
+
+    info!(cwd = %cwd, targets = ?targets, debounce_ms, "starting watch build");
+
+    // Send WatchBuildStarted confirmation
+    let started_response = make_response_frame(Response::WatchBuildStarted {
+        cwd: cwd.clone(),
+        targets: targets.clone(),
+        debounce_ms,
+    });
+    let encoded = encode_frame(&started_response)?;
+    stream.write_all(&encoded).await?;
+    stream.flush().await?;
+
+    // Create a channel for file change notifications
+    let (tx, mut rx) = mpsc::channel::<()>(16);
+
+    // Subscribe watcher to the cwd
+    if let Err(e) = state.watcher.watch_for_build(&cwd_path, tx) {
+        warn!(error = %e, "failed to start watcher");
+        let response = make_response_frame(Response::WatchBuildStopped {
+            reason: format!("Failed to start watcher: {e}"),
+        });
+        let encoded = encode_frame(&response)?;
+        stream.write_all(&encoded).await?;
+        return Ok(());
+    }
+
+    // Helper to run a build and send result
+    let run_build = || {
+        let build_cache = Some(state.build_cache.clone());
+        handle_build(&cwd, false, false, max_parallel, false, &targets, build_cache)
+    };
+
+    // Run initial build
+    let initial_result = run_build();
+    let response = make_response_frame(initial_result);
+    let encoded = encode_frame(&response)?;
+    stream.write_all(&encoded).await?;
+    stream.flush().await?;
+
+    // Watch loop with debouncing
+    let debounce_duration = std::time::Duration::from_millis(u64::from(debounce_ms));
+    let mut read_buf = [0u8; 1];
+
+    loop {
+        // Wait for file change notification or connection close
+        tokio::select! {
+            _ = rx.recv() => {
+                // File changed - debounce
+                debug!("file change detected, debouncing...");
+
+                // Drain any additional events during debounce period
+                let deadline = tokio::time::Instant::now() + debounce_duration;
+                loop {
+                    tokio::select! {
+                        _ = rx.recv() => {
+                            // More events, keep debouncing
+                        }
+                        _ = tokio::time::sleep_until(deadline) => {
+                            break;
+                        }
+                    }
+                }
+
+                debug!("debounce complete, rebuilding...");
+
+                // Invalidate build cache for this cwd
+                state.build_cache.clear();
+
+                // Run build
+                let result = run_build();
+                let response = make_response_frame(result);
+                match encode_frame(&response) {
+                    Ok(encoded) => {
+                        if let Err(e) = stream.write_all(&encoded).await {
+                            info!(error = %e, "client disconnected");
+                            break;
+                        }
+                        if let Err(e) = stream.flush().await {
+                            info!(error = %e, "client disconnected");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, "failed to encode response");
+                        break;
+                    }
+                }
+            }
+            // Check if stream is still open by trying to read
+            result = stream.read(&mut read_buf) => {
+                match result {
+                    Ok(0) | Err(_) => {
+                        // EOF or error - client disconnected
+                        info!("client disconnected, stopping watch");
+                        break;
+                    }
+                    Ok(_) => {
+                        // Unexpected data - ignore
+                    }
+                }
+            }
+        }
+    }
+
+    // Stop watching
+    let _ = state.watcher.unwatch(&cwd_path);
+
+    Ok(())
+}
+
 /// Handle a single connection.
 async fn handle_connection(
     mut stream: IpcStream,
@@ -140,6 +295,11 @@ async fn handle_connection(
         request = ?frame.request,
         "handling request"
     );
+
+    // v3.0: Watch build requires streaming handler
+    if is_watch_build(&frame.request) {
+        return handle_watch_build_streaming(stream, frame, state).await;
+    }
 
     // Handle request - use async handler for pkg operations
     let (response, should_shutdown) = if is_pkg_request(&frame.request) {
