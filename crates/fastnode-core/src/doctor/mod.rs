@@ -9,6 +9,8 @@
 //! - No directory walks beyond project root detection
 //! - All detection done via file reads or syscalls
 
+#![allow(clippy::doc_markdown)]
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

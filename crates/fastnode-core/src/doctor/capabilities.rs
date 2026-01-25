@@ -3,6 +3,9 @@
 //! All detection is done via file operations or syscalls.
 //! No subprocesses are spawned.
 
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+
 use std::fs;
 use std::path::Path;
 
