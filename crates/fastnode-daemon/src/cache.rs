@@ -272,11 +272,11 @@ pub struct PkgJsonCacheStats {
 
 /// Daemon build cache with thread-safe access.
 ///
-/// Wraps the core `MemoryCache` with a RwLock for concurrent access
+/// Wraps the core `MemoryCache` with a `RwLock` for concurrent access
 /// and provides path-based invalidation for file watcher integration.
 #[derive(Debug, Default)]
 pub struct DaemonBuildCache {
-    /// Inner cache behind a RwLock.
+    /// Inner cache behind a `RwLock`.
     cache: RwLock<MemoryCache>,
     /// Reverse index: file path -> set of node IDs that include that file
     reverse_index: RwLock<HashMap<PathBuf, HashSet<String>>>,

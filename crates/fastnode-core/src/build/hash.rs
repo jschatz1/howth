@@ -364,12 +364,12 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
         }
         BuildInput::Env { key } => {
             let value = std::env::var(key).unwrap_or_default();
-            Ok(hash_string(&format!("env:{}={}", key, value)))
+            Ok(hash_string(&format!("env:{key}={value}")))
         }
         BuildInput::Node { id } => {
             // Node inputs are handled separately in hash_input_with_deps
             // This fallback is for backwards compatibility
-            Ok(hash_string(&format!("node:{}", id)))
+            Ok(hash_string(&format!("node:{id}")))
         }
     }
 }
@@ -387,10 +387,10 @@ pub fn hash_input_with_deps(
         BuildInput::Node { id } => {
             // Look up the actual hash of the dependency node
             if let Some(dep_hash) = dep_hashes.get(id) {
-                Ok(hash_string(&format!("dep:{}:{}", id, dep_hash)))
+                Ok(hash_string(&format!("dep:{id}:{dep_hash}")))
             } else {
                 // Dependency not yet computed - use placeholder
-                Ok(hash_string(&format!("node:{}", id)))
+                Ok(hash_string(&format!("node:{id}")))
             }
         }
         // All other inputs delegate to the base function

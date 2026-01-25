@@ -76,7 +76,7 @@ fn test_install_frozen_json_output_on_error() {
 
     // Stdout should be valid JSON
     let json: serde_json::Value = serde_json::from_str(&stdout)
-        .expect(&format!("stdout should be valid JSON: {stdout}"));
+        .unwrap_or_else(|_| panic!("stdout should be valid JSON: {stdout}"));
 
     // Should have 'ok' field
     assert!(
@@ -109,7 +109,7 @@ fn test_install_json_no_extra_stdout() {
 
     // Stdout should be valid JSON and nothing else
     let json: serde_json::Value = serde_json::from_str(&stdout)
-        .expect(&format!("stdout should be valid JSON (no extra content): {stdout}"));
+        .unwrap_or_else(|_| panic!("stdout should be valid JSON (no extra content): {stdout}"));
 
     // Verify it has the expected structure
     assert!(json.get("ok").is_some(), "Should have 'ok' field");
@@ -187,7 +187,7 @@ fn test_install_options_combination() {
 
     // Should produce valid JSON (command was parsed correctly)
     let json: serde_json::Value = serde_json::from_str(&stdout)
-        .expect(&format!("stdout should be valid JSON: {stdout}"));
+        .unwrap_or_else(|_| panic!("stdout should be valid JSON: {stdout}"));
 
     assert!(json.get("ok").is_some(), "Should have 'ok' field");
 }

@@ -231,7 +231,7 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
                     } else {
-                        eprintln!("error: {}", e);
+                        eprintln!("error: {e}");
                     }
                     std::process::exit(exit_code);
                 }
@@ -338,7 +338,7 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
     }
 }
 
-/// Convert a PkgDepError to PkgErrorInfo for protocol/output.
+/// Convert a `PkgDepError` to `PkgErrorInfo` for protocol/output.
 fn dep_error_to_pkg_error_info(err: &PkgDepError) -> PkgErrorInfo {
     PkgErrorInfo {
         spec: err.name.clone(),
@@ -410,7 +410,7 @@ fn handle_response(
                     println!("{}@{} ({} KB)", pkg.name, pkg.version, size_kb);
                 }
                 let total_mb = total_size_bytes as f64 / (1024.0 * 1024.0);
-                println!("\nTotal: {:.2} MB", total_mb);
+                println!("\nTotal: {total_mb:.2} MB");
             }
             Ok(())
         }
@@ -854,14 +854,14 @@ fn print_explain_human(result: &PkgExplainResult) {
 
     // Print resolution status
     if let Some(ref resolved) = result.resolved {
-        println!("Resolved: {}", resolved);
+        println!("Resolved: {resolved}");
     } else {
         println!("Status: UNRESOLVED");
         if let Some(ref code) = result.error_code {
-            println!("Error: {}", code);
+            println!("Error: {code}");
         }
         if let Some(ref msg) = result.error_message {
-            println!("Message: {}", msg);
+            println!("Message: {msg}");
         }
     }
     println!();
@@ -874,19 +874,19 @@ fn print_explain_human(result: &PkgExplainResult) {
 
         // Print optional fields
         if let Some(ref path) = step.path {
-            println!("      path: {}", path);
+            println!("      path: {path}");
         }
         if let Some(ref key) = step.key {
-            println!("      key: {}", key);
+            println!("      key: {key}");
         }
         if let Some(ref target) = step.target {
-            println!("      target: {}", target);
+            println!("      target: {target}");
         }
         if let Some(ref condition) = step.condition {
-            println!("      condition: {}", condition);
+            println!("      condition: {condition}");
         }
         for note in &step.notes {
-            println!("      note: {}", note);
+            println!("      note: {note}");
         }
     }
 
@@ -904,7 +904,7 @@ fn print_explain_human(result: &PkgExplainResult) {
         println!();
         println!("Tried paths:");
         for path in &result.tried {
-            println!("  - {}", path);
+            println!("  - {path}");
         }
     }
 }
@@ -917,7 +917,7 @@ fn print_why_human(result: &PkgWhyResult, format: &str) {
     // 1) Header line
     println!("Why is {}@{} here?", target.name, version_str);
     if let Some(ref path) = target.path {
-        println!("  at: {}", path);
+        println!("  at: {path}");
     }
     println!();
 
@@ -941,9 +941,9 @@ fn print_why_human(result: &PkgWhyResult, format: &str) {
     for note in &result.notes {
         if note.starts_with("candidates:") {
             println!();
-            println!("{}", note);
+            println!("{note}");
         } else if note.starts_with("Using ") {
-            println!("{}", note);
+            println!("{note}");
         }
     }
 
@@ -955,7 +955,7 @@ fn print_why_human(result: &PkgWhyResult, format: &str) {
             let status = if step.ok { "ok" } else { "fail" };
             println!("  {}. [{}] {} - {}", i + 1, status, step.step, step.detail);
             if let Some(ref path) = step.path {
-                println!("       path: {}", path);
+                println!("       path: {path}");
             }
         }
         for warning in &trace.warnings {
@@ -977,14 +977,14 @@ fn print_why_human(result: &PkgWhyResult, format: &str) {
         println!();
         println!("Notes:");
         for note in other_notes {
-            println!("  - {}", note);
+            println!("  - {note}");
         }
     }
 
     // Print trace parent note if present
     for note in &result.notes {
         if note.starts_with("trace parent") {
-            println!("  - {}", note);
+            println!("  - {note}");
         }
     }
 
@@ -995,7 +995,7 @@ fn print_why_human(result: &PkgWhyResult, format: &str) {
         for err in &result.errors {
             print!("  [{}] {}", err.code, err.message);
             if let Some(ref path) = err.path {
-                print!(" ({})", path);
+                print!(" ({path})");
             }
             println!();
         }
@@ -1038,9 +1038,9 @@ fn print_why_chains_list(result: &PkgWhyResult) {
 
         // Join with " -> " but first item already has the arrow
         if let Some((first, rest)) = parts.split_first() {
-            print!("{}", first);
+            print!("{first}");
             for part in rest {
-                print!(" -> {}", part);
+                print!(" -> {part}");
             }
             println!();
         }
@@ -1100,7 +1100,7 @@ fn print_chain_tree(chain: &PkgWhyChain) {
         // Show requirement
         if let Some(ref req) = link.req {
             let req_indent = "  ".repeat(j + 2);
-            println!("{}(requires: {})", req_indent, req);
+            println!("{req_indent}(requires: {req})");
         }
     }
 }
@@ -1114,7 +1114,7 @@ fn print_doctor_human(report: &PkgDoctorReport, format: &str) {
 
     // Summary
     let severity_str = report.summary.severity.to_uppercase();
-    println!("Overall severity: {}", severity_str);
+    println!("Overall severity: {severity_str}");
     println!(
         "Findings: {} errors, {} warnings, {} info",
         report.summary.counts.error, report.summary.counts.warn, report.summary.counts.info
@@ -1146,7 +1146,7 @@ fn print_doctor_human(report: &PkgDoctorReport, format: &str) {
         println!();
         println!("Notes:");
         for note in &report.notes {
-            println!("  - {}", note);
+            println!("  - {note}");
         }
     }
 }
@@ -1202,7 +1202,7 @@ fn print_doctor_findings_list(findings: &[DoctorFinding]) {
         let path_str = finding
             .path
             .as_deref()
-            .map(|p| format!(" at {}", p))
+            .map(|p| format!(" at {p}"))
             .unwrap_or_default();
 
         println!(
@@ -1222,15 +1222,15 @@ fn print_finding(finding: &DoctorFinding, indent: &str) {
 
     print!("{}{} {}: {}", indent, sev, finding.code, finding.message);
     if let Some(ref pkg) = finding.package {
-        print!(" ({})", pkg);
+        print!(" ({pkg})");
     }
     println!();
 
     if let Some(ref path) = finding.path {
-        println!("{}      at: {}", indent, path);
+        println!("{indent}      at: {path}");
     }
     if let Some(ref detail) = finding.detail {
-        println!("{}      {}", indent, detail);
+        println!("{indent}      {detail}");
     }
 }
 

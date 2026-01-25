@@ -689,9 +689,9 @@ mod tests {
         // Add orphans (warn)
         for i in 0..5 {
             orphans.push(PackageId::new(
-                format!("orphan-{}", i),
+                format!("orphan-{i}"),
                 "1.0.0".to_string(),
-                format!("/test/node_modules/orphan-{}", i),
+                format!("/test/node_modules/orphan-{i}"),
             ));
         }
 
@@ -699,12 +699,12 @@ mod tests {
         for i in 0..5 {
             nodes.push(PackageNode::new(
                 PackageId::new(
-                    format!("pkg-{}", i),
+                    format!("pkg-{i}"),
                     "1.0.0".to_string(),
-                    format!("/test/node_modules/pkg-{}", i),
+                    format!("/test/node_modules/pkg-{i}"),
                 ),
                 vec![DepEdge::new(
-                    format!("missing-{}", i),
+                    format!("missing-{i}"),
                     Some("^1.0.0".to_string()),
                     None,
                     "dep",
@@ -763,12 +763,10 @@ mod tests {
         )
         .with_package("a-pkg");
 
-        let mut findings = vec![
-            f_info.clone(),
+        let mut findings = [f_info.clone(),
             f_warn_z.clone(),
             f_error.clone(),
-            f_warn_a.clone(),
-        ];
+            f_warn_a.clone()];
         findings.sort_by(|a, b| doctor_sort_key(a).cmp(&doctor_sort_key(b)));
 
         // Error should be first (highest rank)
@@ -786,9 +784,9 @@ mod tests {
         let mut orphans = Vec::new();
         for i in 0..10 {
             orphans.push(PackageId::new(
-                format!("orphan-{}", i),
+                format!("orphan-{i}"),
                 "1.0.0".to_string(),
-                format!("/test/node_modules/orphan-{}", i),
+                format!("/test/node_modules/orphan-{i}"),
             ));
         }
 

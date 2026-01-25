@@ -79,6 +79,7 @@ impl LockRoot {
 
 /// Metadata about the lockfile itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct LockMeta {
     /// When the lockfile was last updated (ISO 8601 timestamp).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,14 +89,6 @@ pub struct LockMeta {
     pub howth_version: Option<String>,
 }
 
-impl Default for LockMeta {
-    fn default() -> Self {
-        Self {
-            generated_at: None,
-            howth_version: None,
-        }
-    }
-}
 
 /// How a package was resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,8 +212,9 @@ fn is_default_resolution(r: &LockResolution) -> bool {
     matches!(r, LockResolution::Registry { registry } if registry.is_empty())
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
-    !*b
+    !b
 }
 
 impl LockPackage {
@@ -296,12 +290,12 @@ pub struct Lockfile {
     pub meta: LockMeta,
     /// Information about the root package.
     pub root: LockRoot,
-    /// Root-level dependencies (name -> LockDep).
-    /// BTreeMap ensures deterministic ordering.
+    /// Root-level dependencies (name -> `LockDep`).
+    /// `BTreeMap` ensures deterministic ordering.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, LockDep>,
     /// All locked packages (key = "name@version").
-    /// BTreeMap ensures deterministic ordering.
+    /// `BTreeMap` ensures deterministic ordering.
     pub packages: BTreeMap<String, LockPackage>,
 }
 
@@ -416,6 +410,9 @@ impl Lockfile {
     }
 
     /// Serialize to JSON string.
+    ///
+    /// # Panics
+    /// Panics if serialization fails (should not happen with valid data).
     #[must_use]
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("Lockfile serialization should not fail")

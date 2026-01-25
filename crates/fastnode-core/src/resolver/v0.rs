@@ -872,13 +872,12 @@ fn resolve_hash_import_traced(
                         // Target is relative to package root
                         let target_path = dir.join(target.trim_start_matches("./"));
                         return resolve_path_traced(ctx, &target_path, kind, tried, trace);
-                    } else {
-                        trace.add_step(ResolveTraceStep::new(
-                            steps::MATCH_IMPORTS_KEY,
-                            false,
-                            format!("No matching imports key for: {spec}"),
-                        ));
                     }
+                    trace.add_step(ResolveTraceStep::new(
+                        steps::MATCH_IMPORTS_KEY,
+                        false,
+                        format!("No matching imports key for: {spec}"),
+                    ));
                 } else {
                     trace.add_step(ResolveTraceStep::new(
                         steps::READ_IMPORTS_FIELD,
@@ -1264,7 +1263,7 @@ fn resolve_bare_traced(
     trace.add_step(ResolveTraceStep::new(
         steps::RESOLVE_BARE,
         true,
-        format!("Bare specifier: package={pkg_name}, subpath={:?}", subpath),
+        format!("Bare specifier: package={pkg_name}, subpath={subpath:?}"),
     ));
 
     let mut found_node_modules = false;
@@ -1488,12 +1487,11 @@ fn resolve_package_subpath_traced(
                     ),
                     trace: trace.clone(),
                 };
-            } else {
-                trace.add_warning(TraceWarning::new(
-                    warning_codes::MISSING_EXPORTS,
-                    "Package has no exports field, using legacy resolution",
-                ));
             }
+            trace.add_warning(TraceWarning::new(
+                warning_codes::MISSING_EXPORTS,
+                "Package has no exports field, using legacy resolution",
+            ));
         }
     }
 

@@ -2,8 +2,8 @@
 //!
 //! Fingerprinting ensures cache hits are correct even when outputs
 //! are mutated externally. A cache hit requires:
-//! - input_hash match AND
-//! - output_fingerprint match (when outputs are declared)
+//! - `input_hash` match AND
+//! - `output_fingerprint` match (when outputs are declared)
 //!
 //! ## Fingerprint Algorithm
 //!
@@ -144,7 +144,7 @@ impl FingerprintError {
 
     /// Create an I/O error.
     #[must_use]
-    pub fn io(err: io::Error) -> Self {
+    pub fn io(err: &io::Error) -> Self {
         Self {
             code: "FINGERPRINT_IO_ERROR",
             message: err.to_string(),
@@ -186,6 +186,7 @@ pub fn normalize_output_path(path: &Path, root: &Path) -> String {
 }
 
 /// Get file metadata for fingerprinting.
+#[allow(clippy::cast_possible_truncation)]
 fn get_file_metadata(path: &Path) -> (bool, u64, u64) {
     match fs::metadata(path) {
         Ok(meta) => {
@@ -194,8 +195,7 @@ fn get_file_metadata(path: &Path) -> (bool, u64, u64) {
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
+                .map_or(0, |d| d.as_millis() as u64);
             (true, size, mtime_ms)
         }
         Err(_) => (false, 0, 0),
@@ -227,6 +227,10 @@ fn enumerate_dir_children(dir: &Path, root: &Path) -> Vec<String> {
 /// Compute the fingerprint for a set of outputs.
 ///
 /// Returns `None` if there are no outputs to fingerprint.
+///
+/// # Errors
+/// Returns an error if fingerprinting fails due to I/O or glob issues.
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
 pub fn compute_fingerprint(
     outputs: &[BuildOutput],
     cwd: &Path,
@@ -378,25 +382,24 @@ fn expand_glob_for_fingerprint(pattern: &str, root: &Path) -> Vec<std::path::Pat
             let name = e.file_name().to_string_lossy();
             !matches!(name.as_ref(), "node_modules" | ".git" | ".howth")
         })
+        .flatten()
     {
-        if let Ok(entry) = entry {
-            if entry.file_type().is_file() {
-                let path = entry.path();
-                let rel = path.strip_prefix(root).unwrap_or(path);
-                let rel_str = rel.to_string_lossy();
+        if entry.file_type().is_file() {
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap_or(path);
+            let rel_str = rel.to_string_lossy();
 
-                // Check if matches pattern
-                let matches = if pattern == "**/*" {
-                    true
-                } else if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
-                    glob_pattern.matches(&rel_str)
-                } else {
-                    false
-                };
+            // Check if matches pattern
+            let matches = if pattern == "**/*" {
+                true
+            } else if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
+                glob_pattern.matches(&rel_str)
+            } else {
+                false
+            };
 
-                if matches {
-                    files.push(path.to_path_buf());
-                }
+            if matches {
+                files.push(path.to_path_buf());
             }
         }
     }

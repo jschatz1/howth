@@ -357,7 +357,7 @@ pub enum Request {
     },
 
     /// Watch for file changes and rebuild (v3.0).
-    /// Streams BuildResult responses for each rebuild wave.
+    /// Streams `BuildResult` responses for each rebuild wave.
     WatchBuild {
         /// Working directory (project root with package.json).
         cwd: String,
@@ -401,6 +401,7 @@ fn default_install_include_optional() -> bool {
     true
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn default_build_max_parallel() -> u32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as u32)
@@ -700,7 +701,7 @@ pub struct PackageGraph {
 /// A single step in the resolution trace.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PkgExplainTraceStep {
-    /// Step name (e.g., "parse_specifier", "resolve_exports", "file_exists").
+    /// Step name (e.g., `parse_specifier`, `resolve_exports`, `file_exists`).
     pub step: String,
     /// Whether this step succeeded.
     pub ok: bool,
@@ -726,7 +727,7 @@ pub struct PkgExplainTraceStep {
 /// Warning generated during resolution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PkgExplainWarning {
-    /// Warning code (e.g., "deprecated_main", "missing_exports").
+    /// Warning code (e.g., `deprecated_main`, `missing_exports`).
     pub code: String,
     /// Human-readable warning message.
     pub message: String,
@@ -831,7 +832,7 @@ pub struct PkgWhyResult {
     pub cwd: String,
     /// The target being explained.
     pub target: PkgWhyTarget,
-    /// Whether target was found in node_modules.
+    /// Whether target was found in `node_modules`.
     pub found_in_node_modules: bool,
     /// Whether target is an orphan (installed but not reachable).
     pub is_orphan: bool,
@@ -844,7 +845,7 @@ pub struct PkgWhyResult {
     /// Errors encountered.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub errors: Vec<PkgWhyErrorInfo>,
-    /// Optional resolver trace (if include_trace was true).
+    /// Optional resolver trace (if `include_trace` was true).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub trace: Option<PkgExplainResult>,
 }
@@ -936,7 +937,7 @@ pub struct InstallSummary {
     pub downloaded: u32,
     /// Packages reused from cache.
     pub cached: u32,
-    /// Packages linked into node_modules.
+    /// Packages linked into `node_modules`.
     pub linked: u32,
     /// Packages that failed.
     pub failed: u32,
@@ -951,7 +952,7 @@ pub struct InstallPackageInfo {
     pub version: String,
     /// Whether this came from cache.
     pub from_cache: bool,
-    /// Path in node_modules.
+    /// Path in `node_modules`.
     pub link_path: String,
 }
 
@@ -1243,7 +1244,7 @@ pub enum Response {
     },
 
     /// Watch build session started (v3.0).
-    /// After this, BuildResult responses will be streamed for each rebuild wave.
+    /// After this, `BuildResult` responses will be streamed for each rebuild wave.
     WatchBuildStarted {
         /// Working directory being watched.
         cwd: String,
@@ -1522,7 +1523,7 @@ mod tests {
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains("./dep"));
         assert!(json.contains("esm_import"));
-        assert!(json.contains("5"));
+        assert!(json.contains('5'));
     }
 
     #[test]
@@ -1726,7 +1727,7 @@ mod tests {
         let resp = Response::WatchStatus {
             roots: vec!["/home/user/project".to_string()],
             running: true,
-            last_event_unix_ms: Some(1234567890),
+            last_event_unix_ms: Some(1_234_567_890),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("watch_status"));
@@ -1835,7 +1836,7 @@ mod tests {
         let json = serde_json::to_string(&pkg).unwrap();
         assert!(json.contains("lodash"));
         assert!(json.contains("4.17.21"));
-        assert!(json.contains("102400"));
+        assert!(json.contains("102_400"));
     }
 
     #[test]
@@ -1874,10 +1875,10 @@ mod tests {
             packages: vec![CachedPackage {
                 name: "lodash".to_string(),
                 version: "4.17.21".to_string(),
-                size_bytes: 102400,
+                size_bytes: 102_400,
                 path: "/cache/lodash/4.17.21/package".to_string(),
             }],
-            total_size_bytes: 102400,
+            total_size_bytes: 102_400,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("pkg_cache_list_result"));

@@ -12,7 +12,7 @@ pub const PKG_EXPLAIN_SCHEMA_VERSION: u32 = 1;
 /// A single step in the resolution trace.
 #[derive(Debug, Clone)]
 pub struct ResolveTraceStep {
-    /// Step name (e.g., "parse_specifier", "resolve_exports", "file_exists")
+    /// Step name (e.g., "`parse_specifier`", "`resolve_exports`", "`file_exists`")
     pub step: &'static str,
     /// Whether this step succeeded
     pub ok: bool,
@@ -79,7 +79,7 @@ impl ResolveTraceStep {
 /// Warning generated during resolution.
 #[derive(Debug, Clone)]
 pub struct TraceWarning {
-    /// Warning code (e.g., "deprecated_main", "missing_exports")
+    /// Warning code (e.g., "`deprecated_main`", "`missing_exports`")
     pub code: String,
     /// Human-readable warning message
     pub message: String,
@@ -106,6 +106,7 @@ pub struct ResolveTrace {
 
 impl ResolveTrace {
     /// Create a new empty trace.
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }

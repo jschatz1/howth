@@ -1,7 +1,7 @@
 //! Package manager handlers for the daemon.
 //!
-//! Handles PkgAdd, PkgCacheList, PkgCachePrune, PkgGraph, PkgExplain, PkgWhy, PkgDoctor,
-//! and PkgInstall requests.
+//! Handles `PkgAdd`, `PkgCacheList`, `PkgCachePrune`, `PkgGraph`, `PkgExplain`, `PkgWhy`, `PkgDoctor`,
+//! and `PkgInstall` requests.
 
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
@@ -103,7 +103,9 @@ async fn add_single_package(
     let package_dir = cache.package_dir(&spec.name, &version);
     let was_cached = cache.is_cached(&spec.name, &version);
 
-    if !was_cached {
+    if was_cached {
+        debug!(path = %package_dir.display(), "Using cached package");
+    } else {
         // Get tarball URL
         let tarball_url = get_tarball_url(&packument, &version).ok_or_else(|| {
             PkgError::download_failed(format!("No tarball URL for {}@{}", spec.name, version))
@@ -120,8 +122,6 @@ async fn add_single_package(
         extract_tgz_atomic(&bytes, &package_dir)?;
 
         debug!(path = %package_dir.display(), "Extracted to cache");
-    } else {
-        debug!(path = %package_dir.display(), "Using cached package");
     }
 
     // Link into node_modules
@@ -132,7 +132,7 @@ async fn add_single_package(
     Ok((
         InstalledPackage {
             name: spec.name,
-            version: version.to_string(),
+            version: version.clone(),
             link_path: link_path.to_string_lossy().into_owned(),
             cache_path: package_dir.to_string_lossy().into_owned(),
         },
@@ -211,7 +211,7 @@ pub async fn handle_pkg_install(
         Err(e) => {
             return Response::error(
                 codes::CWD_INVALID,
-                format!("Invalid working directory '{}': {}", cwd, e),
+                format!("Invalid working directory '{cwd}': {e}"),
             );
         }
     };
@@ -279,7 +279,7 @@ pub async fn handle_pkg_install(
     // Install each package from the lockfile
     for (key, lock_pkg) in &lockfile.packages {
         // Parse package name from key (format: "name@version")
-        let name = key.rsplit_once('@').map(|(n, _)| n).unwrap_or(key);
+        let name = key.rsplit_once('@').map_or(key.as_str(), |(n, _)| n);
 
         // Check dependency kind - skip dev/optional if not requested
         let is_root_dep = lockfile.dependencies.contains_key(name);
@@ -362,7 +362,9 @@ async fn install_from_lockfile(
     let package_dir = cache.package_dir(name, version);
     let was_cached = cache.is_cached(name, version);
 
-    if !was_cached {
+    if was_cached {
+        debug!(path = %package_dir.display(), "Using cached package");
+    } else {
         // Fetch packument to get tarball URL
         let packument = registry.fetch_packument(name).await?;
 
@@ -385,8 +387,6 @@ async fn install_from_lockfile(
         extract_tgz_atomic(&bytes, &package_dir)?;
 
         debug!(path = %package_dir.display(), "Extracted to cache");
-    } else {
-        debug!(path = %package_dir.display(), "Using cached package");
     }
 
     // Link into node_modules
@@ -421,7 +421,7 @@ pub fn handle_pkg_graph(
         Err(e) => {
             return Response::error(
                 codes::CWD_INVALID,
-                format!("Invalid working directory '{}': {}", cwd, e),
+                format!("Invalid working directory '{cwd}': {e}"),
             );
         }
     };

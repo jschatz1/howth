@@ -31,7 +31,7 @@ pub struct BuildAction {
     pub targets: Vec<String>,
 }
 
-/// Build result for JSON output (matches protocol's BuildRunResult).
+/// Build result for JSON output (matches protocol's `BuildRunResult`).
 #[derive(Serialize)]
 struct BuildResultJson {
     schema_version: u32,
@@ -225,7 +225,7 @@ fn print_human_output(result: &BuildRunResult, show_why: bool) {
                 eprintln!("  error: {}: {}", error.code, error.message);
                 if let Some(detail) = &error.detail {
                     for line in detail.lines().take(10) {
-                        eprintln!("  | {}", line);
+                        eprintln!("  | {line}");
                     }
                 }
             }
@@ -247,9 +247,9 @@ fn print_human_output(result: &BuildRunResult, show_why: bool) {
 
     if result.ok {
         if rebuilt == 0 {
-            println!("Rebuilt 0/{} targets (cached)", total);
+            println!("Rebuilt 0/{total} targets (cached)");
         } else {
-            println!("Rebuilt {}/{} targets ({}ms)", rebuilt, total, duration_ms);
+            println!("Rebuilt {rebuilt}/{total} targets ({duration_ms}ms)");
         }
     } else {
         println!(
@@ -262,8 +262,8 @@ fn print_human_output(result: &BuildRunResult, show_why: bool) {
     if show_why && !why_nodes.is_empty() {
         println!();
         for (node_id, reason) in &why_nodes {
-            println!("{} rebuilt because:", node_id);
-            println!("  - {}", reason);
+            println!("{node_id} rebuilt because:");
+            println!("  - {reason}");
         }
     }
 }
@@ -418,7 +418,7 @@ async fn run_watch_build(endpoint: &str, action: &BuildAction) -> io::Result<()>
                                 } else {
                                     targets.join(", ")
                                 };
-                                eprintln!("watching: {} (targets: {}, debounce: {}ms)", cwd, targets_str, debounce_ms);
+                                eprintln!("watching: {cwd} (targets: {targets_str}, debounce: {debounce_ms}ms)");
                             }
                             Response::BuildResult { result } => {
                                 // Print build result
@@ -426,12 +426,12 @@ async fn run_watch_build(endpoint: &str, action: &BuildAction) -> io::Result<()>
                                 println!();
                             }
                             Response::WatchBuildStopped { reason } => {
-                                println!("Watch stopped: {}", reason);
+                                println!("Watch stopped: {reason}");
                                 return Ok(());
                             }
                             Response::Error { code, message } => {
-                                eprintln!("error: {}: {}", code, message);
-                                return Err(io::Error::new(io::ErrorKind::Other, message));
+                                eprintln!("error: {code}: {message}");
+                                return Err(io::Error::other(message));
                             }
                             _ => {
                                 eprintln!("warning: unexpected response type");

@@ -3,6 +3,15 @@
 #![allow(clippy::module_name_repetitions)]
 // Allow unnecessary_wraps for now - commands are placeholders that will return errors when implemented
 #![allow(clippy::unnecessary_wraps)]
+#![allow(clippy::struct_excessive_bools)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(dead_code)]
+#![allow(clippy::cast_precision_loss)]
 
 mod commands;
 mod logging;

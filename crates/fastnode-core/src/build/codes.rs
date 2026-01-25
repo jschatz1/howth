@@ -1,6 +1,6 @@
 //! Stable error codes for the build system.
 //!
-//! All codes are SCREAMING_SNAKE_CASE and stable across versions.
+//! All codes are `SCREAMING_SNAKE_CASE` and stable across versions.
 
 /// Working directory is invalid or does not exist.
 pub const BUILD_CWD_INVALID: &str = "BUILD_CWD_INVALID";

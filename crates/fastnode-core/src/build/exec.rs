@@ -70,7 +70,7 @@ impl ExecOptions {
 /// Get number of CPUs (clamped to 1..=64).
 fn num_cpus() -> usize {
     std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(std::num::NonZero::get)
         .unwrap_or(1)
         .clamp(1, 64)
 }
@@ -143,7 +143,7 @@ pub trait BuildCache {
 /// In-memory build cache with fingerprint support (v2.2).
 #[derive(Debug, Default)]
 pub struct MemoryCache {
-    /// Map of node_id -> CacheEntry
+    /// Map of `node_id` -> `CacheEntry`
     entries: HashMap<String, CacheEntry>,
 }
 
@@ -156,6 +156,7 @@ impl MemoryCache {
 
     /// Get an entry directly (for testing).
     #[cfg(test)]
+    #[must_use] 
     pub fn get_raw(&self, node_id: &str) -> Option<&CacheEntry> {
         self.entries.get(node_id)
     }
@@ -219,6 +220,9 @@ pub struct ScriptOutput {
 }
 
 /// Run a script command.
+///
+/// # Errors
+/// Returns an error if the shell command fails to spawn or wait.
 pub fn run_script(command: &str, cwd: &Path) -> io::Result<ScriptOutput> {
     let (shell, shell_arg) = if cfg!(windows) {
         ("cmd.exe", "/C")
@@ -239,34 +243,30 @@ pub fn run_script(command: &str, cwd: &Path) -> io::Result<ScriptOutput> {
     // Read stdout
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if output.stdout.len() + line.len() + 1 > MAX_OUTPUT_SIZE {
-                    output.stdout_truncated = true;
-                    break;
-                }
-                if !output.stdout.is_empty() {
-                    output.stdout.push('\n');
-                }
-                output.stdout.push_str(&line);
+        for line in reader.lines().map_while(Result::ok) {
+            if output.stdout.len() + line.len() + 1 > MAX_OUTPUT_SIZE {
+                output.stdout_truncated = true;
+                break;
             }
+            if !output.stdout.is_empty() {
+                output.stdout.push('\n');
+            }
+            output.stdout.push_str(&line);
         }
     }
 
     // Read stderr
     if let Some(stderr) = child.stderr.take() {
         let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if output.stderr.len() + line.len() + 1 > MAX_OUTPUT_SIZE {
-                    output.stderr_truncated = true;
-                    break;
-                }
-                if !output.stderr.is_empty() {
-                    output.stderr.push('\n');
-                }
-                output.stderr.push_str(&line);
+        for line in reader.lines().map_while(Result::ok) {
+            if output.stderr.len() + line.len() + 1 > MAX_OUTPUT_SIZE {
+                output.stderr_truncated = true;
+                break;
             }
+            if !output.stderr.is_empty() {
+                output.stderr.push('\n');
+            }
+            output.stderr.push_str(&line);
         }
     }
 
@@ -292,6 +292,8 @@ pub fn run_script(command: &str, cwd: &Path) -> io::Result<ScriptOutput> {
 /// - `Forced`: --force flag was used
 /// - `FirstBuild`: No cache entry existed
 /// - `OutputsChanged`: Fingerprint mismatch (outputs modified externally)
+#[must_use]
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
 pub fn execute_node(
     node: &BuildNode,
     cwd: &Path,
@@ -379,7 +381,9 @@ pub fn execute_node(
             codes::BUILD_SCRIPT_FAILED,
             format!("Exit code {}", output.exit_code),
         )
-        .with_detail(if !output.stderr.is_empty() {
+        .with_detail(if output.stderr.is_empty() {
+            String::new()
+        } else {
             // Get last 20 lines of stderr
             output
                 .stderr
@@ -391,8 +395,6 @@ pub fn execute_node(
                 .rev()
                 .collect::<Vec<_>>()
                 .join("\n")
-        } else {
-            String::new()
         });
 
         let mut result = BuildNodeResult::failed(&node.id, hash, duration_ms, error);
@@ -442,6 +444,10 @@ pub fn execute_node(
 /// Execute a build graph.
 ///
 /// Executes nodes in topological order, skipping nodes whose dependencies failed.
+///
+/// # Errors
+/// Returns an error if hash computation fails.
+#[allow(clippy::cast_possible_truncation)]
 pub fn execute_graph(
     graph: &BuildGraph,
     mut cache: Option<&mut dyn BuildCache>,
@@ -466,7 +472,7 @@ pub fn execute_graph(
             continue;
         };
 
-        let hash = hashes.get(node_id).map(String::as_str).unwrap_or("");
+        let hash = hashes.get(node_id).map_or("", String::as_str);
 
         // Check if all dependencies succeeded
         let deps_ok = node.deps.iter().all(|dep| {
@@ -524,12 +530,7 @@ mod tests {
     #[test]
     fn test_run_script_success() {
         let dir = tempdir().unwrap();
-
-        let cmd = if cfg!(windows) {
-            "echo hello"
-        } else {
-            "echo hello"
-        };
+        let cmd = "echo hello";
 
         let output = run_script(cmd, dir.path()).unwrap();
         assert_eq!(output.exit_code, 0);
@@ -539,12 +540,7 @@ mod tests {
     #[test]
     fn test_run_script_failure() {
         let dir = tempdir().unwrap();
-
-        let cmd = if cfg!(windows) {
-            "exit 1"
-        } else {
-            "exit 1"
-        };
+        let cmd = "exit 1";
 
         let output = run_script(cmd, dir.path()).unwrap();
         assert_ne!(output.exit_code, 0);
@@ -608,11 +604,7 @@ mod tests {
 
         let mut graph = BuildGraph::new(dir.path().to_string_lossy().to_string());
 
-        let cmd = if cfg!(windows) {
-            "echo built"
-        } else {
-            "echo built"
-        };
+        let cmd = "echo built";
         let node = BuildNode::script("build", cmd);
         graph.add_node(node);
         graph.add_default("script:build");
@@ -634,7 +626,7 @@ mod tests {
         let mut graph = BuildGraph::new(dir.path().to_string_lossy().to_string());
 
         // First node fails
-        let fail_cmd = if cfg!(windows) { "exit 1" } else { "exit 1" };
+        let fail_cmd = "exit 1";
         let node1 = BuildNode::script("first", fail_cmd);
         graph.add_node(node1);
 
@@ -801,7 +793,7 @@ mod tests {
         let mut cache = MemoryCache::new();
         let options = ExecOptions::new();
 
-        execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
+        let _ = execute_node(&node, dir.path(), hash, Some(&mut cache), &options);
 
         // Verify fingerprint was stored
         let entry = cache.get_raw("script:build").unwrap();

@@ -92,7 +92,7 @@ pub struct PkgWhyResult {
     pub cwd: String,
     /// The target being explained.
     pub target: WhyTarget,
-    /// Whether target was found in node_modules.
+    /// Whether target was found in `node_modules`.
     pub found_in_node_modules: bool,
     /// Whether target is an orphan (installed but not reachable).
     pub is_orphan: bool,
@@ -167,6 +167,7 @@ pub enum WhyArgKind {
 /// - If it contains `@` after a non-scope position, split as name@version.
 /// - If it contains `/` after the package name, treat as name/subpath.
 /// - Otherwise, treat as plain name.
+#[must_use] 
 pub fn parse_why_arg(input: &str) -> ParsedWhyArg {
     let input = input.trim();
 
@@ -298,7 +299,7 @@ fn parse_package_spec(input: &str) -> (String, Option<String>, Option<String>) {
     }
 }
 
-/// Extract package name from a node_modules path.
+/// Extract package name from a `node_modules` path.
 fn extract_package_name_from_path(path: &str) -> Option<String> {
     // Normalize separators
     let normalized = path.replace('\\', "/");
@@ -327,26 +328,24 @@ fn extract_package_name_from_path(path: &str) -> Option<String> {
 }
 
 /// Compute why chains from a package graph.
+#[must_use] 
 pub fn why_from_graph(graph: &PackageGraph, input: &str, opts: &WhyOptions) -> PkgWhyResult {
     let mut result = PkgWhyResult::new(&graph.root);
 
     // Parse the input
     let parsed = parse_why_arg(input);
     result.target.input = input.to_string();
-    result.target.name = parsed.name.clone();
-    result.target.version = parsed.version.clone();
-    result.target.path = parsed.path.clone();
+    result.target.name.clone_from(&parsed.name);
+    result.target.version.clone_from(&parsed.version);
+    result.target.path.clone_from(&parsed.path);
 
     // Build lookup indices
     let (by_name, by_path) = build_indices(graph);
 
     // Find the target package
-    let target_id = match find_target(&parsed, &by_name, &by_path, &mut result) {
-        Some(id) => id,
-        None => {
-            result.found_in_node_modules = false;
-            return result;
-        }
+    let Some(target_id) = find_target(&parsed, &by_name, &by_path, &mut result) else {
+        result.found_in_node_modules = false;
+        return result;
     };
 
     result.found_in_node_modules = true;
@@ -457,7 +456,7 @@ fn find_target(
         // Path not found
         result.errors.push(WhyErrorInfo::new(
             why_codes::PKG_WHY_TARGET_NOT_FOUND,
-            format!("Package at path not found in node_modules: {}", path),
+            format!("Package at path not found in node_modules: {path}"),
         ));
         return None;
     }
@@ -531,7 +530,7 @@ fn find_target(
     Some(candidates[0].clone())
 }
 
-/// Build a map of package -> list of (parent_id, edge).
+/// Build a map of package -> list of (`parent_id`, edge).
 fn build_parent_map(graph: &PackageGraph) -> HashMap<String, Vec<(PackageId, DepEdge)>> {
     let mut parents: HashMap<String, Vec<(PackageId, DepEdge)>> = HashMap::new();
 
@@ -685,7 +684,7 @@ fn find_chains(
     chains
 }
 
-/// Build a WhyChain from a path of (parent, edge) pairs.
+/// Build a `WhyChain` from a path of (parent, edge) pairs.
 fn build_chain_from_path(
     path: &[(PackageId, DepEdge)],
     target: &PackageId,

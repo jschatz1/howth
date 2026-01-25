@@ -529,7 +529,7 @@ const cjs = require("./cjs");
 
     #[test]
     fn test_single_quotes() {
-        let source = r#"import foo from './single-quoted';"#;
+        let source = r"import foo from './single-quoted';";
         let imports = scan_imports(source);
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].raw, "./single-quoted");

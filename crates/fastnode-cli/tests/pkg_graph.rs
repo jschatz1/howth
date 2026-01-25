@@ -2,6 +2,8 @@
 //!
 //! These tests create node_modules structures and verify the graph output.
 
+#![allow(clippy::type_complexity)]
+
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -575,7 +577,7 @@ fn test_graph_no_node_modules_error() {
     let has_nm_error = errors.iter().any(|e| {
         e["code"]
             .as_str()
-            .map_or(false, |c| c.contains("NODE_MODULES"))
+            .is_some_and(|c| c.contains("NODE_MODULES"))
     });
     assert!(has_nm_error, "Should have NODE_MODULES error");
 }

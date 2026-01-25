@@ -1,6 +1,6 @@
-//! BuildGraph types for the incremental build system.
+//! `BuildGraph` types for the incremental build system.
 //!
-//! The BuildGraph represents the dependency graph of build nodes.
+//! The `BuildGraph` represents the dependency graph of build nodes.
 //! Each node has inputs (files, globs, env vars) and can depend on other nodes.
 //!
 //! ## Schema Versions
@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Schema version for the BuildGraph format.
+/// Schema version for the `BuildGraph` format.
 /// v2.1: Multi-node support with defaults.
 pub const BUILD_GRAPH_SCHEMA_VERSION: u32 = 2;
 
-/// Schema version for the BuildRunResult format.
+/// Schema version for the `BuildRunResult` format.
 pub const BUILD_RUN_SCHEMA_VERSION: u32 = 1;
 
 /// Default environment variables included in hash.
@@ -154,7 +154,7 @@ impl BuildCommand {
     /// Get the command string for shell execution.
     #[must_use]
     pub fn command_str(&self) -> &str {
-        self.argv.first().map(String::as_str).unwrap_or("")
+        self.argv.first().map_or("", String::as_str)
     }
 }
 
@@ -164,7 +164,7 @@ pub struct BuildCachePolicy {
     /// Whether caching is enabled.
     #[serde(default = "default_cache_enabled")]
     pub enabled: bool,
-    /// Cache mode: "inputs_only" for v2.1.
+    /// Cache mode: `inputs_only` for v2.1.
     #[serde(default = "default_cache_mode")]
     pub mode: String,
 }
@@ -512,7 +512,7 @@ impl BuildNode {
     /// Sort inputs, outputs, env, and deps for deterministic ordering.
     pub fn normalize(&mut self) {
         // Sort inputs by sort key
-        self.inputs.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+        self.inputs.sort_by_key(BuildInput::sort_key);
 
         // Sort outputs
         self.outputs.sort();
@@ -630,7 +630,7 @@ impl BuildGraph {
             .filter(|(_, &deg)| deg == 0)
             .map(|(&id, _)| id)
             .collect();
-        ready.sort(); // Deterministic ordering
+        ready.sort_unstable(); // Deterministic ordering
 
         while let Some(id) = ready.pop() {
             result.push(id);
@@ -652,7 +652,7 @@ impl BuildGraph {
     }
 
     /// Get topologically sorted node IDs with parallel execution levels.
-    /// Returns (all_nodes_in_order, levels) where each level can run in parallel.
+    /// Returns (`all_nodes_in_order`, levels) where each level can run in parallel.
     #[must_use]
     pub fn toposort_levels(&self) -> (Vec<&str>, Vec<Vec<&str>>) {
         let mut in_degree: BTreeMap<&str, usize> = BTreeMap::new();
@@ -685,7 +685,7 @@ impl BuildGraph {
             }
 
             // Sort for determinism
-            current_level.sort();
+            current_level.sort_unstable();
 
             // Remove from in_degree and update dependents
             for &id in &current_level {
@@ -712,6 +712,9 @@ impl BuildGraph {
     /// the execution plan with nodes in topological order and parallel levels.
     ///
     /// Returns `Err` with the invalid target ID if any target is not found.
+    ///
+    /// # Errors
+    /// Returns an error if any specified target is not found in the graph.
     pub fn plan_targets(&self, targets: &[String]) -> Result<BuildPlan, String> {
         use std::collections::HashSet;
 
@@ -727,7 +730,7 @@ impl BuildGraph {
 
         // Compute closure of all dependencies
         let mut closure: HashSet<&str> = HashSet::new();
-        let mut stack: Vec<&str> = resolved_targets.iter().map(|s| s.as_str()).collect();
+        let mut stack: Vec<&str> = resolved_targets.iter().map(String::as_str).collect();
 
         while let Some(id) = stack.pop() {
             if closure.contains(id) {
