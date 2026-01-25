@@ -1073,6 +1073,12 @@ pub struct BuildNodeResult {
     /// Additional notes about the execution.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub notes: Vec<String>,
+    /// Number of files processed (for batch transpile nodes, v3.1.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_count: Option<u32>,
+    /// Whether this node was auto-discovered (v3.1.2).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub auto_discovered: bool,
 }
 
 /// Error information for a build failure.
@@ -1836,7 +1842,7 @@ mod tests {
         let json = serde_json::to_string(&pkg).unwrap();
         assert!(json.contains("lodash"));
         assert!(json.contains("4.17.21"));
-        assert!(json.contains("102_400"));
+        assert!(json.contains("102400"));
     }
 
     #[test]

@@ -1,16 +1,16 @@
 //! Shared daemon state.
 //!
-//! Holds the resolver cache, file watcher, package cache, and build cache,
-//! coordinating cache invalidation when files change.
+//! Holds the resolver cache, file watcher, package cache, build cache,
+//! and compiler backend, coordinating cache invalidation when files change.
 
 use crate::cache::{DaemonBuildCache, DaemonPkgJsonCache, DaemonResolverCache};
 use crate::watch::WatcherState;
+use fastnode_core::compiler::{CompilerBackend, SwcBackend};
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::PackageCache;
 use std::sync::Arc;
 
 /// Shared daemon state containing cache and watcher.
-#[derive(Debug)]
 pub struct DaemonState {
     /// Resolver cache for import resolution.
     pub cache: Arc<DaemonResolverCache>,
@@ -22,6 +22,22 @@ pub struct DaemonState {
     pub pkg_json_cache: Arc<DaemonPkgJsonCache>,
     /// Build cache for incremental builds.
     pub build_cache: Arc<DaemonBuildCache>,
+    /// Compiler backend for transpilation (v3.1).
+    pub compiler: Arc<dyn CompilerBackend>,
+}
+
+// Manual Debug impl because dyn CompilerBackend doesn't implement Debug
+impl std::fmt::Debug for DaemonState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DaemonState")
+            .field("cache", &self.cache)
+            .field("watcher", &self.watcher)
+            .field("pkg_cache", &self.pkg_cache)
+            .field("pkg_json_cache", &self.pkg_json_cache)
+            .field("build_cache", &self.build_cache)
+            .field("compiler", &self.compiler.name())
+            .finish()
+    }
 }
 
 impl DaemonState {
@@ -39,12 +55,14 @@ impl DaemonState {
         let pkg_cache = Arc::new(PackageCache::new(channel));
         let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
         let build_cache = Arc::new(DaemonBuildCache::new());
+        let compiler: Arc<dyn CompilerBackend> = Arc::new(SwcBackend::new());
         Self {
             cache,
             watcher,
             pkg_cache,
             pkg_json_cache,
             build_cache,
+            compiler,
         }
     }
 
@@ -55,12 +73,32 @@ impl DaemonState {
         let pkg_cache = Arc::new(PackageCache::new(Channel::Stable));
         let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
         let build_cache = Arc::new(DaemonBuildCache::new());
+        let compiler: Arc<dyn CompilerBackend> = Arc::new(SwcBackend::new());
         Self {
             cache,
             watcher,
             pkg_cache,
             pkg_json_cache,
             build_cache,
+            compiler,
+        }
+    }
+
+    /// Create daemon state with a custom compiler backend.
+    #[must_use]
+    pub fn with_compiler(compiler: Arc<dyn CompilerBackend>) -> Self {
+        let cache = Arc::new(DaemonResolverCache::new());
+        let watcher = Arc::new(WatcherState::new());
+        let pkg_cache = Arc::new(PackageCache::new(Channel::Stable));
+        let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
+        let build_cache = Arc::new(DaemonBuildCache::new());
+        Self {
+            cache,
+            watcher,
+            pkg_cache,
+            pkg_json_cache,
+            build_cache,
+            compiler,
         }
     }
 }

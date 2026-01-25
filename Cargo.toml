@@ -37,7 +37,8 @@ miette = { version = "7", features = ["fancy"] }
 # Core
 thiserror = "1"
 semver = "1"
-serde = { version = "1", features = ["derive"] }
+# Pinned to 1.0.219 for SWC compatibility (see: https://github.com/swc-project/swc/issues/11092)
+serde = { version = "=1.0.219", features = ["derive"] }
 serde_json = "1"
 dirs-next = "2"
 
@@ -45,6 +46,7 @@ dirs-next = "2"
 blake3 = "1"
 walkdir = "2"
 tempfile = "3"
+rayon = "1.10"
 
 # Daemon
 notify = { version = "6", default-features = false, features = ["macos_kqueue"] }

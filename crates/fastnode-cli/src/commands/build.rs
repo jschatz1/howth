@@ -76,6 +76,12 @@ struct BuildNodeResultJson {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     stderr_truncated: bool,
     notes: Vec<String>,
+    /// Number of files processed (for batch transpile nodes, v3.1.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files_count: Option<u32>,
+    /// Whether this node was auto-discovered (v3.1.2).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    auto_discovered: bool,
 }
 
 #[derive(Serialize)]
@@ -201,20 +207,28 @@ fn handle_response(response: Response, json: bool, show_why: bool) -> Result<()>
 fn print_human_output(result: &BuildRunResult, show_why: bool) {
     // v2.4: One line per node, stable ordering (already sorted by node_id from daemon)
     // Vocabulary: (cached) / (rebuilt) / (failed)
+    // v3.1.2: Include file count for batch transpile nodes
 
     // Collect nodes that need --why explanation (rebuilt or failed)
-    let mut why_nodes: Vec<(&str, &str)> = Vec::new();
+    let mut why_nodes: Vec<(&str, &str, bool)> = Vec::new(); // (id, reason, auto_discovered)
 
     for node_result in &result.results {
-        let (symbol, status_text) = if node_result.ok {
+        let (symbol, base_status) = if node_result.ok {
             match node_result.cache {
-                BuildCacheStatus::Hit => ("\u{2713}", "(cached)"),      // ✓
-                BuildCacheStatus::Miss => ("\u{2713}", "(rebuilt)"),    // ✓
-                BuildCacheStatus::Bypass => ("\u{2713}", "(rebuilt)"),  // forced = rebuilt
-                BuildCacheStatus::Skipped => ("-", "(skipped)"),
+                BuildCacheStatus::Hit => ("\u{2713}", "cached"),      // ✓
+                BuildCacheStatus::Miss => ("\u{2713}", "rebuilt"),    // ✓
+                BuildCacheStatus::Bypass => ("\u{2713}", "rebuilt"),  // forced = rebuilt
+                BuildCacheStatus::Skipped => ("-", "skipped"),
             }
         } else {
-            ("\u{2717}", "(failed)") // ✗
+            ("\u{2717}", "failed") // ✗
+        };
+
+        // v3.1.2: Include file count for transpile nodes
+        let status_text = if let Some(count) = node_result.files_count {
+            format!("({}, {} files)", base_status, count)
+        } else {
+            format!("({})", base_status)
         };
 
         println!("{} {} {}", symbol, node_result.id, status_text);
@@ -234,7 +248,7 @@ fn print_human_output(result: &BuildRunResult, show_why: bool) {
         // Collect --why info for non-cached nodes
         if show_why && node_result.cache != BuildCacheStatus::Hit {
             if let Some(ref reason) = node_result.reason {
-                why_nodes.push((&node_result.id, reason.to_human_string()));
+                why_nodes.push((&node_result.id, reason.to_human_string(), node_result.auto_discovered));
             }
         }
     }
@@ -259,11 +273,15 @@ fn print_human_output(result: &BuildRunResult, show_why: bool) {
     }
 
     // --why explanation block (v2.3, separate from node lines)
+    // v3.1.2: Include auto-discovered note
     if show_why && !why_nodes.is_empty() {
         println!();
-        for (node_id, reason) in &why_nodes {
+        for (node_id, reason, auto_discovered) in &why_nodes {
             println!("{node_id} rebuilt because:");
             println!("  - {reason}");
+            if *auto_discovered {
+                println!("  - note: auto-discovered from src/");
+            }
         }
     }
 }
@@ -308,6 +326,8 @@ fn convert_to_json(result: BuildRunResult) -> BuildResultJson {
                 stdout_truncated: r.stdout_truncated,
                 stderr_truncated: r.stderr_truncated,
                 notes: r.notes,
+                files_count: r.files_count,
+                auto_discovered: r.auto_discovered,
             })
             .collect(),
         notes: result.notes,
@@ -392,7 +412,13 @@ async fn run_watch_build(endpoint: &str, action: &BuildAction) -> io::Result<()>
     stream.write_all(&encoded).await?;
     stream.flush().await?;
 
-    println!("Watching... (ctrl+c to exit)");
+    // Show which targets are active (v3.4: watch mode defaults to transpile-only)
+    let targets_display = if action.targets.is_empty() {
+        "all".to_string()
+    } else {
+        action.targets.join(", ")
+    };
+    println!("Watching [{targets_display}]... (ctrl+c to exit)");
     println!();
 
     // Set up Ctrl+C handler

@@ -92,11 +92,11 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
     // Results table header
     writeln!(
         out,
-        "{:<20} {:>12} {:>12} {:>8} {:>14}",
-        "Case", "Median", "p95", "Files", "Nodes"
+        "{:<20} {:>12} {:>12} {:>8} {:>18}",
+        "Case", "Median", "p95", "Files", "Nodes (exec/hit)"
     )
     .into_diagnostic()?;
-    writeln!(out, "{}", "-".repeat(70)).into_diagnostic()?;
+    writeln!(out, "{}", "-".repeat(74)).into_diagnostic()?;
 
     // Results
     for result in &report.results {
@@ -121,7 +121,7 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
 
         writeln!(
             out,
-            "{:<20} {:>12} {:>12} {:>8} {:>14}",
+            "{:<20} {:>12} {:>12} {:>8} {:>18}",
             result.case, median, p95, files, nodes
         )
         .into_diagnostic()?;

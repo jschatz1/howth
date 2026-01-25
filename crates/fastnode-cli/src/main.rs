@@ -122,6 +122,9 @@ enum Commands {
         why: bool,
 
         /// Watch for file changes and rebuild (v3.0)
+        ///
+        /// In watch mode, defaults to transpile-only for fast feedback.
+        /// Add targets to include more (e.g., `--watch typecheck`).
         #[arg(long)]
         watch: bool,
 
@@ -129,8 +132,10 @@ enum Commands {
         #[arg(long, default_value = "100")]
         debounce_ms: u32,
 
-        /// Targets to build (comma-separated, e.g., "build,test" or "script:build")
-        /// If not specified, uses default targets from the graph.
+        /// Targets to build (e.g., "typecheck" or "transpile,typecheck")
+        ///
+        /// Without --watch: empty means all targets.
+        /// With --watch: empty means transpile-only; add targets to include more.
         #[arg(value_delimiter = ',')]
         targets: Vec<String>,
     },
@@ -550,6 +555,28 @@ fn main() -> Result<()> {
             std::process::exit(2);
         }
 
+        // v3.4: Watch mode defaults to transpile-only for fast feedback (Bun parity)
+        // - `howth build --watch` → transpile only
+        // - `howth build --watch typecheck` → transpile + typecheck
+        // Non-watch mode uses all targets by default (empty = all)
+        let effective_targets = if *watch {
+            if targets.is_empty() {
+                // Watch mode default: transpile only for fast feedback
+                vec!["transpile".to_string()]
+            } else {
+                // Watch mode with explicit targets: always include transpile + specified targets
+                let mut t = vec!["transpile".to_string()];
+                for target in targets {
+                    if target != "transpile" && !t.contains(target) {
+                        t.push(target.clone());
+                    }
+                }
+                t
+            }
+        } else {
+            targets.clone()
+        };
+
         let action = commands::build::BuildAction {
             cwd: cwd.clone(),
             force: *force,
@@ -559,7 +586,7 @@ fn main() -> Result<()> {
             why: *why,
             watch: *watch,
             debounce_ms: *debounce_ms,
-            targets: targets.clone(),
+            targets: effective_targets,
         };
         return commands::build::run(action, Channel::Stable, cli.json);
     }

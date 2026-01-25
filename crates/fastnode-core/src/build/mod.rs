@@ -28,9 +28,9 @@ pub mod hash;
 
 pub use codes::*;
 pub use exec::{
-    execute_graph, execute_graph_with_backend, execute_node, execute_transpile,
-    execute_transpile_batch, execute_typecheck, run_script, BuildCache, CacheEntry, ExecOptions,
-    MemoryCache,
+    execute_graph, execute_graph_with_backend, execute_graph_with_file_cache, execute_node,
+    execute_transpile, execute_transpile_batch, execute_typecheck, run_script, BuildCache,
+    CacheEntry, ExecOptions, MemoryCache,
 };
 pub use graph::{
     resolve_target_alias, BuildErrorInfo, BuildGraph, BuildInput, BuildNode, BuildNodeKind,
@@ -40,9 +40,11 @@ pub use graph::{
     TARGET_ALIASES,
 };
 pub use hash::{
-    expand_glob, hash_bytes, hash_env, hash_file, hash_glob, hash_graph, hash_input,
-    hash_input_with_deps, hash_node, hash_node_with_deps, hash_string, normalize_path, HashError,
-    HashResult,
+    expand_glob, hash_bytes, hash_env, hash_file, hash_file_with_ctx, hash_glob, hash_glob_with_ctx,
+    hash_graph, hash_graph_with_ctx, hash_input, hash_input_with_ctx, hash_input_with_deps,
+    hash_input_with_deps_ctx, hash_node, hash_node_with_deps, hash_node_with_deps_ctx, hash_string,
+    normalize_path, FileHashCache, FileHashCacheStats, FileHashKey, HashContext, HashError,
+    HashResult, InMemoryFileHashCache,
 };
 pub use fingerprint::{
     compute_fingerprint, fingerprints_match, normalize_output_path, FingerprintError,

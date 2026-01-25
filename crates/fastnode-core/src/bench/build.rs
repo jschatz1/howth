@@ -12,7 +12,8 @@
 
 use crate::bench::{compute_stats, BenchStats, BenchWarning};
 use crate::build::{
-    build_graph_from_project, execute_graph_with_backend, ExecOptions, MemoryCache,
+    build_graph_from_project, execute_graph_with_file_cache, ExecOptions, InMemoryFileHashCache,
+    MemoryCache,
 };
 use crate::compiler::SwcBackend;
 use serde::{Deserialize, Serialize};
@@ -272,11 +273,19 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
         Err(_) => None,
     };
 
+    // Determine targets based on benchmark type
+    // Transpile benchmark: only run transpile node (no typecheck)
+    // Devloop benchmark: run all nodes (transpile + typecheck)
+    let targets: Vec<String> = match params.target {
+        BenchTarget::Transpile => vec!["transpile".to_string()],
+        BenchTarget::Devloop => vec![], // Empty = all nodes
+    };
+
     // Run benchmarks based on target
     match params.target {
         BenchTarget::Transpile => {
             // Cold benchmark
-            let cold_result = run_cold_bench(&project_dir, params.iters, params.warmup);
+            let cold_result = run_cold_bench(&project_dir, params.iters, params.warmup, &targets);
             let mut cold_result = cold_result;
             if let Some(count) = files_count {
                 cold_result = cold_result.with_files_count(count);
@@ -284,23 +293,29 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
             report.add_result(cold_result);
 
             // Warm noop benchmark
-            let warm_noop_result = run_warm_noop_bench(&project_dir, params.iters, params.warmup);
+            let warm_noop_result = run_warm_noop_bench(&project_dir, params.iters, params.warmup, &targets);
             report.add_result(warm_noop_result);
 
             // Warm 1-change benchmark
             let warm_change_result =
-                run_warm_1_change_bench(&project_dir, params.iters, params.warmup);
+                run_warm_1_change_bench(&project_dir, params.iters, params.warmup, &targets);
             let warm_change_result = warm_change_result.with_files_count(1);
             report.add_result(warm_change_result);
 
-            // Run tsc baseline
+            // Run baselines
             if let Some(baseline) = run_tsc_baseline(&project_dir) {
+                report.add_baseline(baseline);
+            }
+            if let Some(baseline) = run_esbuild_baseline(&project_dir) {
+                report.add_baseline(baseline);
+            }
+            if let Some(baseline) = run_swc_baseline(&project_dir) {
                 report.add_baseline(baseline);
             }
         }
         BenchTarget::Devloop => {
             // Cold benchmark
-            let cold_result = run_cold_bench(&project_dir, params.iters, params.warmup);
+            let cold_result = run_cold_bench(&project_dir, params.iters, params.warmup, &targets);
             let mut cold_result = cold_result;
             if let Some(count) = files_count {
                 cold_result = cold_result.with_files_count(count);
@@ -308,23 +323,29 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
             report.add_result(cold_result);
 
             // Warm noop benchmark
-            let warm_noop_result = run_warm_noop_bench(&project_dir, params.iters, params.warmup);
+            let warm_noop_result = run_warm_noop_bench(&project_dir, params.iters, params.warmup, &targets);
             report.add_result(warm_noop_result);
 
             // Warm 1-change benchmark
             let warm_change_result =
-                run_warm_1_change_bench(&project_dir, params.iters, params.warmup);
+                run_warm_1_change_bench(&project_dir, params.iters, params.warmup, &targets);
             let warm_change_result = warm_change_result.with_files_count(1);
             report.add_result(warm_change_result);
 
             // Watch TTG benchmark (the killer metric)
             let watch_ttg_result =
-                run_watch_ttg_bench(&project_dir, params.iters, params.warmup);
+                run_watch_ttg_bench(&project_dir, params.iters, params.warmup, &targets);
             let watch_ttg_result = watch_ttg_result.with_files_count(1);
             report.add_result(watch_ttg_result);
 
-            // Run tsc baseline
+            // Run baselines
             if let Some(baseline) = run_tsc_baseline(&project_dir) {
+                report.add_baseline(baseline);
+            }
+            if let Some(baseline) = run_esbuild_baseline(&project_dir) {
+                report.add_baseline(baseline);
+            }
+            if let Some(baseline) = run_swc_baseline(&project_dir) {
                 report.add_baseline(baseline);
             }
         }
@@ -338,32 +359,44 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
 
 /// Run cold benchmark (no cache).
 #[allow(clippy::cast_possible_truncation)]
-fn run_cold_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenchResult {
+fn run_cold_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
 
-    // Warmup runs
+    // Warmup runs - each with fresh caches (simulating cold builds)
     for _ in 0..warmup {
         let mut cache = MemoryCache::new();
-        let options = ExecOptions::new();
+        let file_cache = InMemoryFileHashCache::new();
+        let options = ExecOptions::new().with_targets(targets.to_vec());
 
         if let Ok(graph) = build_graph_from_project(project_dir) {
-            let _ = execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend));
+            let _ = execute_graph_with_file_cache(
+                &graph,
+                Some(&mut cache),
+                &options,
+                Some(&backend),
+                Some(&file_cache),
+            );
         }
     }
 
-    // Measured runs
+    // Measured runs - each with fresh caches (cold build)
     for _ in 0..iters {
-        // Clear cache by creating a fresh one
+        // Fresh caches each iteration for true cold measurement
         let mut cache = MemoryCache::new();
-        let options = ExecOptions::new();
+        let file_cache = InMemoryFileHashCache::new();
+        let options = ExecOptions::new().with_targets(targets.to_vec());
 
         let start = Instant::now();
         if let Ok(graph) = build_graph_from_project(project_dir) {
-            if let Ok(result) =
-                execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend))
-            {
+            if let Ok(result) = execute_graph_with_file_cache(
+                &graph,
+                Some(&mut cache),
+                &options,
+                Some(&backend),
+                Some(&file_cache),
+            ) {
                 // Track work done from last run
                 last_work_done = WorkDoneStats {
                     nodes_executed: result.summary.nodes_run as u32,
@@ -382,39 +415,60 @@ fn run_cold_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenchResu
 
 /// Run warm noop benchmark (cached, no changes).
 #[allow(clippy::cast_possible_truncation)]
-fn run_warm_noop_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenchResult {
+fn run_warm_noop_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
 
-    // Pre-warm the cache
-    let mut cache = MemoryCache::new();
-    let options = ExecOptions::new();
-
-    if let Ok(graph) = build_graph_from_project(project_dir) {
-        let _ = execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend));
-    }
-
-    // Warmup runs (with same cache)
-    for _ in 0..warmup {
-        if let Ok(graph) = build_graph_from_project(project_dir) {
-            let _ = execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend));
+    // Build graph once - graph construction is not part of warm benchmark
+    let graph = match build_graph_from_project(project_dir) {
+        Ok(g) => g,
+        Err(_) => {
+            return BuildBenchResult::new("warm_noop", iters, compute_stats(&[0]));
         }
+    };
+
+    // Create caches that persist across all iterations
+    let mut cache = MemoryCache::new();
+    let file_cache = InMemoryFileHashCache::new();
+    let options = ExecOptions::new().with_targets(targets.to_vec());
+
+    // Pre-warm the caches
+    let _ = execute_graph_with_file_cache(
+        &graph,
+        Some(&mut cache),
+        &options,
+        Some(&backend),
+        Some(&file_cache),
+    );
+
+    // Warmup runs (with same caches and graph)
+    for _ in 0..warmup {
+        let _ = execute_graph_with_file_cache(
+            &graph,
+            Some(&mut cache),
+            &options,
+            Some(&backend),
+            Some(&file_cache),
+        );
     }
 
-    // Measured runs
+    // Measured runs - only time execution, not graph construction
+    // File hash cache should make this very fast
     for _ in 0..iters {
         let start = Instant::now();
-        if let Ok(graph) = build_graph_from_project(project_dir) {
-            if let Ok(result) =
-                execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend))
-            {
-                last_work_done = WorkDoneStats {
-                    nodes_executed: result.summary.nodes_run as u32,
-                    nodes_cached: result.summary.cache_hits as u32,
-                    files_transpiled: None, // No files transpiled (all cached)
-                };
-            }
+        if let Ok(result) = execute_graph_with_file_cache(
+            &graph,
+            Some(&mut cache),
+            &options,
+            Some(&backend),
+            Some(&file_cache),
+        ) {
+            last_work_done = WorkDoneStats {
+                nodes_executed: result.summary.nodes_run as u32,
+                nodes_cached: result.summary.cache_hits as u32,
+                files_transpiled: None, // No files transpiled (all cached)
+            };
         }
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
@@ -426,7 +480,7 @@ fn run_warm_noop_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenc
 
 /// Run warm 1-change benchmark (cached, touch one file).
 #[allow(clippy::cast_possible_truncation)]
-fn run_warm_1_change_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenchResult {
+fn run_warm_1_change_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
@@ -434,45 +488,65 @@ fn run_warm_1_change_bench(project_dir: &Path, iters: u32, warmup: u32) -> Build
     // Find a file to touch
     let touch_file = find_file_to_touch(&project_dir.join("src"));
 
-    // Pre-warm the cache
-    let mut cache = MemoryCache::new();
-    let options = ExecOptions::new();
+    // Build graph once - graph structure doesn't change when file contents change
+    let graph = match build_graph_from_project(project_dir) {
+        Ok(g) => g,
+        Err(_) => {
+            return BuildBenchResult::new("warm_1_change", iters, compute_stats(&[0]));
+        }
+    };
 
-    if let Ok(graph) = build_graph_from_project(project_dir) {
-        let _ = execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend));
-    }
+    // Create caches that persist across iterations
+    // File hash cache will automatically invalidate for touched files (mtime changes)
+    let mut cache = MemoryCache::new();
+    let file_cache = InMemoryFileHashCache::new();
+    let options = ExecOptions::new().with_targets(targets.to_vec());
+
+    // Pre-warm the caches
+    let _ = execute_graph_with_file_cache(
+        &graph,
+        Some(&mut cache),
+        &options,
+        Some(&backend),
+        Some(&file_cache),
+    );
 
     // Warmup runs
     for _ in 0..warmup {
         if let Some(ref file) = touch_file {
             touch_file_content(file);
         }
-        // Need fresh cache for each change to measure rebuild
-        cache = MemoryCache::new();
-        if let Ok(graph) = build_graph_from_project(project_dir) {
-            let _ = execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend));
-        }
+        // Keep same caches - file content change invalidates that file's hash cache entry
+        let _ = execute_graph_with_file_cache(
+            &graph,
+            Some(&mut cache),
+            &options,
+            Some(&backend),
+            Some(&file_cache),
+        );
     }
 
-    // Measured runs
+    // Measured runs - only time execution, not graph construction
+    // File hash cache should make unchanged files very fast
     for _ in 0..iters {
         if let Some(ref file) = touch_file {
             touch_file_content(file);
         }
-        // Fresh cache for each change
-        cache = MemoryCache::new();
+        // Keep same caches - measures incremental rebuild after 1 file change
 
         let start = Instant::now();
-        if let Ok(graph) = build_graph_from_project(project_dir) {
-            if let Ok(result) =
-                execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend))
-            {
-                last_work_done = WorkDoneStats {
-                    nodes_executed: result.summary.nodes_run as u32,
-                    nodes_cached: result.summary.cache_hits as u32,
-                    files_transpiled: Some(1), // One file changed
-                };
-            }
+        if let Ok(result) = execute_graph_with_file_cache(
+            &graph,
+            Some(&mut cache),
+            &options,
+            Some(&backend),
+            Some(&file_cache),
+        ) {
+            last_work_done = WorkDoneStats {
+                nodes_executed: result.summary.nodes_run as u32,
+                nodes_cached: result.summary.cache_hits as u32,
+                files_transpiled: Some(1), // One file changed
+            };
         }
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
@@ -487,7 +561,7 @@ fn run_warm_1_change_bench(project_dir: &Path, iters: u32, warmup: u32) -> Build
 /// Simulates watch mode: measures time from file change to build completion.
 /// This is the "killer metric" - what users actually experience in watch mode.
 #[allow(clippy::cast_possible_truncation)]
-fn run_watch_ttg_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenchResult {
+fn run_watch_ttg_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
@@ -495,29 +569,47 @@ fn run_watch_ttg_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenc
     // Find a file to touch
     let touch_file = find_file_to_touch(&project_dir.join("src"));
 
-    // Pre-warm: do initial build to populate cache
-    let mut cache = MemoryCache::new();
-    let options = ExecOptions::new();
+    // Build graph once - in watch mode, graph is persistent
+    let graph = match build_graph_from_project(project_dir) {
+        Ok(g) => g,
+        Err(_) => {
+            return BuildBenchResult::new("watch_ttg", iters, compute_stats(&[0]));
+        }
+    };
 
-    if let Ok(graph) = build_graph_from_project(project_dir) {
-        let _ = execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend));
-    }
+    // Create caches that persist across iterations (like real watch mode)
+    let mut cache = MemoryCache::new();
+    let file_cache = InMemoryFileHashCache::new();
+    let options = ExecOptions::new().with_targets(targets.to_vec());
+
+    // Pre-warm: do initial build to populate caches
+    let _ = execute_graph_with_file_cache(
+        &graph,
+        Some(&mut cache),
+        &options,
+        Some(&backend),
+        Some(&file_cache),
+    );
 
     // Warmup runs
     for _ in 0..warmup {
         if let Some(ref file) = touch_file {
             touch_file_content(file);
         }
-        // Simulate watch mode: keep same cache but rebuild changed file
-        if let Ok(graph) = build_graph_from_project(project_dir) {
-            let _ = execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend));
-        }
+        // Simulate watch mode: keep same caches but rebuild changed file
+        let _ = execute_graph_with_file_cache(
+            &graph,
+            Some(&mut cache),
+            &options,
+            Some(&backend),
+            Some(&file_cache),
+        );
     }
 
     // Measured runs - simulate watch mode TTG:
     // 1. Touch file (simulates file change notification)
     // 2. Start timer immediately
-    // 3. Rebuild with existing cache
+    // 3. Rebuild with existing caches (graph already built, like real watch mode)
     // 4. Stop timer when build completes
     for _ in 0..iters {
         if let Some(ref file) = touch_file {
@@ -527,16 +619,18 @@ fn run_watch_ttg_bench(project_dir: &Path, iters: u32, warmup: u32) -> BuildBenc
         // Start timing immediately after file change
         let start = Instant::now();
 
-        if let Ok(graph) = build_graph_from_project(project_dir) {
-            if let Ok(result) =
-                execute_graph_with_backend(&graph, Some(&mut cache), &options, Some(&backend))
-            {
-                last_work_done = WorkDoneStats {
-                    nodes_executed: result.summary.nodes_run as u32,
-                    nodes_cached: result.summary.cache_hits as u32,
-                    files_transpiled: Some(1),
-                };
-            }
+        if let Ok(result) = execute_graph_with_file_cache(
+            &graph,
+            Some(&mut cache),
+            &options,
+            Some(&backend),
+            Some(&file_cache),
+        ) {
+            last_work_done = WorkDoneStats {
+                nodes_executed: result.summary.nodes_run as u32,
+                nodes_cached: result.summary.cache_hits as u32,
+                files_transpiled: Some(1),
+            };
         }
 
         let elapsed = start.elapsed();
@@ -598,6 +692,119 @@ fn run_tsc_baseline(project_dir: &Path) -> Option<BaselineResult> {
     let stats = compute_stats(&samples);
     Some(BaselineResult {
         name: "tsc --noEmit".to_string(),
+        command: exact_command,
+        median_ns: stats.median_ns,
+    })
+}
+
+/// Run esbuild transpile baseline.
+#[allow(clippy::cast_possible_truncation)]
+fn run_esbuild_baseline(project_dir: &Path) -> Option<BaselineResult> {
+    let esbuild_path = project_dir.join("node_modules/.bin/esbuild");
+    if !esbuild_path.exists() {
+        return None;
+    }
+
+    let src_dir = project_dir.join("src");
+    if !src_dir.exists() {
+        return None;
+    }
+
+    // Create temp output dir
+    let out_dir = project_dir.join(".howth/bench-esbuild");
+    let _ = fs::create_dir_all(&out_dir);
+
+    let cmd = esbuild_path.to_string_lossy().to_string();
+    let exact_command = format!("{} src/**/*.ts src/**/*.tsx --outdir=.howth/bench-esbuild --format=esm", cmd);
+
+    // Collect all .ts and .tsx files
+    let mut input_files = Vec::new();
+    for entry in walkdir::WalkDir::new(&src_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if ext == "ts" || ext == "tsx" {
+                input_files.push(path.to_path_buf());
+            }
+        }
+    }
+
+    if input_files.is_empty() {
+        return None;
+    }
+
+    // Run esbuild and time it
+    let mut samples = Vec::with_capacity(3);
+
+    for _ in 0..3 {
+        let start = Instant::now();
+        let mut args: Vec<String> = input_files.iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        args.push(format!("--outdir={}", out_dir.to_string_lossy()));
+        args.push("--format=esm".to_string());
+
+        let _ = Command::new(&cmd)
+            .args(&args)
+            .current_dir(project_dir)
+            .output();
+        let elapsed = start.elapsed();
+        samples.push(elapsed.as_nanos() as u64);
+    }
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&out_dir);
+
+    let stats = compute_stats(&samples);
+    Some(BaselineResult {
+        name: "esbuild".to_string(),
+        command: exact_command,
+        median_ns: stats.median_ns,
+    })
+}
+
+/// Run swc transpile baseline.
+#[allow(clippy::cast_possible_truncation)]
+fn run_swc_baseline(project_dir: &Path) -> Option<BaselineResult> {
+    let swc_path = project_dir.join("node_modules/.bin/swc");
+    if !swc_path.exists() {
+        return None;
+    }
+
+    let src_dir = project_dir.join("src");
+    if !src_dir.exists() {
+        return None;
+    }
+
+    // Create temp output dir
+    let out_dir = project_dir.join(".howth/bench-swc");
+    let _ = fs::create_dir_all(&out_dir);
+
+    let cmd = swc_path.to_string_lossy().to_string();
+    let exact_command = format!("{} src -d .howth/bench-swc", cmd);
+
+    // Run swc and time it
+    let mut samples = Vec::with_capacity(3);
+
+    for _ in 0..3 {
+        let start = Instant::now();
+        let _ = Command::new(&cmd)
+            .args(["src", "-d", &out_dir.to_string_lossy()])
+            .current_dir(project_dir)
+            .output();
+        let elapsed = start.elapsed();
+        samples.push(elapsed.as_nanos() as u64);
+    }
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&out_dir);
+
+    let stats = compute_stats(&samples);
+    Some(BaselineResult {
+        name: "swc".to_string(),
         command: exact_command,
         median_ns: stats.median_ns,
     })

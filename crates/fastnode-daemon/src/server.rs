@@ -167,7 +167,8 @@ async fn handle_watch_build_streaming(
     // Helper to run a build and send result
     let run_build = || {
         let build_cache = Some(state.build_cache.clone());
-        handle_build(&cwd, false, false, max_parallel, false, &targets, build_cache)
+        let compiler = Some(state.compiler.clone());
+        handle_build(&cwd, false, false, max_parallel, false, &targets, build_cache, compiler)
     };
 
     // Run initial build

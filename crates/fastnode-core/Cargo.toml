@@ -5,6 +5,20 @@ edition.workspace = true
 license.workspace = true
 description = "Core types for fastnode: errors, versioning, paths, config"
 
+[features]
+default = []
+# Enable full SWC integration for production transpilation
+swc = [
+    "dep:swc_common",
+    "dep:swc_ecma_ast",
+    "dep:swc_ecma_parser",
+    "dep:swc_ecma_codegen",
+    "dep:swc_ecma_transforms_base",
+    "dep:swc_ecma_transforms_react",
+    "dep:swc_ecma_transforms_typescript",
+    "dep:swc_ecma_visit",
+]
+
 [dependencies]
 thiserror.workspace = true
 semver.workspace = true
@@ -21,10 +35,28 @@ url.workspace = true
 tokio.workspace = true
 blake3.workspace = true
 walkdir.workspace = true
+rayon.workspace = true
 glob = "0.3"
+regex-lite = "0.1"
+
+# Optional SWC integration for full transpilation support
+# NOTE: SWC has a known compatibility issue with serde 1.0.220+
+# See: https://github.com/swc-project/swc/issues/11092
+# To enable, add `serde = "=1.0.219"` to workspace Cargo.toml to pin serde
+swc_common = { version = "0.37", optional = true, features = ["sourcemap"] }
+swc_ecma_ast = { version = "0.118", optional = true }
+swc_ecma_parser = { version = "0.149", optional = true }
+swc_ecma_codegen = { version = "0.155", optional = true }
+swc_ecma_transforms_base = { version = "0.144", optional = true }
+swc_ecma_transforms_react = { version = "0.190", optional = true }
+swc_ecma_transforms_typescript = { version = "0.195", optional = true }
+swc_ecma_visit = { version = "0.104", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 junction = "1"
+
+[dev-dependencies]
+serial_test = "3.2"

@@ -12,10 +12,13 @@
 
 use super::graph::{BuildInput, BuildNode, DEFAULT_GLOB_EXCLUSIONS};
 use blake3::Hasher;
-use std::collections::BTreeMap;
+use rayon::prelude::*;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
+use std::time::SystemTime;
 use walkdir::WalkDir;
 
 /// Result type for hashing operations.
@@ -73,6 +76,144 @@ impl std::fmt::Display for HashError {
 
 impl std::error::Error for HashError {}
 
+// ============================================================================
+// File Hash Cache (v3.4)
+// ============================================================================
+
+/// Key for file hash cache entries.
+///
+/// Uses (path, mtime, size) as the cache key. If any of these change,
+/// the file is considered modified and will be re-hashed.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct FileHashKey {
+    /// Normalized absolute path.
+    pub path: String,
+    /// Modification time as Unix timestamp in nanoseconds.
+    pub mtime_ns: u128,
+    /// File size in bytes.
+    pub size: u64,
+}
+
+impl FileHashKey {
+    /// Create a new file hash key from a path.
+    ///
+    /// Returns None if the file doesn't exist or metadata can't be read.
+    #[must_use]
+    pub fn from_path(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        let mtime_ns = metadata
+            .modified()
+            .ok()?
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        let size = metadata.len();
+        let normalized = normalize_path(path);
+
+        Some(Self {
+            path: normalized,
+            mtime_ns,
+            size,
+        })
+    }
+}
+
+/// Trait for file hash caching.
+///
+/// Implementations cache (path, mtime, size) → content_hash mappings
+/// to avoid re-reading and re-hashing unchanged files.
+pub trait FileHashCache: Send + Sync {
+    /// Get a cached hash for the given key.
+    fn get(&self, key: &FileHashKey) -> Option<String>;
+
+    /// Store a hash for the given key.
+    fn put(&self, key: FileHashKey, hash: String);
+
+    /// Get cache statistics.
+    fn stats(&self) -> FileHashCacheStats;
+}
+
+/// Statistics for file hash cache.
+#[derive(Debug, Clone, Default)]
+pub struct FileHashCacheStats {
+    /// Number of cache hits.
+    pub hits: u64,
+    /// Number of cache misses.
+    pub misses: u64,
+    /// Number of entries in cache.
+    pub entries: usize,
+}
+
+/// In-memory file hash cache.
+///
+/// Thread-safe implementation using RwLock.
+#[derive(Debug, Default)]
+pub struct InMemoryFileHashCache {
+    entries: RwLock<HashMap<FileHashKey, String>>,
+    hits: RwLock<u64>,
+    misses: RwLock<u64>,
+}
+
+impl InMemoryFileHashCache {
+    /// Create a new empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl FileHashCache for InMemoryFileHashCache {
+    fn get(&self, key: &FileHashKey) -> Option<String> {
+        let result = {
+            let entries = self.entries.read().unwrap();
+            entries.get(key).cloned()
+        };
+        if result.is_some() {
+            *self.hits.write().unwrap() += 1;
+        } else {
+            *self.misses.write().unwrap() += 1;
+        }
+        result
+    }
+
+    fn put(&self, key: FileHashKey, hash: String) {
+        self.entries.write().unwrap().insert(key, hash);
+    }
+
+    fn stats(&self) -> FileHashCacheStats {
+        FileHashCacheStats {
+            hits: *self.hits.read().unwrap(),
+            misses: *self.misses.read().unwrap(),
+            entries: self.entries.read().unwrap().len(),
+        }
+    }
+}
+
+/// Context for hash operations.
+///
+/// Provides shared state like file hash cache to avoid re-reading unchanged files.
+#[derive(Default)]
+pub struct HashContext<'a> {
+    /// Optional file hash cache for avoiding redundant file reads.
+    pub file_cache: Option<&'a dyn FileHashCache>,
+}
+
+impl<'a> HashContext<'a> {
+    /// Create a new context with a file hash cache.
+    #[must_use]
+    pub fn with_cache(cache: &'a dyn FileHashCache) -> Self {
+        Self {
+            file_cache: Some(cache),
+        }
+    }
+
+    /// Create an empty context (no caching).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
 /// Normalize a path for hashing.
 ///
 /// - Converts to absolute path (if not already)
@@ -103,6 +244,36 @@ pub fn normalize_path(path: &Path) -> String {
 
 /// Hash a file by its contents.
 pub fn hash_file(path: &Path) -> HashResult<String> {
+    hash_file_with_ctx(path, &HashContext::empty())
+}
+
+/// Hash a file by its contents, with optional caching.
+///
+/// If a file hash cache is provided in the context, this will:
+/// 1. Check if (path, mtime, size) is in cache
+/// 2. If hit, return cached hash without reading file
+/// 3. If miss, read file, compute hash, store in cache
+pub fn hash_file_with_ctx(path: &Path, ctx: &HashContext<'_>) -> HashResult<String> {
+    // Try to get cache key (requires file to exist and be readable)
+    if let Some(cache) = ctx.file_cache {
+        if let Some(key) = FileHashKey::from_path(path) {
+            // Check cache first
+            if let Some(cached_hash) = cache.get(&key) {
+                return Ok(cached_hash);
+            }
+
+            // Cache miss - read and hash file
+            let contents = fs::read(path).map_err(|e| HashError::io(path, e))?;
+            let hash = hash_bytes(&contents);
+
+            // Store in cache
+            cache.put(key, hash.clone());
+
+            return Ok(hash);
+        }
+    }
+
+    // No cache or couldn't get metadata - fall back to direct read
     let contents = fs::read(path).map_err(|e| HashError::io(path, e))?;
     Ok(hash_bytes(&contents))
 }
@@ -191,24 +362,41 @@ pub fn expand_glob(pattern: &str, root: &Path, exclusions: &[&str]) -> HashResul
 
 /// Hash all files matched by a glob pattern.
 pub fn hash_glob(pattern: &str, root: &Path, exclusions: &[&str]) -> HashResult<String> {
+    hash_glob_with_ctx(pattern, root, exclusions, &HashContext::empty())
+}
+
+/// Hash all files matched by a glob pattern, with optional caching.
+///
+/// Uses file hash cache to avoid re-reading unchanged files.
+/// v3.5: Parallelizes file hashing using rayon for cold builds.
+pub fn hash_glob_with_ctx(
+    pattern: &str,
+    root: &Path,
+    exclusions: &[&str],
+    ctx: &HashContext<'_>,
+) -> HashResult<String> {
     let files = expand_glob(pattern, root, exclusions)?;
 
-    let mut hasher = Hasher::new();
+    // Parallel hash computation for all files
+    // Each file is hashed independently, then results are combined deterministically
+    let file_hashes: Vec<(String, String)> = files
+        .par_iter()
+        .map(|file| {
+            let normalized = normalize_path(file);
+            let hash = match hash_file_with_ctx(file, ctx) {
+                Ok(h) => h,
+                Err(_) => "<missing>".to_string(),
+            };
+            (normalized, hash)
+        })
+        .collect();
 
-    for file in &files {
-        let normalized = normalize_path(file);
+    // Combine hashes in deterministic order (files are already sorted)
+    let mut hasher = Hasher::new();
+    for (normalized, file_hash) in &file_hashes {
         hasher.update(normalized.as_bytes());
         hasher.update(b"\0");
-
-        match fs::read(file) {
-            Ok(contents) => {
-                hasher.update(&contents);
-            }
-            Err(_) => {
-                // File missing - include marker
-                hasher.update(b"<missing>");
-            }
-        }
+        hasher.update(file_hash.as_bytes());
         hasher.update(b"\0");
     }
 
@@ -294,6 +482,15 @@ fn encode_input(input: &BuildInput) -> Vec<u8> {
 
 /// Hash a single build input.
 pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
+    hash_input_with_ctx(input, cwd, &HashContext::empty())
+}
+
+/// Hash a single build input with optional caching.
+pub fn hash_input_with_ctx(
+    input: &BuildInput,
+    cwd: &Path,
+    ctx: &HashContext<'_>,
+) -> HashResult<String> {
     match input {
         BuildInput::File { path, optional } => {
             let full_path = if Path::new(path).is_absolute() {
@@ -303,7 +500,7 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
             };
 
             if full_path.exists() {
-                hash_file(&full_path)
+                hash_file_with_ctx(&full_path, ctx)
             } else if *optional {
                 // Optional missing file - stable marker
                 Ok(hash_string(&format!("optional-missing:{}", normalize_path(&full_path))))
@@ -324,7 +521,7 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
                 return Ok(hash_string(&format!("optional-missing-glob:{}", normalize_path(&root_path))));
             }
 
-            hash_glob(pattern, &root_path, DEFAULT_GLOB_EXCLUSIONS)
+            hash_glob_with_ctx(pattern, &root_path, DEFAULT_GLOB_EXCLUSIONS, ctx)
         }
         BuildInput::Dir { path, optional } => {
             let full_path = if Path::new(path).is_absolute() {
@@ -335,7 +532,7 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
 
             if full_path.exists() && full_path.is_dir() {
                 // Hash directory contents as glob
-                hash_glob("**/*", &full_path, DEFAULT_GLOB_EXCLUSIONS)
+                hash_glob_with_ctx("**/*", &full_path, DEFAULT_GLOB_EXCLUSIONS, ctx)
             } else if *optional {
                 Ok(hash_string(&format!("optional-missing-dir:{}", normalize_path(&full_path))))
             } else {
@@ -357,7 +554,7 @@ pub fn hash_input(input: &BuildInput, cwd: &Path) -> HashResult<String> {
             };
 
             if full_path.exists() {
-                hash_file(&full_path)
+                hash_file_with_ctx(&full_path, ctx)
             } else {
                 Ok(hash_string("lockfile:missing"))
             }
@@ -383,6 +580,16 @@ pub fn hash_input_with_deps(
     cwd: &Path,
     dep_hashes: &BTreeMap<String, String>,
 ) -> HashResult<String> {
+    hash_input_with_deps_ctx(input, cwd, dep_hashes, &HashContext::empty())
+}
+
+/// Hash a single build input with dependency hash resolution and caching.
+pub fn hash_input_with_deps_ctx(
+    input: &BuildInput,
+    cwd: &Path,
+    dep_hashes: &BTreeMap<String, String>,
+    ctx: &HashContext<'_>,
+) -> HashResult<String> {
     match input {
         BuildInput::Node { id } => {
             // Look up the actual hash of the dependency node
@@ -393,8 +600,8 @@ pub fn hash_input_with_deps(
                 Ok(hash_string(&format!("node:{id}")))
             }
         }
-        // All other inputs delegate to the base function
-        other => hash_input(other, cwd),
+        // All other inputs delegate to the base function with context
+        other => hash_input_with_ctx(other, cwd, ctx),
     }
 }
 
@@ -427,6 +634,16 @@ pub fn hash_node_with_deps(
     cwd: &Path,
     dep_hashes: &BTreeMap<String, String>,
 ) -> HashResult<String> {
+    hash_node_with_deps_ctx(node, cwd, dep_hashes, &HashContext::empty())
+}
+
+/// Compute the hash for a build node with dependency hash inclusion and caching.
+pub fn hash_node_with_deps_ctx(
+    node: &BuildNode,
+    cwd: &Path,
+    dep_hashes: &BTreeMap<String, String>,
+    ctx: &HashContext<'_>,
+) -> HashResult<String> {
     let mut hasher = Hasher::new();
 
     // Schema version
@@ -445,11 +662,11 @@ pub fn hash_node_with_deps(
     hasher.update(b"\0");
 
     // Inputs (sorted by canonical encoding)
-    // Use hash_input_with_deps to include dependency hashes
+    // Use hash_input_with_deps_ctx to include dependency hashes and caching
     let mut input_hashes: Vec<(Vec<u8>, String)> = Vec::new();
     for input in &node.inputs {
         let encoded = encode_input(input);
-        let hash = hash_input_with_deps(input, cwd, dep_hashes)?;
+        let hash = hash_input_with_deps_ctx(input, cwd, dep_hashes, ctx)?;
         input_hashes.push((encoded, hash));
     }
     // Sort by encoding for determinism
@@ -478,6 +695,13 @@ pub fn hash_node_with_deps(
         hasher.update(b"\0");
     }
 
+    // Transpile spec (v3.1)
+    if let Some(transpile) = &node.transpile {
+        hasher.update(b"transpile:");
+        hasher.update(&transpile.canonical_encoding());
+        hasher.update(b"\0");
+    }
+
     // Dependencies (sorted) - include dep hashes for additional invalidation
     let mut deps = node.deps.clone();
     deps.sort();
@@ -501,6 +725,17 @@ pub fn hash_node_with_deps(
 /// available when computing each node's hash. This ensures cache invalidation
 /// propagates correctly through the DAG.
 pub fn hash_graph(graph: &super::graph::BuildGraph) -> HashResult<BTreeMap<String, String>> {
+    hash_graph_with_ctx(graph, &HashContext::empty())
+}
+
+/// Compute hashes for all nodes in a graph with file hash caching.
+///
+/// Uses the provided file hash cache to avoid re-reading unchanged files.
+/// This significantly speeds up repeated builds where most files haven't changed.
+pub fn hash_graph_with_ctx(
+    graph: &super::graph::BuildGraph,
+    ctx: &HashContext<'_>,
+) -> HashResult<BTreeMap<String, String>> {
     let cwd = Path::new(&graph.cwd);
     let mut hashes = BTreeMap::new();
 
@@ -514,7 +749,7 @@ pub fn hash_graph(graph: &super::graph::BuildGraph) -> HashResult<BTreeMap<Strin
     // Compute hashes in topological order
     for id in sorted_ids {
         if let Some(node) = node_map.get(id) {
-            let hash = hash_node_with_deps(node, cwd, &hashes)?;
+            let hash = hash_node_with_deps_ctx(node, cwd, &hashes, ctx)?;
             hashes.insert(id.to_string(), hash);
         }
     }
@@ -766,5 +1001,72 @@ mod tests {
 
         // Test hash should ALSO change (dep-hash propagation)
         assert_ne!(test_hash1, test_hash2);
+    }
+
+    #[test]
+    fn test_hash_transpile_node() {
+        use crate::compiler::{JsxRuntime, TranspileSpec};
+
+        let dir = tempdir().unwrap();
+        let app_tsx = dir.path().join("App.tsx");
+        std::fs::write(&app_tsx, "const x = <div>Hello</div>;").unwrap();
+
+        let spec = TranspileSpec::new("App.tsx", "dist/App.js")
+            .with_jsx_runtime(JsxRuntime::Automatic);
+        let node = BuildNode::transpile("App.tsx", "dist/App.js", spec);
+
+        let hash = hash_node(&node, dir.path()).unwrap();
+        assert_eq!(hash.len(), 64);
+
+        // Hash should be deterministic
+        let hash2 = hash_node(&node, dir.path()).unwrap();
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_hash_transpile_spec_changes() {
+        use crate::compiler::{JsxRuntime, TranspileSpec};
+
+        let dir = tempdir().unwrap();
+        let app_tsx = dir.path().join("App.tsx");
+        std::fs::write(&app_tsx, "const x = <div>Hello</div>;").unwrap();
+
+        // Create two nodes with different specs
+        let spec1 = TranspileSpec::new("App.tsx", "dist/App.js")
+            .with_jsx_runtime(JsxRuntime::Automatic);
+        let node1 = BuildNode::transpile("App.tsx", "dist/App.js", spec1);
+
+        let spec2 = TranspileSpec::new("App.tsx", "dist/App.js")
+            .with_jsx_runtime(JsxRuntime::Classic);
+        let node2 = BuildNode::transpile("App.tsx", "dist/App.js", spec2);
+
+        let hash1 = hash_node(&node1, dir.path()).unwrap();
+        let hash2 = hash_node(&node2, dir.path()).unwrap();
+
+        // Hashes should differ because JSX runtime differs
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_hash_transpile_input_changes() {
+        use crate::compiler::{JsxRuntime, TranspileSpec};
+
+        let dir = tempdir().unwrap();
+        let app_tsx = dir.path().join("App.tsx");
+        std::fs::write(&app_tsx, "const x = <div>Hello</div>;").unwrap();
+
+        let spec = TranspileSpec::new("App.tsx", "dist/App.js")
+            .with_jsx_runtime(JsxRuntime::Automatic);
+        let node = BuildNode::transpile("App.tsx", "dist/App.js", spec);
+
+        let hash1 = hash_node(&node, dir.path()).unwrap();
+
+        // Change the input file
+        std::fs::write(&app_tsx, "const x = <div>World</div>;").unwrap();
+
+        let hash2 = hash_node(&node, dir.path()).unwrap();
+
+        // Hash should change when input file changes
+        assert_ne!(hash1, hash2);
     }
 }

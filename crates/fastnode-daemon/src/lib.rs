@@ -45,8 +45,9 @@ pub use watch::{WatchError, WatcherState};
 
 use crate::cache::DaemonBuildCache;
 use fastnode_core::build::{
-    build_graph_from_project, execute_graph, ExecOptions, BUILD_RUN_SCHEMA_VERSION,
+    build_graph_from_project, execute_graph_with_backend, ExecOptions, BUILD_RUN_SCHEMA_VERSION,
 };
+use fastnode_core::compiler::CompilerBackend;
 use fastnode_core::config::Channel;
 use fastnode_core::resolver::{
     resolve_v0, PkgJsonCache, ResolveContext, ResolverCache, ResolverCacheKey, ResolverConfig,
@@ -195,7 +196,7 @@ pub fn handle_request(
             };
             (handle_pkg_doctor(opts, pkg_json_cache.as_ref()), false)
         }
-        // Build request (v2.0, targets v2.1)
+        // Build request (v2.0, targets v2.1, transpile v3.1)
         Request::Build {
             cwd,
             force,
@@ -205,6 +206,7 @@ pub fn handle_request(
             targets,
         } => {
             let build_cache = state.map(|s| s.build_cache.clone());
+            let compiler = state.map(|s| s.compiler.clone());
             (
                 handle_build(
                     cwd,
@@ -214,6 +216,7 @@ pub fn handle_request(
                     *profile,
                     targets,
                     build_cache,
+                    compiler,
                 ),
                 false,
             )
@@ -428,6 +431,7 @@ fn handle_build(
     _profile: bool,
     targets: &[String],
     build_cache: Option<Arc<DaemonBuildCache>>,
+    compiler: Option<Arc<dyn CompilerBackend>>,
 ) -> Response {
     // Validate cwd
     let cwd_path = PathBuf::from(cwd);
@@ -483,6 +487,7 @@ fn handle_build(
         dry_run,
         max_parallel: max_parallel as usize,
         profile: false, // TODO: wire up profiling
+        targets: Vec::new(), // Empty = run all nodes
     };
 
     // Create a wrapper cache that implements BuildCache trait
@@ -490,12 +495,15 @@ fn handle_build(
     let mut wrapper_cache: Option<BuildCacheWrapper> =
         build_cache.as_ref().map(|c| BuildCacheWrapper(c.clone()));
 
+    // Get the compiler backend reference for transpile nodes (v3.1)
+    let backend_ref: Option<&dyn CompilerBackend> = compiler.as_ref().map(|c| c.as_ref());
+
     // Execute only the planned nodes (filtered by targets)
     // TODO: Use plan.nodes for filtered execution
     // For now, execute the full graph but set requested_targets
     let result = match wrapper_cache.as_mut() {
-        Some(cache) => execute_graph(&graph, Some(cache), &options),
-        None => execute_graph(&graph, None, &options),
+        Some(cache) => execute_graph_with_backend(&graph, Some(cache), &options, backend_ref),
+        None => execute_graph_with_backend(&graph, None, &options, backend_ref),
     };
 
     match result {
@@ -614,6 +622,8 @@ fn convert_build_result(
             stdout_truncated: r.stdout_truncated,
             stderr_truncated: r.stderr_truncated,
             notes: r.notes,
+            files_count: r.files_count,
+            auto_discovered: r.auto_discovered,
         })
         .collect();
 

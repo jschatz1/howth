@@ -40,6 +40,9 @@ pub struct ExecOptions {
     pub max_parallel: usize,
     /// Include profiling information.
     pub profile: bool,
+    /// Target nodes to execute (empty = all nodes).
+    /// Only nodes in this set (and their dependencies) will be executed.
+    pub targets: Vec<String>,
 }
 
 impl ExecOptions {
@@ -51,6 +54,7 @@ impl ExecOptions {
             dry_run: false,
             max_parallel: num_cpus(),
             profile: false,
+            targets: Vec::new(),
         }
     }
 
@@ -65,6 +69,13 @@ impl ExecOptions {
     #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
+        self
+    }
+
+    /// Set target nodes to execute (empty = all nodes).
+    #[must_use]
+    pub fn with_targets(mut self, targets: Vec<String>) -> Self {
+        self.targets = targets;
         self
     }
 }
@@ -288,6 +299,12 @@ pub fn run_script(command: &str, cwd: &Path) -> io::Result<ScriptOutput> {
 ///
 /// When no outputs are declared, only input hash is checked.
 ///
+/// ## Lazy Fingerprinting (v3.5)
+///
+/// On first build (cache cold), fingerprint computation is skipped.
+/// On subsequent cache lookups, if fingerprint is None, we compute it lazily
+/// and update the cache, returning a cache hit without re-executing.
+///
 /// ## Build Reasons (v2.3)
 ///
 /// The function tracks why a node was rebuilt:
@@ -316,6 +333,13 @@ pub fn execute_node(
             if entry.ok {
                 // v2.2: If outputs are declared, verify fingerprint matches
                 if has_outputs {
+                    // v3.5: Lazy fingerprinting - if cached fingerprint is None,
+                    // trust the cache entry (first build used lazy fingerprinting).
+                    // This avoids fingerprint computation on warm builds when input hash matches.
+                    if entry.fingerprint.is_none() {
+                        return BuildNodeResult::cache_hit(&node.id, hash);
+                    }
+
                     // Compute current output fingerprint
                     let current_fingerprint = compute_fingerprint(&node.outputs, cwd).ok();
 
@@ -417,7 +441,9 @@ pub fn execute_node(
     }
 
     // Success - compute output fingerprint if outputs are declared
-    let fingerprint = if has_outputs {
+    // v3.5: Skip fingerprint on first build (lazy fingerprinting)
+    // On first build, store None - fingerprint will be computed lazily on next cache lookup
+    let fingerprint = if has_outputs && rebuild_reason != BuildNodeReason::FirstBuild {
         compute_fingerprint(&node.outputs, cwd)
             .ok()
             .flatten()
@@ -451,6 +477,8 @@ pub fn execute_node(
 /// 3. Writes the output file
 /// 4. Optionally writes a source map file
 ///
+/// v3.5: Uses lazy fingerprinting - skips fingerprint on first build.
+///
 /// Returns a `BuildNodeResult` with success/failure status.
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
@@ -475,6 +503,12 @@ pub fn execute_transpile(
         if let Some(entry) = cache.get_entry(&node.id, hash) {
             if entry.ok {
                 if has_outputs {
+                    // v3.5: Lazy fingerprinting - if cached fingerprint is None,
+                    // trust the cache entry (first build used lazy fingerprinting)
+                    if entry.fingerprint.is_none() {
+                        return BuildNodeResult::cache_hit(&node.id, hash);
+                    }
+
                     let current_fingerprint = compute_fingerprint(&node.outputs, cwd).ok();
                     let fingerprint_matches = match (&current_fingerprint, &entry.fingerprint) {
                         (Some(Some(current)), Some(cached)) => current.hash == cached.hash,
@@ -610,7 +644,8 @@ pub fn execute_transpile(
     let duration_ms = start.elapsed().as_millis() as u64;
 
     // Compute output fingerprint
-    let fingerprint = if has_outputs {
+    // v3.5: Skip fingerprint on first build (lazy fingerprinting)
+    let fingerprint = if has_outputs && rebuild_reason != BuildNodeReason::FirstBuild {
         compute_fingerprint(&node.outputs, cwd).ok().flatten()
     } else {
         None
@@ -781,6 +816,8 @@ const TRANSPILABLE_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mts", "cts
 /// 2. Transpiles each file using the provided compiler backend
 /// 3. Writes output files to the output directory, preserving structure
 ///
+/// v3.5: Uses lazy fingerprinting - skips fingerprint on first build.
+///
 /// Returns a `BuildNodeResult` with aggregate success/failure status.
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
@@ -805,6 +842,12 @@ pub fn execute_transpile_batch(
         if let Some(entry) = cache.get_entry(&node.id, hash) {
             if entry.ok {
                 if has_outputs {
+                    // v3.5: Lazy fingerprinting - if cached fingerprint is None,
+                    // trust the cache entry (first build used lazy fingerprinting)
+                    if entry.fingerprint.is_none() {
+                        return BuildNodeResult::cache_hit(&node.id, hash);
+                    }
+
                     let current_fingerprint = compute_fingerprint(&node.outputs, cwd).ok();
                     let fingerprint_matches = match (&current_fingerprint, &entry.fingerprint) {
                         (Some(Some(current)), Some(cached)) => current.hash == cached.hash,
@@ -1015,7 +1058,8 @@ pub fn execute_transpile_batch(
     }
 
     // Compute output fingerprint
-    let fingerprint = if has_outputs {
+    // v3.5: Skip fingerprint on first build (lazy fingerprinting)
+    let fingerprint = if has_outputs && rebuild_reason != BuildNodeReason::FirstBuild {
         compute_fingerprint(&node.outputs, cwd).ok().flatten()
     } else {
         None
@@ -1094,18 +1138,55 @@ pub fn execute_graph(
 #[allow(clippy::cast_possible_truncation)]
 pub fn execute_graph_with_backend(
     graph: &BuildGraph,
+    cache: Option<&mut dyn BuildCache>,
+    options: &ExecOptions,
+    backend: Option<&dyn CompilerBackend>,
+) -> super::hash::HashResult<BuildRunResult> {
+    execute_graph_with_file_cache(graph, cache, options, backend, None)
+}
+
+/// Execute a build graph with optional compiler backend and file hash cache.
+///
+/// The file hash cache avoids re-reading unchanged files during hash computation,
+/// significantly speeding up repeated builds.
+///
+/// ## Target Filtering
+///
+/// When `options.targets` is non-empty, only nodes whose IDs are in the targets
+/// list will be executed. Other nodes are skipped (not even their hashes are
+/// computed for execution purposes). This allows running a subset of the build
+/// graph, e.g., transpile-only without typecheck.
+///
+/// # Errors
+/// Returns an error if hash computation fails.
+#[allow(clippy::cast_possible_truncation)]
+pub fn execute_graph_with_file_cache(
+    graph: &BuildGraph,
     mut cache: Option<&mut dyn BuildCache>,
     options: &ExecOptions,
     backend: Option<&dyn CompilerBackend>,
+    file_cache: Option<&dyn super::hash::FileHashCache>,
 ) -> super::hash::HashResult<BuildRunResult> {
     let cwd = Path::new(&graph.cwd);
     let mut result = BuildRunResult::new(&graph.cwd);
 
-    // Compute hashes for all nodes
-    let hashes = super::hash::hash_graph(graph)?;
+    // Compute hashes for all nodes (using file cache if provided)
+    let hash_ctx = match file_cache {
+        Some(fc) => super::hash::HashContext::with_cache(fc),
+        None => super::hash::HashContext::empty(),
+    };
+    let hashes = super::hash::hash_graph_with_ctx(graph, &hash_ctx)?;
 
     // Get execution order
     let order = graph.toposort();
+
+    // Build target set for filtering (if targets specified)
+    let target_set: std::collections::HashSet<&str> = options
+        .targets
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let filter_by_targets = !target_set.is_empty();
 
     // Track which nodes succeeded
     let mut succeeded: HashMap<&str, bool> = HashMap::new();
@@ -1113,6 +1194,12 @@ pub fn execute_graph_with_backend(
     // Execute nodes in order
     // Note: For v2.0, we execute sequentially. Parallel execution can be added later.
     for node_id in order {
+        // Skip nodes not in target set (when filtering is enabled)
+        if filter_by_targets && !target_set.contains(node_id) {
+            // Mark as succeeded (not a failure) but don't execute
+            succeeded.insert(node_id, true);
+            continue;
+        }
         let Some(node) = graph.get_node(node_id) else {
             continue;
         };
