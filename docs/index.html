@@ -233,7 +233,7 @@
     <div class="container">
         <header>
             <h1>howth</h1>
-            <p class="tagline">Fast TypeScript builds with deterministic caching</p>
+            <p class="tagline">Fast TypeScript builds, bundling, and dev server</p>
             <div class="hero-stats">
                 <div class="stat">
                     <div class="stat-value">34ms</div>
@@ -313,22 +313,22 @@
                 <div><span class="comment"># Install (coming soon)</span></div>
                 <div><span class="command">cargo install howth</span></div>
                 <br>
-                <div><span class="comment"># Start the daemon</span></div>
-                <div><span class="command">howth daemon &</span></div>
-                <br>
                 <div><span class="comment"># Build your project</span></div>
                 <div><span class="command">howth build</span></div>
                 <br>
                 <div><span class="comment"># Watch mode (transpile-only for speed)</span></div>
                 <div><span class="command">howth build --watch</span></div>
                 <br>
-                <div><span class="comment"># Watch with typecheck</span></div>
-                <div><span class="command">howth build --watch typecheck</span></div>
+                <div><span class="comment"># Bundle for production</span></div>
+                <div><span class="command">howth bundle src/index.ts -o dist/bundle.js</span></div>
+                <br>
+                <div><span class="comment"># Dev server with HMR</span></div>
+                <div><span class="command">howth dev src/index.ts --port 3000</span></div>
             </div>
         </section>
 
         <section>
-            <h2>Features</h2>
+            <h2>Build System</h2>
             <div class="features">
                 <div class="feature">
                     <h3>Parallel Hashing</h3>
@@ -343,16 +343,38 @@
                     <p>Transpile-only by default for instant feedback. Typecheck is opt-in.</p>
                 </div>
                 <div class="feature">
-                    <h3>Daemon Architecture</h3>
-                    <p>Persistent process keeps caches warm. Sub-millisecond cache lookups.</p>
-                </div>
-                <div class="feature">
                     <h3>SWC Backend</h3>
                     <p>Uses SWC for transpilation. Rust-native, no Node.js overhead.</p>
                 </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Bundler</h2>
+            <div class="features">
                 <div class="feature">
-                    <h3>Deterministic Builds</h3>
-                    <p>Same inputs always produce same outputs. Content-addressed caching.</p>
+                    <h3>Tree Shaking</h3>
+                    <p>Dead code elimination. Only include what's actually used in your bundle.</p>
+                </div>
+                <div class="feature">
+                    <h3>Code Splitting</h3>
+                    <p>Automatic chunk splitting on dynamic imports. Lazy load routes and features.</p>
+                </div>
+                <div class="feature">
+                    <h3>Dev Server + HMR</h3>
+                    <p>Built-in dev server with hot module replacement. See changes instantly.</p>
+                </div>
+                <div class="feature">
+                    <h3>CSS + Assets</h3>
+                    <p>Bundle CSS with minification. Copy assets with content hashes for caching.</p>
+                </div>
+                <div class="feature">
+                    <h3>Plugin System</h3>
+                    <p>Rollup-compatible plugins. Built-in: replace, alias, banner, virtual modules.</p>
+                </div>
+                <div class="feature">
+                    <h3>Multiple Formats</h3>
+                    <p>Output ESM, CommonJS, or IIFE. Target any JavaScript environment.</p>
                 </div>
             </div>
         </section>
