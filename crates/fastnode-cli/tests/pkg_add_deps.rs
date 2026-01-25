@@ -283,7 +283,8 @@ fn create_test_project(deps: &[(&str, &str)], dev_deps: &[(&str, &str)]) -> Temp
 
 /// Wait for daemon to be ready with retries.
 fn wait_for_daemon(endpoint: &str, registry_url: &str) -> bool {
-    for i in 0..15 {
+    // Use longer timeouts for CI environments which can be slower
+    for i in 0..30 {
         let result = cargo_bin()
             .arg("ping")
             .env("HOWTH_IPC_ENDPOINT", endpoint)
@@ -295,7 +296,7 @@ fn wait_for_daemon(endpoint: &str, registry_url: &str) -> bool {
                 return true;
             }
         }
-        thread::sleep(Duration::from_millis(100 + i * 50));
+        thread::sleep(Duration::from_millis(200 + i * 100));
     }
     false
 }

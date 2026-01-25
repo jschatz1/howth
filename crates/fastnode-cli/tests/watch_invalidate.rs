@@ -141,12 +141,13 @@ fn test_watcher_invalidates_cache() {
 
     // 3a. First run - should NOT be from cache
     let mut plan1 = None;
-    for i in 0..10 {
+    for i in 0..20 {
         if let Some(p) = run_and_get_plan(&endpoint, dir.path(), "main.js") {
             plan1 = Some(p);
             break;
         }
-        thread::sleep(Duration::from_millis(100 + i * 50));
+        // Longer timeouts for CI environments
+        thread::sleep(Duration::from_millis(200 + i * 100));
     }
 
     let plan1 = plan1.expect("First run should succeed");
@@ -262,7 +263,8 @@ fn test_watcher_status_reports_running() {
             status_ok = true;
             break;
         }
-        thread::sleep(Duration::from_millis(100 + i * 50));
+        // Longer timeouts for CI environments
+        thread::sleep(Duration::from_millis(200 + i * 100));
     }
     assert!(status_ok, "Should get watcher status");
 

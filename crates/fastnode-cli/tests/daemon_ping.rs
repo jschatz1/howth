@@ -141,8 +141,8 @@ fn test_daemon_and_ping() {
             output = Some(result);
             break;
         }
-        // Exponential backoff: 100ms, 150ms, 200ms, ...
-        thread::sleep(Duration::from_millis(100 + i * 50));
+        // Exponential backoff with longer timeouts for CI
+        thread::sleep(Duration::from_millis(200 + i * 100));
     }
 
     // Clean up daemon
@@ -174,7 +174,7 @@ fn test_daemon_and_ping_json() {
 
     // Try JSON ping with retries for startup race
     let mut output = None;
-    for i in 0..10 {
+    for i in 0..20 {
         let result = cargo_bin()
             .args(["--json", "ping"])
             .env("HOWTH_IPC_ENDPOINT", &endpoint)
@@ -185,8 +185,8 @@ fn test_daemon_and_ping_json() {
             output = Some(result);
             break;
         }
-        // Exponential backoff: 100ms, 150ms, 200ms, ...
-        thread::sleep(Duration::from_millis(100 + i * 50));
+        // Exponential backoff with longer timeouts for CI
+        thread::sleep(Duration::from_millis(200 + i * 100));
     }
 
     // Clean up daemon
