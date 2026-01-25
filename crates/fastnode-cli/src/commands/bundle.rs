@@ -3,8 +3,8 @@
 //! Bundles JavaScript/TypeScript modules into a single output file.
 
 use fastnode_core::bundler::{
-    BundleFormat, BundleOptions, Bundler, Plugin,
-    ReplacePlugin, AliasPlugin, BannerPlugin, JsonPlugin,
+    AliasPlugin, BannerPlugin, BundleFormat, BundleOptions, Bundler, JsonPlugin, Plugin,
+    ReplacePlugin,
 };
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
@@ -176,59 +176,55 @@ pub fn run(action: BundleAction, json: bool) -> Result<()> {
                     error: None,
                 };
                 println!("{}", serde_json::to_string(&json_result).unwrap());
-            } else {
-                // Human output
-                if action.outfile.is_none() {
-                    // Print code to stdout
-                    print!("{code}");
+            } else if let Some(outfile) = &action.outfile {
+                // Human output - print summary
+                let modules_count = bundle_result.modules.len();
+                let size_kb = size_bytes as f64 / 1024.0;
+
+                if has_chunks {
+                    let chunk_count = bundle_result.chunks.len();
+                    println!(
+                        "  {} -> {} ({} modules, {} chunks, {:.1}KB, {}ms)",
+                        action.entry.display(),
+                        outfile.display(),
+                        modules_count,
+                        chunk_count + 1, // +1 for main chunk
+                        size_kb,
+                        duration_ms
+                    );
+                    for chunk in &bundle_result.chunks {
+                        let chunk_kb = chunk.code.len() as f64 / 1024.0;
+                        println!("    + {}.js ({:.1}KB)", chunk.name, chunk_kb);
+                    }
                 } else {
-                    // Print summary
-                    let outfile = action.outfile.as_ref().unwrap();
-                    let modules_count = bundle_result.modules.len();
-                    let size_kb = size_bytes as f64 / 1024.0;
-
-                    if has_chunks {
-                        let chunk_count = bundle_result.chunks.len();
-                        println!(
-                            "  {} -> {} ({} modules, {} chunks, {:.1}KB, {}ms)",
-                            action.entry.display(),
-                            outfile.display(),
-                            modules_count,
-                            chunk_count + 1, // +1 for main chunk
-                            size_kb,
-                            duration_ms
-                        );
-                        for chunk in &bundle_result.chunks {
-                            let chunk_kb = chunk.code.len() as f64 / 1024.0;
-                            println!("    + {}.js ({:.1}KB)", chunk.name, chunk_kb);
-                        }
-                    } else {
-                        println!(
-                            "  {} -> {} ({} modules, {:.1}KB, {}ms)",
-                            action.entry.display(),
-                            outfile.display(),
-                            modules_count,
-                            size_kb,
-                            duration_ms
-                        );
-                    }
-
-                    // Show CSS output
-                    if let Some(ref css) = bundle_result.css {
-                        let css_kb = css.code.len() as f64 / 1024.0;
-                        println!("    + {} ({:.1}KB)", css.name, css_kb);
-                    }
-
-                    // Show assets
-                    for asset in &bundle_result.assets {
-                        println!("    + {}", asset.name);
-                    }
-
-                    // Show warnings
-                    for warning in &bundle_result.warnings {
-                        eprintln!("  warning: {warning}");
-                    }
+                    println!(
+                        "  {} -> {} ({} modules, {:.1}KB, {}ms)",
+                        action.entry.display(),
+                        outfile.display(),
+                        modules_count,
+                        size_kb,
+                        duration_ms
+                    );
                 }
+
+                // Show CSS output
+                if let Some(ref css) = bundle_result.css {
+                    let css_kb = css.code.len() as f64 / 1024.0;
+                    println!("    + {} ({:.1}KB)", css.name, css_kb);
+                }
+
+                // Show assets
+                for asset in &bundle_result.assets {
+                    println!("    + {}", asset.name);
+                }
+
+                // Show warnings
+                for warning in &bundle_result.warnings {
+                    eprintln!("  warning: {warning}");
+                }
+            } else {
+                // No outfile, print code to stdout
+                print!("{code}");
             }
 
             Ok(())

@@ -20,6 +20,9 @@
 //! - Graph schema v2 (v2.1): Multi-node graph with defaults + targets
 //! - Fingerprint schema v1 (v2.2): Output fingerprinting for cache correctness
 
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::map_unwrap_or)]
+
 pub mod codes;
 pub mod exec;
 pub mod fingerprint;
@@ -32,6 +35,10 @@ pub use exec::{
     execute_transpile, execute_transpile_batch, execute_typecheck, run_script, BuildCache,
     CacheEntry, ExecOptions, MemoryCache,
 };
+pub use fingerprint::{
+    compute_fingerprint, fingerprints_match, normalize_output_path, FingerprintError,
+    FingerprintMode, FingerprintResult, OutputFingerprint, FINGERPRINT_SCHEMA_VERSION,
+};
 pub use graph::{
     resolve_target_alias, BuildErrorInfo, BuildGraph, BuildInput, BuildNode, BuildNodeKind,
     BuildNodeReason, BuildNodeResult, BuildOutput, BuildPlan, BuildRunCounts, BuildRunResult,
@@ -40,15 +47,11 @@ pub use graph::{
     TARGET_ALIASES,
 };
 pub use hash::{
-    expand_glob, hash_bytes, hash_env, hash_file, hash_file_with_ctx, hash_glob, hash_glob_with_ctx,
-    hash_graph, hash_graph_with_ctx, hash_input, hash_input_with_ctx, hash_input_with_deps,
-    hash_input_with_deps_ctx, hash_node, hash_node_with_deps, hash_node_with_deps_ctx, hash_string,
-    normalize_path, FileHashCache, FileHashCacheStats, FileHashKey, HashContext, HashError,
-    HashResult, InMemoryFileHashCache,
-};
-pub use fingerprint::{
-    compute_fingerprint, fingerprints_match, normalize_output_path, FingerprintError,
-    FingerprintMode, FingerprintResult, OutputFingerprint, FINGERPRINT_SCHEMA_VERSION,
+    expand_glob, hash_bytes, hash_env, hash_file, hash_file_with_ctx, hash_glob,
+    hash_glob_with_ctx, hash_graph, hash_graph_with_ctx, hash_input, hash_input_with_ctx,
+    hash_input_with_deps, hash_input_with_deps_ctx, hash_node, hash_node_with_deps,
+    hash_node_with_deps_ctx, hash_string, normalize_path, FileHashCache, FileHashCacheStats,
+    FileHashKey, HashContext, HashError, HashResult, InMemoryFileHashCache,
 };
 
 use crate::compiler::TranspileSpec;
@@ -488,9 +491,10 @@ mod tests {
         let graph = build_graph_from_project(dir.path()).unwrap();
 
         // Should have lockfile input
-        let has_lockfile = graph.nodes[0].inputs.iter().any(|i| {
-            matches!(i, BuildInput::Lockfile { .. })
-        });
+        let has_lockfile = graph.nodes[0]
+            .inputs
+            .iter()
+            .any(|i| matches!(i, BuildInput::Lockfile { .. }));
         assert!(has_lockfile);
     }
 
@@ -774,7 +778,10 @@ mod tests {
                 false
             }
         });
-        assert!(has_pkg_json, "transpile node should have package.json input");
+        assert!(
+            has_pkg_json,
+            "transpile node should have package.json input"
+        );
 
         // Should have tsconfig.json input
         let has_tsconfig = transpile_node.inputs.iter().any(|i| {
@@ -784,7 +791,10 @@ mod tests {
                 false
             }
         });
-        assert!(has_tsconfig, "transpile node should have tsconfig.json input");
+        assert!(
+            has_tsconfig,
+            "transpile node should have tsconfig.json input"
+        );
 
         // Should have src glob input
         let has_src_glob = transpile_node.inputs.iter().any(|i| {
@@ -845,7 +855,11 @@ mod tests {
 
         // Create src/ directory with a .ts file
         std::fs::create_dir(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/index.ts"), "export const x: number = 1;").unwrap();
+        std::fs::write(
+            dir.path().join("src/index.ts"),
+            "export const x: number = 1;",
+        )
+        .unwrap();
 
         let graph = build_graph_from_project(dir.path()).unwrap();
 
@@ -968,7 +982,10 @@ mod tests {
                 false
             }
         });
-        assert!(has_pkg_json, "typecheck node should have package.json input");
+        assert!(
+            has_pkg_json,
+            "typecheck node should have package.json input"
+        );
 
         // Should have tsconfig.json input
         let has_tsconfig = typecheck_node.inputs.iter().any(|i| {
@@ -978,7 +995,10 @@ mod tests {
                 false
             }
         });
-        assert!(has_tsconfig, "typecheck node should have tsconfig.json input");
+        assert!(
+            has_tsconfig,
+            "typecheck node should have tsconfig.json input"
+        );
 
         // Should have src glob input
         let has_src_glob = typecheck_node.inputs.iter().any(|i| {
@@ -991,7 +1011,10 @@ mod tests {
         assert!(has_src_glob, "typecheck node should have src glob input");
 
         // Command is resolved at execution time (prefer local tsc, fallback to npx --no-install)
-        assert!(typecheck_node.command.is_none(), "typecheck command is resolved at execution time");
+        assert!(
+            typecheck_node.command.is_none(),
+            "typecheck command is resolved at execution time"
+        );
     }
 
     #[test]
@@ -1016,6 +1039,9 @@ mod tests {
         let typecheck_node = graph.nodes.iter().find(|n| n.id == "typecheck").unwrap();
 
         // Typecheck should have no outputs (validation only)
-        assert!(typecheck_node.outputs.is_empty(), "typecheck node should have no outputs");
+        assert!(
+            typecheck_node.outputs.is_empty(),
+            "typecheck node should have no outputs"
+        );
     }
 }

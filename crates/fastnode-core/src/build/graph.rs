@@ -8,6 +8,8 @@
 //! - Schema version 1 (v2.0): Initial build graph format (single node)
 //! - Schema version 2 (v2.1): Multi-node graph with defaults and targets
 
+#![allow(clippy::struct_excessive_bools)]
+
 use crate::compiler::TranspileSpec;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -581,7 +583,7 @@ impl BuildNode {
             id: "typecheck".to_string(),
             kind: BuildNodeKind::Typecheck,
             label: "typecheck".to_string(),
-            inputs: Vec::new(), // Will be populated by caller
+            inputs: Vec::new(),  // Will be populated by caller
             outputs: Vec::new(), // No outputs - validation only
             env: Vec::new(),
             env_allowlist: DEFAULT_ENV_ALLOWLIST
@@ -1553,10 +1555,7 @@ mod tests {
 
     #[test]
     fn test_cache_status_serialization() {
-        assert_eq!(
-            serde_json::to_string(&CacheStatus::Hit).unwrap(),
-            "\"hit\""
-        );
+        assert_eq!(serde_json::to_string(&CacheStatus::Hit).unwrap(), "\"hit\"");
         assert_eq!(
             serde_json::to_string(&CacheStatus::Miss).unwrap(),
             "\"miss\""
@@ -1638,7 +1637,10 @@ mod tests {
 
         assert!(node.deps.contains(&"script:build".to_string()));
         // Should also add a Node input
-        assert!(node.inputs.iter().any(|i| matches!(i, BuildInput::Node { id } if id == "script:build")));
+        assert!(node
+            .inputs
+            .iter()
+            .any(|i| matches!(i, BuildInput::Node { id } if id == "script:build")));
     }
 
     #[test]

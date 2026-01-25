@@ -5,10 +5,18 @@
 //!
 //! ## Benchmark Cases
 //!
-//! - **cold**: Full build with no cache (clears `.howth/cache`)
-//! - **warm_noop**: Cached build (should be ~instant)
-//! - **warm_1_change**: Touch one file, rebuild
-//! - **watch_ttg**: Watch mode time-to-green (file change → build complete)
+//! - **`cold`**: Full build with no cache (clears `.howth/cache`)
+//! - **`warm_noop`**: Cached build (should be ~instant)
+//! - **`warm_1_change`**: Touch one file, rebuild
+//! - **`watch_ttg`**: Watch mode time-to-green (file change → build complete)
+
+#![allow(clippy::needless_raw_string_hashes)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::map_unwrap_or)]
 
 use crate::bench::{compute_stats, BenchStats, BenchWarning};
 use crate::build::{
@@ -243,7 +251,10 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
     if params.iters < 3 {
         report.add_warning(BenchWarning::warn(
             "LOW_ITERS",
-            format!("Low iteration count ({}); results may be noisy", params.iters),
+            format!(
+                "Low iteration count ({}); results may be noisy",
+                params.iters
+            ),
         ));
     }
 
@@ -293,7 +304,8 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
             report.add_result(cold_result);
 
             // Warm noop benchmark
-            let warm_noop_result = run_warm_noop_bench(&project_dir, params.iters, params.warmup, &targets);
+            let warm_noop_result =
+                run_warm_noop_bench(&project_dir, params.iters, params.warmup, &targets);
             report.add_result(warm_noop_result);
 
             // Warm 1-change benchmark
@@ -323,7 +335,8 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
             report.add_result(cold_result);
 
             // Warm noop benchmark
-            let warm_noop_result = run_warm_noop_bench(&project_dir, params.iters, params.warmup, &targets);
+            let warm_noop_result =
+                run_warm_noop_bench(&project_dir, params.iters, params.warmup, &targets);
             report.add_result(warm_noop_result);
 
             // Warm 1-change benchmark
@@ -359,7 +372,12 @@ pub fn run_build_bench(params: BuildBenchParams, project_path: Option<&Path>) ->
 
 /// Run cold benchmark (no cache).
 #[allow(clippy::cast_possible_truncation)]
-fn run_cold_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
+fn run_cold_bench(
+    project_dir: &Path,
+    iters: u32,
+    warmup: u32,
+    targets: &[String],
+) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
@@ -415,7 +433,12 @@ fn run_cold_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String
 
 /// Run warm noop benchmark (cached, no changes).
 #[allow(clippy::cast_possible_truncation)]
-fn run_warm_noop_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
+fn run_warm_noop_bench(
+    project_dir: &Path,
+    iters: u32,
+    warmup: u32,
+    targets: &[String],
+) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
@@ -480,7 +503,12 @@ fn run_warm_noop_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[S
 
 /// Run warm 1-change benchmark (cached, touch one file).
 #[allow(clippy::cast_possible_truncation)]
-fn run_warm_1_change_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
+fn run_warm_1_change_bench(
+    project_dir: &Path,
+    iters: u32,
+    warmup: u32,
+    targets: &[String],
+) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
@@ -561,7 +589,12 @@ fn run_warm_1_change_bench(project_dir: &Path, iters: u32, warmup: u32, targets:
 /// Simulates watch mode: measures time from file change to build completion.
 /// This is the "killer metric" - what users actually experience in watch mode.
 #[allow(clippy::cast_possible_truncation)]
-fn run_watch_ttg_bench(project_dir: &Path, iters: u32, warmup: u32, targets: &[String]) -> BuildBenchResult {
+fn run_watch_ttg_bench(
+    project_dir: &Path,
+    iters: u32,
+    warmup: u32,
+    targets: &[String],
+) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
@@ -715,7 +748,10 @@ fn run_esbuild_baseline(project_dir: &Path) -> Option<BaselineResult> {
     let _ = fs::create_dir_all(&out_dir);
 
     let cmd = esbuild_path.to_string_lossy().to_string();
-    let exact_command = format!("{} src/**/*.ts src/**/*.tsx --outdir=.howth/bench-esbuild --format=esm", cmd);
+    let exact_command = format!(
+        "{} src/**/*.ts src/**/*.tsx --outdir=.howth/bench-esbuild --format=esm",
+        cmd
+    );
 
     // Collect all .ts and .tsx files
     let mut input_files = Vec::new();
@@ -741,7 +777,8 @@ fn run_esbuild_baseline(project_dir: &Path) -> Option<BaselineResult> {
 
     for _ in 0..3 {
         let start = Instant::now();
-        let mut args: Vec<String> = input_files.iter()
+        let mut args: Vec<String> = input_files
+            .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect();
         args.push(format!("--outdir={}", out_dir.to_string_lossy()));

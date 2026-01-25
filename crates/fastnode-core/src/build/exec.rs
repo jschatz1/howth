@@ -15,6 +15,13 @@
 //! The `BuildNodeReason` enum explains why a node was rebuilt or skipped,
 //! enabling deterministic "why" explanations for debugging builds.
 
+#![allow(clippy::if_not_else)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::manual_div_ceil)]
+
 use super::codes;
 use super::fingerprint::{compute_fingerprint, OutputFingerprint};
 use super::graph::{
@@ -169,7 +176,7 @@ impl MemoryCache {
 
     /// Get an entry directly (for testing).
     #[cfg(test)]
-    #[must_use] 
+    #[must_use]
     pub fn get_raw(&self, node_id: &str) -> Option<&CacheEntry> {
         self.entries.get(node_id)
     }
@@ -383,7 +390,10 @@ pub fn execute_node(
             &node.id,
             hash,
             0,
-            BuildErrorInfo::new(codes::BUILD_SCRIPT_NOT_FOUND, "No script specified for node"),
+            BuildErrorInfo::new(
+                codes::BUILD_SCRIPT_NOT_FOUND,
+                "No script specified for node",
+            ),
         );
     };
 
@@ -444,9 +454,7 @@ pub fn execute_node(
     // v3.5: Skip fingerprint on first build (lazy fingerprinting)
     // On first build, store None - fingerprint will be computed lazily on next cache lookup
     let fingerprint = if has_outputs && rebuild_reason != BuildNodeReason::FirstBuild {
-        compute_fingerprint(&node.outputs, cwd)
-            .ok()
-            .flatten()
+        compute_fingerprint(&node.outputs, cwd).ok().flatten()
     } else {
         None
     };
@@ -619,7 +627,10 @@ pub fn execute_transpile(
                     );
                 }
                 // Add reference to external source map
-                let map_filename = map_path.file_name().and_then(|n| n.to_str()).unwrap_or("output.js.map");
+                let map_filename = map_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("output.js.map");
                 format!("{}\n//# sourceMappingURL={}", output.code, map_filename)
             }
             crate::compiler::SourceMapKind::None => output.code.clone(),
@@ -651,7 +662,8 @@ pub fn execute_transpile(
         None
     };
 
-    let mut result = BuildNodeResult::cache_miss_with_reason(&node.id, hash, duration_ms, rebuild_reason);
+    let mut result =
+        BuildNodeResult::cache_miss_with_reason(&node.id, hash, duration_ms, rebuild_reason);
     result.cache = if options.force {
         CacheStatus::Bypass
     } else {
@@ -738,7 +750,10 @@ pub fn execute_typecheck(
                 &node.id,
                 hash,
                 duration_ms,
-                BuildErrorInfo::new(codes::BUILD_TYPECHECK_FAILED, format!("Failed to spawn: {e}")),
+                BuildErrorInfo::new(
+                    codes::BUILD_TYPECHECK_FAILED,
+                    format!("Failed to spawn: {e}"),
+                ),
             );
         }
     };
@@ -931,7 +946,8 @@ pub fn execute_transpile_batch(
 
     if files.is_empty() {
         let duration_ms = start.elapsed().as_millis() as u64;
-        let mut result = BuildNodeResult::cache_miss_with_reason(&node.id, hash, duration_ms, rebuild_reason);
+        let mut result =
+            BuildNodeResult::cache_miss_with_reason(&node.id, hash, duration_ms, rebuild_reason);
         result.files_count = Some(0);
         result.notes.push("no files to transpile".to_string());
         if let Some(cache) = cache {
@@ -1065,7 +1081,8 @@ pub fn execute_transpile_batch(
         None
     };
 
-    let mut result = BuildNodeResult::cache_miss_with_reason(&node.id, hash, duration_ms, rebuild_reason);
+    let mut result =
+        BuildNodeResult::cache_miss_with_reason(&node.id, hash, duration_ms, rebuild_reason);
     result.cache = if options.force {
         CacheStatus::Bypass
     } else {
@@ -1181,11 +1198,8 @@ pub fn execute_graph_with_file_cache(
     let order = graph.toposort();
 
     // Build target set for filtering (if targets specified)
-    let target_set: std::collections::HashSet<&str> = options
-        .targets
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let target_set: std::collections::HashSet<&str> =
+        options.targets.iter().map(String::as_str).collect();
     let filter_by_targets = !target_set.is_empty();
 
     // Track which nodes succeeded
@@ -1207,9 +1221,10 @@ pub fn execute_graph_with_file_cache(
         let hash = hashes.get(node_id).map_or("", String::as_str);
 
         // Check if all dependencies succeeded
-        let deps_ok = node.deps.iter().all(|dep| {
-            succeeded.get(dep.as_str()).copied().unwrap_or(false)
-        });
+        let deps_ok = node
+            .deps
+            .iter()
+            .all(|dep| succeeded.get(dep.as_str()).copied().unwrap_or(false));
 
         if !deps_ok {
             // Skip this node - dependency failed
@@ -1227,7 +1242,15 @@ pub fn execute_graph_with_file_cache(
                     // Use batch or single-file execution based on spec
                     if spec.is_batch() {
                         if let Some(ref mut c) = cache {
-                            execute_transpile_batch(node, cwd, hash, spec, backend, Some(*c), options)
+                            execute_transpile_batch(
+                                node,
+                                cwd,
+                                hash,
+                                spec,
+                                backend,
+                                Some(*c),
+                                options,
+                            )
                         } else {
                             execute_transpile_batch(node, cwd, hash, spec, backend, None, options)
                         }
@@ -1425,7 +1448,11 @@ mod tests {
         assert!(!result.ok);
 
         // Second node should be skipped
-        let second_result = result.results.iter().find(|r| r.id == "script:second").unwrap();
+        let second_result = result
+            .results
+            .iter()
+            .find(|r| r.id == "script:second")
+            .unwrap();
         assert!(!second_result.ok);
         assert_eq!(second_result.cache, CacheStatus::Skipped);
     }
@@ -1708,15 +1735,7 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new();
 
-        let result = execute_transpile(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result = execute_transpile(&node, dir.path(), hash, &spec, &backend, None, &options);
 
         assert!(result.ok, "Transpile should succeed");
         assert_eq!(result.cache, CacheStatus::Miss);
@@ -1743,15 +1762,7 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new();
 
-        let result = execute_transpile(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result = execute_transpile(&node, dir.path(), hash, &spec, &backend, None, &options);
 
         assert!(result.ok, "Transpile should succeed");
 
@@ -1814,19 +1825,14 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new();
 
-        let result = execute_transpile(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result = execute_transpile(&node, dir.path(), hash, &spec, &backend, None, &options);
 
         assert!(!result.ok, "Should fail when input file is missing");
         assert!(result.error.is_some());
-        assert_eq!(result.error.as_ref().unwrap().code, codes::BUILD_TRANSPILE_READ_ERROR);
+        assert_eq!(
+            result.error.as_ref().unwrap().code,
+            codes::BUILD_TRANSPILE_READ_ERROR
+        );
     }
 
     #[test]
@@ -1842,15 +1848,7 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new().with_dry_run(true);
 
-        let result = execute_transpile(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result = execute_transpile(&node, dir.path(), hash, &spec, &backend, None, &options);
 
         assert!(result.ok);
         assert!(result.notes.iter().any(|n| n.contains("dry run")));
@@ -1932,17 +1930,14 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new();
 
-        let result = execute_transpile_batch(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result =
+            execute_transpile_batch(&node, dir.path(), hash, &spec, &backend, None, &options);
 
-        assert!(result.ok, "Batch transpile should succeed: {:?}", result.error);
+        assert!(
+            result.ok,
+            "Batch transpile should succeed: {:?}",
+            result.error
+        );
 
         // Verify output files were created
         let index_output = dir.path().join("dist/index.js");
@@ -1961,9 +1956,21 @@ mod tests {
         // Create nested directory structure
         std::fs::create_dir_all(dir.path().join("src/components")).unwrap();
         std::fs::create_dir_all(dir.path().join("src/utils")).unwrap();
-        std::fs::write(dir.path().join("src/index.ts"), "export * from './components';").unwrap();
-        std::fs::write(dir.path().join("src/components/Button.tsx"), "export const Button = () => <button/>;").unwrap();
-        std::fs::write(dir.path().join("src/utils/helpers.ts"), "export const helper = () => {};").unwrap();
+        std::fs::write(
+            dir.path().join("src/index.ts"),
+            "export * from './components';",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/components/Button.tsx"),
+            "export const Button = () => <button/>;",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/utils/helpers.ts"),
+            "export const helper = () => {};",
+        )
+        .unwrap();
 
         let spec = CompilerTranspileSpec::batch("src", "dist");
         let node = BuildNode::transpile_batch(&spec);
@@ -1972,15 +1979,8 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new();
 
-        let result = execute_transpile_batch(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result =
+            execute_transpile_batch(&node, dir.path(), hash, &spec, &backend, None, &options);
 
         assert!(result.ok, "Batch transpile should succeed");
 
@@ -2004,18 +2004,14 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new();
 
-        let result = execute_transpile_batch(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result =
+            execute_transpile_batch(&node, dir.path(), hash, &spec, &backend, None, &options);
 
         assert!(result.ok, "Batch transpile with empty src should succeed");
-        assert!(result.notes.iter().any(|n| n.contains("no files to transpile")));
+        assert!(result
+            .notes
+            .iter()
+            .any(|n| n.contains("no files to transpile")));
     }
 
     #[test]
@@ -2030,19 +2026,15 @@ mod tests {
         let hash = "abc123";
         let options = ExecOptions::new();
 
-        let result = execute_transpile_batch(
-            &node,
-            dir.path(),
-            hash,
-            &spec,
-            &backend,
-            None,
-            &options,
-        );
+        let result =
+            execute_transpile_batch(&node, dir.path(), hash, &spec, &backend, None, &options);
 
         assert!(!result.ok, "Batch transpile should fail with missing src");
         assert!(result.error.is_some());
-        assert_eq!(result.error.as_ref().unwrap().code, codes::BUILD_TRANSPILE_READ_ERROR);
+        assert_eq!(
+            result.error.as_ref().unwrap().code,
+            codes::BUILD_TRANSPILE_READ_ERROR
+        );
     }
 
     #[test]
@@ -2096,14 +2088,19 @@ mod tests {
         let options = ExecOptions::new();
 
         // Run twice and ensure same output
-        let result1 = execute_transpile_batch(&node, dir.path(), "hash1", &spec, &backend, None, &options);
-        let result2 = execute_transpile_batch(&node, dir.path(), "hash2", &spec, &backend, None, &options);
+        let result1 =
+            execute_transpile_batch(&node, dir.path(), "hash1", &spec, &backend, None, &options);
+        let result2 =
+            execute_transpile_batch(&node, dir.path(), "hash2", &spec, &backend, None, &options);
 
         assert!(result1.ok);
         assert!(result2.ok);
 
         // Both should report same file count and have identical notes
-        assert_eq!(result1.notes, result2.notes, "Batch transpile should be deterministic");
+        assert_eq!(
+            result1.notes, result2.notes,
+            "Batch transpile should be deterministic"
+        );
 
         // All output files should exist
         assert!(dir.path().join("dist/a/first.js").exists());
@@ -2125,7 +2122,8 @@ mod tests {
         let backend = SwcBackend::new();
         let options = ExecOptions::new();
 
-        let result = execute_transpile_batch(&node, dir.path(), "hash", &spec, &backend, None, &options);
+        let result =
+            execute_transpile_batch(&node, dir.path(), "hash", &spec, &backend, None, &options);
         assert!(result.ok);
 
         // Read the generated source map

@@ -24,6 +24,11 @@
 //! println!("{}", output.code);
 //! ```
 
+#![allow(clippy::similar_names)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::manual_strip)]
+
 pub mod spec;
 pub mod swc;
 
@@ -52,7 +57,10 @@ pub struct ImportInfo {
 ///
 /// Uses a simple regex-based approach for now.
 /// TODO: Use SWC AST parsing for accuracy.
-pub fn parse_imports(source: &str, _path: &Path) -> Result<Vec<crate::bundler::Import>, CompilerError> {
+pub fn parse_imports(
+    source: &str,
+    _path: &Path,
+) -> Result<Vec<crate::bundler::Import>, CompilerError> {
     let mut imports = Vec::new();
 
     for line in source.lines() {
@@ -132,7 +140,8 @@ fn extract_import_names(line: &str) -> Vec<crate::bundler::ImportedName> {
     // Check for default import before 'from'
     if let Some(from_idx) = line.find(" from ") {
         let before_from = &line[7..from_idx].trim(); // after "import "
-        if !before_from.is_empty() && !before_from.starts_with('{') && !before_from.starts_with('*') {
+        if !before_from.is_empty() && !before_from.starts_with('{') && !before_from.starts_with('*')
+        {
             // Could be: "foo" or "foo, { bar }"
             let default_name = if before_from.contains(',') {
                 before_from.split(',').next().map(|s| s.trim())
@@ -347,7 +356,11 @@ pub trait CompilerBackend: Send + Sync {
     /// - The source code has syntax errors
     /// - The transformation fails
     /// - The file type is unsupported
-    fn transpile(&self, spec: &TranspileSpec, source: &str) -> Result<TranspileOutput, CompilerError>;
+    fn transpile(
+        &self,
+        spec: &TranspileSpec,
+        source: &str,
+    ) -> Result<TranspileOutput, CompilerError>;
 
     /// Check if this backend supports the given file extension.
     ///
@@ -373,11 +386,13 @@ mod tests {
 
     #[test]
     fn test_compiler_error_with_diagnostics() {
-        let diag = Diagnostic::error("Missing semicolon")
-            .with_location(std::path::PathBuf::from("src/App.tsx"), 10, 5);
+        let diag = Diagnostic::error("Missing semicolon").with_location(
+            std::path::PathBuf::from("src/App.tsx"),
+            10,
+            5,
+        );
 
-        let error = CompilerError::parse_error("Parse failed")
-            .with_diagnostics(vec![diag]);
+        let error = CompilerError::parse_error("Parse failed").with_diagnostics(vec![diag]);
 
         let display = error.to_string();
         assert!(display.contains("src/App.tsx"));

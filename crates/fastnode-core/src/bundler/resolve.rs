@@ -8,6 +8,11 @@
 //! - Absolute: `/abs/path/to/module`
 //! - Bare: `lodash`, `@scope/pkg`, `react/jsx-runtime`
 
+#![allow(clippy::manual_strip)]
+#![allow(clippy::needless_lifetimes)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::self_only_used_in_recursion)]
+
 use std::path::{Path, PathBuf};
 
 /// Result of resolving an import specifier.
@@ -76,7 +81,10 @@ impl Resolver {
         let result = self.resolve_uncached(specifier, from, cwd)?;
 
         // Cache result
-        self.cache.write().unwrap().insert(cache_key, result.clone());
+        self.cache
+            .write()
+            .unwrap()
+            .insert(cache_key, result.clone());
 
         Ok(result)
     }
@@ -107,7 +115,11 @@ impl Resolver {
     }
 
     /// Resolve a relative import.
-    fn resolve_relative(&self, specifier: &str, from: &Path) -> Result<ResolveResult, ResolveError> {
+    fn resolve_relative(
+        &self,
+        specifier: &str,
+        from: &Path,
+    ) -> Result<ResolveResult, ResolveError> {
         let from_dir = from.parent().unwrap_or(Path::new("."));
         let target = from_dir.join(specifier);
 
@@ -121,7 +133,7 @@ impl Resolver {
         if target.exists() {
             let resolved = target.canonicalize().map_err(|e| ResolveError {
                 specifier: specifier.to_string(),
-                from: "".to_string(),
+                from: String::new(),
                 message: e.to_string(),
             })?;
             return Ok(ResolveResult::Found(resolved));
@@ -168,7 +180,9 @@ impl Resolver {
 
                 if pkg_json.exists() {
                     // Read package.json to find entry point
-                    if let Ok(entry) = self.resolve_package_entry(&node_modules, &pkg_json, subpath.as_deref()) {
+                    if let Ok(entry) =
+                        self.resolve_package_entry(&node_modules, &pkg_json, subpath.as_deref())
+                    {
                         return Ok(ResolveResult::Found(entry));
                     }
                 }
@@ -267,7 +281,8 @@ impl Resolver {
 
             // Fallback: try direct path
             let target = pkg_dir.join(sub);
-            return self.resolve_file_or_directory(&target, sub, pkg_dir)
+            return self
+                .resolve_file_or_directory(&target, sub, pkg_dir)
                 .map(|r| match r {
                     ResolveResult::Found(p) => p,
                     _ => unreachable!(),

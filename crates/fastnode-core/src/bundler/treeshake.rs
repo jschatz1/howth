@@ -2,6 +2,16 @@
 //!
 //! Analyzes which exports are actually used and marks unused code for removal.
 
+#![allow(dead_code)]
+#![allow(clippy::manual_is_ascii_check)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::option_map_or_none)]
+#![allow(clippy::needless_continue)]
+#![allow(clippy::manual_pattern_char_comparison)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::cast_possible_wrap)]
+
 use super::graph::{ModuleGraph, ModuleId};
 use super::Import;
 use std::collections::{HashMap, HashSet};
@@ -33,7 +43,9 @@ impl UsedExports {
             if let Some(module) = graph.get(module_id) {
                 for import in &module.imports {
                     // Find the target module
-                    if let Some(target_id) = graph.resolve_specifier(&module.path, &import.specifier) {
+                    if let Some(target_id) =
+                        graph.resolve_specifier(&module.path, &import.specifier)
+                    {
                         used.process_import(target_id, import);
                     }
                 }
@@ -50,7 +62,10 @@ impl UsedExports {
 
     /// Mark specific exports as used.
     pub fn mark_used(&mut self, module_id: ModuleId, names: &[String]) {
-        let entry = self.used.entry(module_id).or_insert_with(|| Some(HashSet::new()));
+        let entry = self
+            .used
+            .entry(module_id)
+            .or_insert_with(|| Some(HashSet::new()));
         if let Some(set) = entry {
             for name in names {
                 set.insert(name.clone());
@@ -73,7 +88,7 @@ impl UsedExports {
     /// Check if a specific export is used.
     pub fn is_used(&self, module_id: ModuleId, export_name: &str) -> bool {
         match self.used.get(&module_id) {
-            None => false, // Module not in graph, not used
+            None => false,      // Module not in graph, not used
             Some(None) => true, // All exports are used
             Some(Some(set)) => set.contains(export_name),
         }
@@ -113,7 +128,7 @@ pub fn extract_exports(source: &str) -> Vec<(String, bool)> {
             let decl = trimmed.strip_prefix("export ").unwrap();
             let parts: Vec<&str> = decl.splitn(3, ' ').collect();
             if parts.len() >= 2 {
-                let name = parts[1].trim_end_matches(|c| c == '=' || c == ':' || c == ' ');
+                let name = parts[1].trim_end_matches(['=', ':', ' ']);
                 exports.push((name.to_string(), false));
             }
             continue;
@@ -132,7 +147,7 @@ pub fn extract_exports(source: &str) -> Vec<(String, bool)> {
         // export class Name
         if trimmed.starts_with("export class ") {
             let decl = trimmed.strip_prefix("export class ").unwrap();
-            let parts: Vec<&str> = decl.splitn(2, |c| c == ' ' || c == '{').collect();
+            let parts: Vec<&str> = decl.splitn(2, |c: char| matches!(c, ' ' | '{')).collect();
             if !parts.is_empty() {
                 exports.push((parts[0].trim().to_string(), false));
             }
@@ -226,11 +241,14 @@ fn get_export_name(line: &str) -> Option<String> {
         return Some("default".to_string());
     }
 
-    if line.starts_with("export const ") || line.starts_with("export let ") || line.starts_with("export var ") {
+    if line.starts_with("export const ")
+        || line.starts_with("export let ")
+        || line.starts_with("export var ")
+    {
         let decl = line.strip_prefix("export ")?;
         let parts: Vec<&str> = decl.splitn(3, ' ').collect();
         if parts.len() >= 2 {
-            let name = parts[1].trim_end_matches(|c| c == '=' || c == ':' || c == ' ');
+            let name = parts[1].trim_end_matches(['=', ':', ' ']);
             return Some(name.to_string());
         }
     }
@@ -244,7 +262,7 @@ fn get_export_name(line: &str) -> Option<String> {
 
     if line.starts_with("export class ") {
         let decl = line.strip_prefix("export class ")?;
-        let parts: Vec<&str> = decl.splitn(2, |c| c == ' ' || c == '{').collect();
+        let parts: Vec<&str> = decl.splitn(2, |c: char| matches!(c, ' ' | '{')).collect();
         if !parts.is_empty() {
             return Some(parts[0].trim().to_string());
         }
@@ -259,14 +277,14 @@ mod tests {
 
     #[test]
     fn test_extract_exports() {
-        let source = r#"
+        let source = "
 export const foo = 1;
 export let bar = 2;
 export function add(a, b) { return a + b; }
 export class User {}
 export default App;
 export { x, y as z };
-"#;
+";
         let exports = extract_exports(source);
         let names: Vec<&str> = exports.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"foo"));
@@ -280,10 +298,10 @@ export { x, y as z };
 
     #[test]
     fn test_filter_unused_exports() {
-        let source = r#"export const used = 1;
+        let source = "export const used = 1;
 export const unused = 2;
 export function usedFn() { return 1; }
-export function unusedFn() { return 2; }"#;
+export function unusedFn() { return 2; }";
 
         let mut used = HashSet::new();
         used.insert("used".to_string());

@@ -22,6 +22,10 @@
 //! }
 //! ```
 
+#![allow(clippy::unused_self)]
+#![allow(clippy::needless_lifetimes)]
+#![allow(clippy::unnecessary_literal_bound)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -359,8 +363,10 @@ impl ReplacePlugin {
     /// Add environment variable replacement.
     /// Replaces `process.env.KEY` with the value.
     pub fn env(mut self, key: &str, value: impl Into<String>) -> Self {
-        self.replacements
-            .insert(format!("process.env.{}", key), format!("\"{}\"", value.into()));
+        self.replacements.insert(
+            format!("process.env.{}", key),
+            format!("\"{}\"", value.into()),
+        );
         self
     }
 }
@@ -451,7 +457,10 @@ impl Plugin for VirtualPlugin {
         }
         // Also handle direct lookup
         if self.modules.contains_key(specifier) {
-            return Ok(Some(ResolveIdResult::resolved(format!("\0virtual:{}", specifier))));
+            return Ok(Some(ResolveIdResult::resolved(format!(
+                "\0virtual:{}",
+                specifier
+            ))));
         }
         Ok(None)
     }
@@ -622,12 +631,14 @@ mod tests {
             .replace("__DEV__", "false")
             .env("NODE_ENV", "production");
 
-        let code = r#"
+        let code = "
             if (__DEV__) { console.log('dev'); }
             const env = process.env.NODE_ENV;
-        "#;
+        ";
 
-        let result = plugin.transform(code, "test.js", &PluginContext::default()).unwrap();
+        let result = plugin
+            .transform(code, "test.js", &PluginContext::default())
+            .unwrap();
         let transformed = result.unwrap().code;
 
         assert!(transformed.contains("if (false)"));
@@ -636,8 +647,7 @@ mod tests {
 
     #[test]
     fn test_virtual_plugin() {
-        let plugin = VirtualPlugin::new()
-            .module("my-module", "export const x = 1;");
+        let plugin = VirtualPlugin::new().module("my-module", "export const x = 1;");
 
         let ctx = PluginContext::default();
 
@@ -654,9 +664,7 @@ mod tests {
 
     #[test]
     fn test_alias_plugin() {
-        let plugin = AliasPlugin::new()
-            .alias("@", "./src")
-            .alias("~", "./");
+        let plugin = AliasPlugin::new().alias("@", "./src").alias("~", "./");
 
         let ctx = PluginContext::default();
 
@@ -665,7 +673,9 @@ mod tests {
         assert_eq!(result.unwrap().id, "./src");
 
         // Prefix match
-        let result = plugin.resolve_id("@/components/Button", None, &ctx).unwrap();
+        let result = plugin
+            .resolve_id("@/components/Button", None, &ctx)
+            .unwrap();
         assert_eq!(result.unwrap().id, "./src/components/Button");
 
         // No match
@@ -699,7 +709,9 @@ mod tests {
         let ctx = PluginContext::default();
 
         // Should transform JSON
-        let result = plugin.transform(r#"{"key": "value"}"#, "data.json", &ctx).unwrap();
+        let result = plugin
+            .transform(r#"{"key": "value"}"#, "data.json", &ctx)
+            .unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().code, r#"export default {"key": "value"};"#);
 

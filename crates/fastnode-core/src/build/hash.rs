@@ -10,6 +10,8 @@
 //! - Globs expand deterministically (sorted by path)
 //! - Environment variables are hashed by allowlist only
 
+#![allow(clippy::doc_markdown)]
+
 use super::graph::{BuildInput, BuildNode, DEFAULT_GLOB_EXCLUSIONS};
 use blake3::Hasher;
 use rayon::prelude::*;
@@ -225,14 +227,10 @@ pub fn normalize_path(path: &Path) -> String {
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(path)
+        std::env::current_dir().unwrap_or_default().join(path)
     };
 
-    let mut normalized = abs_path
-        .to_string_lossy()
-        .replace('\\', "/");
+    let mut normalized = abs_path.to_string_lossy().replace('\\', "/");
 
     // Strip trailing slash
     while normalized.ends_with('/') && normalized.len() > 1 {
@@ -435,7 +433,11 @@ fn encode_input(input: &BuildInput) -> Vec<u8> {
             buf.extend_from_slice(if *optional { b"optional" } else { b"required" });
             buf.push(0);
         }
-        BuildInput::Glob { pattern, root, optional } => {
+        BuildInput::Glob {
+            pattern,
+            root,
+            optional,
+        } => {
             buf.extend_from_slice(b"glob\0");
             buf.extend_from_slice(pattern.as_bytes());
             buf.push(0);
@@ -458,7 +460,10 @@ fn encode_input(input: &BuildInput) -> Vec<u8> {
             buf.extend_from_slice(version.as_deref().unwrap_or("unknown").as_bytes());
             buf.push(0);
         }
-        BuildInput::Lockfile { path, schema_version } => {
+        BuildInput::Lockfile {
+            path,
+            schema_version,
+        } => {
             buf.extend_from_slice(b"lockfile\0");
             buf.extend_from_slice(path.as_bytes());
             buf.push(0);
@@ -503,13 +508,23 @@ pub fn hash_input_with_ctx(
                 hash_file_with_ctx(&full_path, ctx)
             } else if *optional {
                 // Optional missing file - stable marker
-                Ok(hash_string(&format!("optional-missing:{}", normalize_path(&full_path))))
+                Ok(hash_string(&format!(
+                    "optional-missing:{}",
+                    normalize_path(&full_path)
+                )))
             } else {
                 // Required missing file - include marker in hash
-                Ok(hash_string(&format!("missing:{}", normalize_path(&full_path))))
+                Ok(hash_string(&format!(
+                    "missing:{}",
+                    normalize_path(&full_path)
+                )))
             }
         }
-        BuildInput::Glob { pattern, root, optional } => {
+        BuildInput::Glob {
+            pattern,
+            root,
+            optional,
+        } => {
             let root_path = if Path::new(root).is_absolute() {
                 PathBuf::from(root)
             } else {
@@ -518,7 +533,10 @@ pub fn hash_input_with_ctx(
 
             if !root_path.exists() && *optional {
                 // Optional glob with missing root - stable marker
-                return Ok(hash_string(&format!("optional-missing-glob:{}", normalize_path(&root_path))));
+                return Ok(hash_string(&format!(
+                    "optional-missing-glob:{}",
+                    normalize_path(&root_path)
+                )));
             }
 
             hash_glob_with_ctx(pattern, &root_path, DEFAULT_GLOB_EXCLUSIONS, ctx)
@@ -534,18 +552,22 @@ pub fn hash_input_with_ctx(
                 // Hash directory contents as glob
                 hash_glob_with_ctx("**/*", &full_path, DEFAULT_GLOB_EXCLUSIONS, ctx)
             } else if *optional {
-                Ok(hash_string(&format!("optional-missing-dir:{}", normalize_path(&full_path))))
+                Ok(hash_string(&format!(
+                    "optional-missing-dir:{}",
+                    normalize_path(&full_path)
+                )))
             } else {
-                Ok(hash_string(&format!("missing-dir:{}", normalize_path(&full_path))))
+                Ok(hash_string(&format!(
+                    "missing-dir:{}",
+                    normalize_path(&full_path)
+                )))
             }
         }
-        BuildInput::Package { name, version } => {
-            Ok(hash_string(&format!(
-                "package:{}:{}",
-                name,
-                version.as_deref().unwrap_or("unknown")
-            )))
-        }
+        BuildInput::Package { name, version } => Ok(hash_string(&format!(
+            "package:{}:{}",
+            name,
+            version.as_deref().unwrap_or("unknown")
+        ))),
         BuildInput::Lockfile { path, .. } => {
             let full_path = if Path::new(path).is_absolute() {
                 PathBuf::from(path)
@@ -648,7 +670,11 @@ pub fn hash_node_with_deps_ctx(
 
     // Schema version
     hasher.update(b"schema:");
-    hasher.update(super::graph::BUILD_GRAPH_SCHEMA_VERSION.to_string().as_bytes());
+    hasher.update(
+        super::graph::BUILD_GRAPH_SCHEMA_VERSION
+            .to_string()
+            .as_bytes(),
+    );
     hasher.update(b"\0");
 
     // Kind
@@ -873,7 +899,10 @@ mod tests {
 
         let mut node = BuildNode::script("build", "echo hello");
         node.add_input(BuildInput::file(
-            dir.path().join("package.json").to_string_lossy().to_string(),
+            dir.path()
+                .join("package.json")
+                .to_string_lossy()
+                .to_string(),
         ));
 
         let hash1 = hash_node(&node, dir.path()).unwrap();
@@ -913,7 +942,6 @@ mod tests {
 
     #[test]
     fn test_hash_node_with_deps_includes_dep_hash() {
-        
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
 
@@ -936,7 +964,6 @@ mod tests {
 
     #[test]
     fn test_hash_graph_with_dependencies_propagates() {
-        
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
 
@@ -966,7 +993,6 @@ mod tests {
 
     #[test]
     fn test_dep_hash_changes_when_dependency_changes() {
-        
         let dir = tempdir().unwrap();
         let pkg_json = dir.path().join("package.json");
         std::fs::write(&pkg_json, "{}").unwrap();
@@ -1011,8 +1037,8 @@ mod tests {
         let app_tsx = dir.path().join("App.tsx");
         std::fs::write(&app_tsx, "const x = <div>Hello</div>;").unwrap();
 
-        let spec = TranspileSpec::new("App.tsx", "dist/App.js")
-            .with_jsx_runtime(JsxRuntime::Automatic);
+        let spec =
+            TranspileSpec::new("App.tsx", "dist/App.js").with_jsx_runtime(JsxRuntime::Automatic);
         let node = BuildNode::transpile("App.tsx", "dist/App.js", spec);
 
         let hash = hash_node(&node, dir.path()).unwrap();
@@ -1032,12 +1058,12 @@ mod tests {
         std::fs::write(&app_tsx, "const x = <div>Hello</div>;").unwrap();
 
         // Create two nodes with different specs
-        let spec1 = TranspileSpec::new("App.tsx", "dist/App.js")
-            .with_jsx_runtime(JsxRuntime::Automatic);
+        let spec1 =
+            TranspileSpec::new("App.tsx", "dist/App.js").with_jsx_runtime(JsxRuntime::Automatic);
         let node1 = BuildNode::transpile("App.tsx", "dist/App.js", spec1);
 
-        let spec2 = TranspileSpec::new("App.tsx", "dist/App.js")
-            .with_jsx_runtime(JsxRuntime::Classic);
+        let spec2 =
+            TranspileSpec::new("App.tsx", "dist/App.js").with_jsx_runtime(JsxRuntime::Classic);
         let node2 = BuildNode::transpile("App.tsx", "dist/App.js", spec2);
 
         let hash1 = hash_node(&node1, dir.path()).unwrap();
@@ -1055,8 +1081,8 @@ mod tests {
         let app_tsx = dir.path().join("App.tsx");
         std::fs::write(&app_tsx, "const x = <div>Hello</div>;").unwrap();
 
-        let spec = TranspileSpec::new("App.tsx", "dist/App.js")
-            .with_jsx_runtime(JsxRuntime::Automatic);
+        let spec =
+            TranspileSpec::new("App.tsx", "dist/App.js").with_jsx_runtime(JsxRuntime::Automatic);
         let node = BuildNode::transpile("App.tsx", "dist/App.js", spec);
 
         let hash1 = hash_node(&node, dir.path()).unwrap();

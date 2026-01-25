@@ -12,6 +12,10 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(dead_code)]
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::needless_raw_string_hashes)]
+#![allow(clippy::doc_markdown)]
 
 mod commands;
 mod logging;
@@ -652,8 +656,15 @@ fn main() -> Result<()> {
     {
         // For dev server, use entry file's parent directory as cwd
         // (watches only the project directory, not unrelated dirs)
-        let dev_cwd = entry.parent()
-            .map(|p| if p.as_os_str().is_empty() { std::path::PathBuf::from(".") } else { p.to_path_buf() })
+        let dev_cwd = entry
+            .parent()
+            .map(|p| {
+                if p.as_os_str().is_empty() {
+                    std::path::PathBuf::from(".")
+                } else {
+                    p.to_path_buf()
+                }
+            })
             .unwrap_or_else(|| std::path::PathBuf::from("."));
 
         let action = commands::dev::DevAction {

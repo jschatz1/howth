@@ -18,6 +18,8 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::match_same_arms)]
 #![allow(clippy::ptr_arg)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::if_not_else)]
 
 //! Long-running daemon for fastnode.
@@ -486,7 +488,7 @@ fn handle_build(
         force,
         dry_run,
         max_parallel: max_parallel as usize,
-        profile: false, // TODO: wire up profiling
+        profile: false,      // TODO: wire up profiling
         targets: Vec::new(), // Empty = run all nodes
     };
 
@@ -539,11 +541,7 @@ impl fastnode_core::build::BuildCache for BuildCacheWrapper {
         self.0.get(node_id, hash)
     }
 
-    fn get_entry(
-        &self,
-        node_id: &str,
-        hash: &str,
-    ) -> Option<fastnode_core::build::CacheEntry> {
+    fn get_entry(&self, node_id: &str, hash: &str) -> Option<fastnode_core::build::CacheEntry> {
         self.0.get_entry(node_id, hash)
     }
 
@@ -573,10 +571,7 @@ impl fastnode_core::build::BuildCache for BuildCacheWrapper {
 }
 
 /// Convert core's `BuildRunResult` to proto's `BuildRunResult`.
-fn convert_build_result(
-    result: fastnode_core::build::BuildRunResult,
-    cwd: &str,
-) -> BuildRunResult {
+fn convert_build_result(result: fastnode_core::build::BuildRunResult, cwd: &str) -> BuildRunResult {
     let results: Vec<BuildNodeResult> = result
         .results
         .into_iter()

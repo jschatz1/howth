@@ -18,8 +18,13 @@
 //! Without the `swc` feature, a stub implementation is used that performs
 //! basic regex-based transformations for testing purposes.
 
+#![allow(clippy::default_trait_access)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::map_unwrap_or)]
+#![allow(clippy::needless_raw_string_hashes)]
+
+use super::spec::{JsxRuntime, SourceMapKind};
 use super::{CompilerBackend, CompilerError, TranspileOutput, TranspileSpec};
-use super::spec::{JsxRuntime, ModuleKind, SourceMapKind};
 
 #[cfg(feature = "swc")]
 use super::spec::EsTarget;
@@ -67,7 +72,11 @@ impl CompilerBackend for SwcBackend {
         "swc"
     }
 
-    fn transpile(&self, spec: &TranspileSpec, source: &str) -> Result<TranspileOutput, CompilerError> {
+    fn transpile(
+        &self,
+        spec: &TranspileSpec,
+        source: &str,
+    ) -> Result<TranspileOutput, CompilerError> {
         // Validate input
         if source.is_empty() {
             return Ok(TranspileOutput::new(""));
@@ -208,40 +217,48 @@ fn transform_simple_jsx(source: &str, runtime: JsxRuntime) -> String {
             // This won't handle nested elements, attributes, etc.
             let re_simple = regex_lite::Regex::new(r"<(\w+)>([^<]*)</\1>").ok();
             if let Some(re) = re_simple {
-                result = re.replace_all(&result, |caps: &regex_lite::Captures| {
-                    let tag = &caps[1];
-                    let content = &caps[2];
-                    format!("_jsx(\"{tag}\", {{ children: \"{content}\" }})")
-                }).to_string();
+                result = re
+                    .replace_all(&result, |caps: &regex_lite::Captures| {
+                        let tag = &caps[1];
+                        let content = &caps[2];
+                        format!("_jsx(\"{tag}\", {{ children: \"{content}\" }})")
+                    })
+                    .to_string();
             }
 
             // Transform self-closing tags: <br /> -> _jsx("br", {})
             let re_self_closing = regex_lite::Regex::new(r"<(\w+)\s*/>").ok();
             if let Some(re) = re_self_closing {
-                result = re.replace_all(&result, |caps: &regex_lite::Captures| {
-                    let tag = &caps[1];
-                    format!("_jsx(\"{tag}\", {{}})")
-                }).to_string();
+                result = re
+                    .replace_all(&result, |caps: &regex_lite::Captures| {
+                        let tag = &caps[1];
+                        format!("_jsx(\"{tag}\", {{}})")
+                    })
+                    .to_string();
             }
         }
         JsxRuntime::Classic => {
             // Transform <div>text</div> to React.createElement("div", null, "text")
             let re_simple = regex_lite::Regex::new(r"<(\w+)>([^<]*)</\1>").ok();
             if let Some(re) = re_simple {
-                result = re.replace_all(&result, |caps: &regex_lite::Captures| {
-                    let tag = &caps[1];
-                    let content = &caps[2];
-                    format!("React.createElement(\"{tag}\", null, \"{content}\")")
-                }).to_string();
+                result = re
+                    .replace_all(&result, |caps: &regex_lite::Captures| {
+                        let tag = &caps[1];
+                        let content = &caps[2];
+                        format!("React.createElement(\"{tag}\", null, \"{content}\")")
+                    })
+                    .to_string();
             }
 
             // Transform self-closing tags: <br /> -> React.createElement("br", null)
             let re_self_closing = regex_lite::Regex::new(r"<(\w+)\s*/>").ok();
             if let Some(re) = re_self_closing {
-                result = re.replace_all(&result, |caps: &regex_lite::Captures| {
-                    let tag = &caps[1];
-                    format!("React.createElement(\"{tag}\", null)")
-                }).to_string();
+                result = re
+                    .replace_all(&result, |caps: &regex_lite::Captures| {
+                        let tag = &caps[1];
+                        format!("React.createElement(\"{tag}\", null)")
+                    })
+                    .to_string();
             }
         }
     }
@@ -252,7 +269,8 @@ fn transform_simple_jsx(source: &str, runtime: JsxRuntime) -> String {
 /// Generate a placeholder source map (stub implementation).
 #[cfg(not(feature = "swc"))]
 fn generate_placeholder_sourcemap(input_path: &std::path::Path) -> String {
-    let filename = input_path.file_name()
+    let filename = input_path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
@@ -274,14 +292,12 @@ fn compile_with_swc(
     is_jsx: bool,
 ) -> Result<TranspileOutput, CompilerError> {
     use swc_common::{
-        comments::SingleThreadedComments,
-        errors::Handler,
-        sync::Lrc,
-        FileName, Globals, Mark, SourceMap, GLOBALS,
+        comments::SingleThreadedComments, errors::Handler, sync::Lrc, FileName, Globals, Mark,
+        SourceMap, GLOBALS,
     };
     use swc_ecma_ast::{EsVersion, Program};
     use swc_ecma_codegen::{text_writer::JsWriter, Emitter};
-    use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax, EsSyntax};
+    use swc_ecma_parser::{lexer::Lexer, EsSyntax, Parser, StringInput, Syntax, TsSyntax};
     use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
     use swc_ecma_transforms_react::{react, Options as ReactOptions, Runtime};
     use swc_ecma_transforms_typescript::strip;
@@ -291,13 +307,12 @@ fn compile_with_swc(
     let cm: Lrc<SourceMap> = Default::default();
 
     // Create a simple handler that discards output (we handle errors via Result)
-    let handler = Handler::with_emitter_writer(
-        Box::new(std::io::sink()),
-        Some(cm.clone()),
-    );
+    let handler = Handler::with_emitter_writer(Box::new(std::io::sink()), Some(cm.clone()));
 
     // Create source file
-    let filename = spec.input_path.file_name()
+    let filename = spec
+        .input_path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("input.js");
     let fm = cm.new_source_file(
@@ -338,12 +353,7 @@ fn compile_with_swc(
     let comments = SingleThreadedComments::default();
 
     // Parse
-    let lexer = Lexer::new(
-        syntax,
-        target,
-        StringInput::from(&*fm),
-        Some(&comments),
-    );
+    let lexer = Lexer::new(syntax, target, StringInput::from(&*fm), Some(&comments));
 
     let mut parser = Parser::new_from(lexer);
     let mut errors = Vec::new();
@@ -386,7 +396,11 @@ fn compile_with_swc(
                 // Convert script to module (shouldn't happen for our use case)
                 swc_ecma_ast::Module {
                     span: s.span,
-                    body: s.body.into_iter().map(swc_ecma_ast::ModuleItem::Stmt).collect(),
+                    body: s
+                        .body
+                        .into_iter()
+                        .map(swc_ecma_ast::ModuleItem::Stmt)
+                        .collect(),
                     shebang: s.shebang,
                 }
             }
@@ -437,14 +451,13 @@ fn compile_with_swc(
             wr: writer,
         };
 
-        emitter.emit_module(&output).map_err(|e| {
-            CompilerError::transform_error(format!("Failed to emit: {e}"))
-        })?;
+        emitter
+            .emit_module(&output)
+            .map_err(|e| CompilerError::transform_error(format!("Failed to emit: {e}")))?;
     }
 
-    let code = String::from_utf8(buf).map_err(|e| {
-        CompilerError::transform_error(format!("Invalid UTF-8 output: {e}"))
-    })?;
+    let code = String::from_utf8(buf)
+        .map_err(|e| CompilerError::transform_error(format!("Invalid UTF-8 output: {e}")))?;
 
     // Generate source map if requested
     let source_map = match spec.sourcemaps {
@@ -453,8 +466,9 @@ fn compile_with_swc(
             // Build source map from the collected mappings
             let srcmap = cm.build_source_map(&src_map_buf);
             let mut map_buf = Vec::new();
-            srcmap.to_writer(&mut map_buf)
-                .map_err(|e| CompilerError::transform_error(format!("Failed to write source map: {e}")))?;
+            srcmap.to_writer(&mut map_buf).map_err(|e| {
+                CompilerError::transform_error(format!("Failed to write source map: {e}"))
+            })?;
             Some(String::from_utf8(map_buf).unwrap_or_default())
         }
     };
@@ -538,29 +552,35 @@ mod tests {
         let output = backend.transpile(&spec, source).unwrap();
 
         // Stub implementation adds jsx-runtime import for JSX files
-        assert!(output.code.contains("jsx-runtime"), "Should import jsx-runtime for JSX files");
+        assert!(
+            output.code.contains("jsx-runtime"),
+            "Should import jsx-runtime for JSX files"
+        );
     }
 
     #[test]
     #[cfg(not(feature = "swc"))]
     fn test_transpile_jsx_classic_mode() {
         let backend = SwcBackend::new();
-        let spec = TranspileSpec::new("src/App.jsx", "dist/App.js")
-            .with_jsx_runtime(JsxRuntime::Classic);
+        let spec =
+            TranspileSpec::new("src/App.jsx", "dist/App.js").with_jsx_runtime(JsxRuntime::Classic);
 
         // The stub passes through with classic mode - no jsx-runtime import
         let source = "const el = 1;";
         let output = backend.transpile(&spec, source).unwrap();
 
         // Classic mode doesn't add jsx-runtime import
-        assert!(!output.code.contains("jsx-runtime"), "Classic mode should not import jsx-runtime");
+        assert!(
+            !output.code.contains("jsx-runtime"),
+            "Classic mode should not import jsx-runtime"
+        );
     }
 
     #[test]
     fn test_transpile_with_inline_sourcemap() {
         let backend = SwcBackend::new();
-        let spec = TranspileSpec::new("src/app.js", "dist/app.js")
-            .with_sourcemaps(SourceMapKind::Inline);
+        let spec =
+            TranspileSpec::new("src/app.js", "dist/app.js").with_sourcemaps(SourceMapKind::Inline);
 
         let source = "const x = 1;";
         let output = backend.transpile(&spec, source).unwrap();
@@ -637,19 +657,21 @@ mod tests {
     #[cfg(feature = "swc")]
     fn test_swc_transpile_jsx_classic() {
         let backend = SwcBackend::new();
-        let spec = TranspileSpec::new("src/App.jsx", "dist/App.js")
-            .with_jsx_runtime(JsxRuntime::Classic);
+        let spec =
+            TranspileSpec::new("src/App.jsx", "dist/App.js").with_jsx_runtime(JsxRuntime::Classic);
 
-        let source = r#"
+        let source = r"
             function App() {
                 return <div>Hello</div>;
             }
-        "#;
+        ";
 
         let output = backend.transpile(&spec, source).unwrap();
 
         // Should transform JSX to React.createElement
-        assert!(output.code.contains("React.createElement") || output.code.contains("createElement"));
+        assert!(
+            output.code.contains("React.createElement") || output.code.contains("createElement")
+        );
         assert!(!output.code.contains("<div"));
     }
 
@@ -660,14 +682,14 @@ mod tests {
         let spec = TranspileSpec::new("src/App.tsx", "dist/App.js")
             .with_jsx_runtime(JsxRuntime::Automatic);
 
-        let source = r#"
+        let source = r"
             interface Props {
                 name: string;
             }
             function Greeting({ name }: Props) {
                 return <h1>Hello, {name}!</h1>;
             }
-        "#;
+        ";
 
         let output = backend.transpile(&spec, source).unwrap();
 
