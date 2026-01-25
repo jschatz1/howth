@@ -276,10 +276,7 @@ fn generate_placeholder_sourcemap(input_path: &std::path::Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    format!(
-        r#"{{"version":3,"sources":["{}"],"names":[],"mappings":"AAAA"}}"#,
-        filename
-    )
+    format!(r#"{{"version":3,"sources":["{filename}"],"names":[],"mappings":"AAAA"}}"#)
 }
 
 // ============================================================
