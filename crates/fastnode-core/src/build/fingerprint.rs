@@ -173,9 +173,7 @@ pub fn normalize_output_path(path: &Path, root: &Path) -> String {
         path
     };
 
-    let mut normalized = rel_path
-        .to_string_lossy()
-        .replace('\\', "/");
+    let mut normalized = rel_path.to_string_lossy().replace('\\', "/");
 
     // Remove trailing slash
     while normalized.ends_with('/') && normalized.len() > 1 {

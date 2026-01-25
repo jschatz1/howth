@@ -15,8 +15,8 @@ use fastnode_core::resolver::{
 };
 use fastnode_proto::{
     codes, CachedPackage, DoctorCounts, DoctorFinding, DoctorSummary, GraphDepEdge, GraphErrorInfo,
-    GraphPackageId, GraphPackageNode, InstallPackageError, InstallPackageInfo, InstalledPackage,
-    InstallSummary, PackageGraph, PkgDoctorReport, PkgErrorInfo, PkgExplainResult,
+    GraphPackageId, GraphPackageNode, InstallPackageError, InstallPackageInfo, InstallSummary,
+    InstalledPackage, PackageGraph, PkgDoctorReport, PkgErrorInfo, PkgExplainResult,
     PkgExplainTraceStep, PkgExplainWarning, PkgInstallResult, PkgWhyChain, PkgWhyErrorInfo,
     PkgWhyLink, PkgWhyResult, PkgWhyTarget, Response, PKG_DOCTOR_SCHEMA_VERSION,
     PKG_EXPLAIN_SCHEMA_VERSION, PKG_GRAPH_SCHEMA_VERSION, PKG_INSTALL_SCHEMA_VERSION,
@@ -239,7 +239,10 @@ pub async fn handle_pkg_install(
                 summary: InstallSummary::default(),
                 installed: vec![],
                 errors: vec![],
-                notes: vec!["No lockfile found. Run `howth install` without --frozen to generate one.".to_string()],
+                notes: vec![
+                    "No lockfile found. Run `howth install` without --frozen to generate one."
+                        .to_string(),
+                ],
             },
         };
     }

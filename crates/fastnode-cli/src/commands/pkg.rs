@@ -545,21 +545,26 @@ fn handle_response(
                 println!("howth install");
                 println!(
                     "  packages: {} total, {} cached, {} downloaded",
-                    result.summary.total_packages,
-                    result.summary.cached,
-                    result.summary.downloaded
+                    result.summary.total_packages, result.summary.cached, result.summary.downloaded
                 );
 
                 if !result.installed.is_empty() {
                     for pkg in &result.installed {
-                        let source = if pkg.from_cache { "cached" } else { "downloaded" };
+                        let source = if pkg.from_cache {
+                            "cached"
+                        } else {
+                            "downloaded"
+                        };
                         println!("  + {}@{} ({})", pkg.name, pkg.version, source);
                     }
                 }
 
                 if !result.errors.is_empty() {
                     for err in &result.errors {
-                        eprintln!("  ! {}@{}: {} {}", err.name, err.version, err.code, err.message);
+                        eprintln!(
+                            "  ! {}@{}: {} {}",
+                            err.name, err.version, err.code, err.message
+                        );
                     }
                 }
 

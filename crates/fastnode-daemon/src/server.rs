@@ -44,7 +44,9 @@ pub async fn run_server(config: DaemonConfig) -> io::Result<()> {
 
     // Wire caches to watcher for invalidation
     state.watcher.set_cache(state.cache.clone());
-    state.watcher.set_pkg_json_cache(state.pkg_json_cache.clone());
+    state
+        .watcher
+        .set_pkg_json_cache(state.pkg_json_cache.clone());
     state.watcher.set_build_cache(state.build_cache.clone());
 
     // Accept loop
@@ -168,7 +170,16 @@ async fn handle_watch_build_streaming(
     let run_build = || {
         let build_cache = Some(state.build_cache.clone());
         let compiler = Some(state.compiler.clone());
-        handle_build(&cwd, false, false, max_parallel, false, &targets, build_cache, compiler)
+        handle_build(
+            &cwd,
+            false,
+            false,
+            max_parallel,
+            false,
+            &targets,
+            build_cache,
+            compiler,
+        )
     };
 
     // Run initial build

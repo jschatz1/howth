@@ -167,7 +167,7 @@ pub enum WhyArgKind {
 /// - If it contains `@` after a non-scope position, split as name@version.
 /// - If it contains `/` after the package name, treat as name/subpath.
 /// - Otherwise, treat as plain name.
-#[must_use] 
+#[must_use]
 pub fn parse_why_arg(input: &str) -> ParsedWhyArg {
     let input = input.trim();
 
@@ -328,7 +328,7 @@ fn extract_package_name_from_path(path: &str) -> Option<String> {
 }
 
 /// Compute why chains from a package graph.
-#[must_use] 
+#[must_use]
 pub fn why_from_graph(graph: &PackageGraph, input: &str, opts: &WhyOptions) -> PkgWhyResult {
     let mut result = PkgWhyResult::new(&graph.root);
 

@@ -95,11 +95,7 @@ pub fn ipc_endpoint(channel: Channel) -> String {
 
     #[cfg(windows)]
     {
-        format!(
-            r"\\.\pipe\howth-{}-v{}",
-            channel.as_str(),
-            SCHEMA_VERSION
-        )
+        format!(r"\\.\pipe\howth-{}-v{}", channel.as_str(), SCHEMA_VERSION)
     }
 
     #[cfg(not(any(unix, windows)))]

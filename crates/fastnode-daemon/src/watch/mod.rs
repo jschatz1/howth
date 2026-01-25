@@ -310,7 +310,6 @@ impl WatcherState {
             }
         }
     }
-
 }
 
 /// Process events with coalescing.
@@ -393,10 +392,7 @@ async fn process_events(
                         );
                     }
                     if build_invalidated > 0 {
-                        debug!(
-                            count = build_invalidated,
-                            "Build cache entries invalidated"
-                        );
+                        debug!(count = build_invalidated, "Build cache entries invalidated");
                     }
 
                     // Update timestamp AFTER invalidation is applied

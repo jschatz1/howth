@@ -141,10 +141,7 @@ impl ChunkGraph {
             // Get all modules reachable from this chunk
             let reachable = get_all_dependencies(graph, chunk.entry);
             for module_id in reachable {
-                module_usage
-                    .entry(module_id)
-                    .or_default()
-                    .insert(chunk.id);
+                module_usage.entry(module_id).or_default().insert(chunk.id);
             }
         }
 

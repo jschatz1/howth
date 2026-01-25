@@ -1047,6 +1047,7 @@ impl BuildNodeReason {
 
 /// Result of executing a single build node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BuildNodeResult {
     /// Node ID (e.g., "script:build").
     pub id: String,

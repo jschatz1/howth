@@ -78,8 +78,7 @@ impl LockRoot {
 }
 
 /// Metadata about the lockfile itself.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct LockMeta {
     /// When the lockfile was last updated (ISO 8601 timestamp).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,7 +87,6 @@ pub struct LockMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub howth_version: Option<String>,
 }
-
 
 /// How a package was resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,7 +245,8 @@ impl LockPackage {
 
     /// Add an optional dependency.
     pub fn add_optional_dependency(&mut self, name: impl Into<String>, version: impl Into<String>) {
-        self.optional_dependencies.insert(name.into(), version.into());
+        self.optional_dependencies
+            .insert(name.into(), version.into());
     }
 }
 
@@ -556,10 +555,7 @@ mod tests {
         pkg.add_dependency("lodash.isequal", "4.5.0");
         lockfile.add_package("lodash", pkg);
 
-        lockfile.add_dependency(
-            "lodash",
-            LockDep::new("^4.17.0", "dep", "4.17.21"),
-        );
+        lockfile.add_dependency("lodash", LockDep::new("^4.17.0", "dep", "4.17.21"));
 
         let json = lockfile.to_json();
         let parsed = Lockfile::from_json(&json).unwrap();

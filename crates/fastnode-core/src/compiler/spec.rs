@@ -373,12 +373,22 @@ impl TranspileSpec {
 
         // Input path (normalized to forward slashes)
         buf.extend_from_slice(b"input:");
-        buf.extend_from_slice(self.input_path.to_string_lossy().replace('\\', "/").as_bytes());
+        buf.extend_from_slice(
+            self.input_path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .as_bytes(),
+        );
         buf.push(0);
 
         // Output path
         buf.extend_from_slice(b"output:");
-        buf.extend_from_slice(self.output_path.to_string_lossy().replace('\\', "/").as_bytes());
+        buf.extend_from_slice(
+            self.output_path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .as_bytes(),
+        );
         buf.push(0);
 
         // JSX runtime
@@ -575,8 +585,8 @@ mod tests {
 
         assert_eq!(spec1.canonical_encoding(), spec2.canonical_encoding());
 
-        let spec3 = TranspileSpec::new("src/App.tsx", "dist/App.js")
-            .with_jsx_runtime(JsxRuntime::Classic);
+        let spec3 =
+            TranspileSpec::new("src/App.tsx", "dist/App.js").with_jsx_runtime(JsxRuntime::Classic);
 
         assert_ne!(spec1.canonical_encoding(), spec3.canonical_encoding());
     }

@@ -911,8 +911,8 @@ fn test_fastnode_shim_forwards() {
 
     // 2. Stdout JSON must be valid and contain { ok, doctor }
     let fastnode_stdout = String::from_utf8_lossy(&fastnode_output.stdout);
-    let fastnode_json: serde_json::Value = serde_json::from_str(&fastnode_stdout)
-        .expect("fastnode shim stdout should be valid JSON");
+    let fastnode_json: serde_json::Value =
+        serde_json::from_str(&fastnode_stdout).expect("fastnode shim stdout should be valid JSON");
 
     assert!(
         fastnode_json.get("ok").is_some(),

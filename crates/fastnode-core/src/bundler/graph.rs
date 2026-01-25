@@ -60,7 +60,9 @@ impl ModuleGraph {
     #[must_use]
     pub fn get_by_path(&self, path: &Path) -> Option<(ModuleId, &Module)> {
         let path_str = path.display().to_string();
-        self.path_to_id.get(&path_str).map(|&id| (id, &self.modules[id]))
+        self.path_to_id
+            .get(&path_str)
+            .map(|&id| (id, &self.modules[id]))
     }
 
     /// Get module ID by path.
@@ -82,7 +84,10 @@ impl ModuleGraph {
     }
 
     /// Set dependencies from a map of module path -> (specifier, resolved_path, is_dynamic) tuples.
-    pub fn set_dependencies(&mut self, dep_info: &std::collections::HashMap<String, Vec<(String, String, bool)>>) {
+    pub fn set_dependencies(
+        &mut self,
+        dep_info: &std::collections::HashMap<String, Vec<(String, String, bool)>>,
+    ) {
         for module in &mut self.modules {
             if let Some(deps) = dep_info.get(&module.path) {
                 // Static dependencies
@@ -102,7 +107,8 @@ impl ModuleGraph {
                 // Also populate the specifier map
                 for (specifier, dep_path, _) in deps {
                     if let Some(&target_id) = self.path_to_id.get(dep_path) {
-                        self.specifier_map.insert((module.path.clone(), specifier.clone()), target_id);
+                        self.specifier_map
+                            .insert((module.path.clone(), specifier.clone()), target_id);
                     }
                 }
             }
@@ -112,7 +118,9 @@ impl ModuleGraph {
     /// Look up the module ID for a specifier from a given module.
     #[must_use]
     pub fn resolve_specifier(&self, from_path: &str, specifier: &str) -> Option<ModuleId> {
-        self.specifier_map.get(&(from_path.to_string(), specifier.to_string())).copied()
+        self.specifier_map
+            .get(&(from_path.to_string(), specifier.to_string()))
+            .copied()
     }
 
     /// Get modules in topological order (dependencies before dependents).
@@ -205,21 +213,21 @@ mod tests {
         // A depends on B depends on C
         graph.add(Module {
             path: "/c.ts".to_string(),
-            source: "".to_string(),
+            source: String::new(),
             imports: Vec::new(),
             dependencies: Vec::new(),
             dynamic_dependencies: Vec::new(),
         });
         graph.add(Module {
             path: "/b.ts".to_string(),
-            source: "".to_string(),
+            source: String::new(),
             imports: Vec::new(),
             dependencies: vec![0], // depends on C
             dynamic_dependencies: Vec::new(),
         });
         graph.add(Module {
             path: "/a.ts".to_string(),
-            source: "".to_string(),
+            source: String::new(),
             imports: Vec::new(),
             dependencies: vec![1], // depends on B
             dynamic_dependencies: Vec::new(),

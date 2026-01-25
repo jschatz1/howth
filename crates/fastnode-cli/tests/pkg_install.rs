@@ -14,9 +14,7 @@ fn cargo_bin() -> Command {
 
 /// Helper to create a minimal package.json.
 fn create_package_json(dir: &std::path::Path, name: &str, version: &str) {
-    let content = format!(
-        r#"{{"name": "{name}", "version": "{version}", "dependencies": {{}}}}"#
-    );
+    let content = format!(r#"{{"name": "{name}", "version": "{version}", "dependencies": {{}}}}"#);
     fs::write(dir.join("package.json"), content).unwrap();
 }
 
@@ -196,7 +194,10 @@ fn test_install_options_combination() {
 #[test]
 fn test_lockfile_schema_version_stable() {
     use fastnode_core::pkg::PKG_LOCK_SCHEMA_VERSION;
-    assert_eq!(PKG_LOCK_SCHEMA_VERSION, 1, "Lockfile schema version should be 1");
+    assert_eq!(
+        PKG_LOCK_SCHEMA_VERSION, 1,
+        "Lockfile schema version should be 1"
+    );
 }
 
 /// Verify the install protocol schema version constant is stable.

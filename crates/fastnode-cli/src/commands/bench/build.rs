@@ -12,12 +12,7 @@ pub const DEFAULT_ITERS: u32 = 10;
 pub const DEFAULT_WARMUP: u32 = 2;
 
 /// Run the bench transpile command.
-pub fn run_transpile(
-    iters: u32,
-    warmup: u32,
-    project: Option<PathBuf>,
-    json: bool,
-) -> Result<()> {
+pub fn run_transpile(iters: u32, warmup: u32, project: Option<PathBuf>, json: bool) -> Result<()> {
     let params = BuildBenchParams {
         target: BenchTarget::Transpile,
         iters,
@@ -37,12 +32,7 @@ pub fn run_transpile(
 }
 
 /// Run the bench devloop command.
-pub fn run_devloop(
-    iters: u32,
-    warmup: u32,
-    project: Option<PathBuf>,
-    json: bool,
-) -> Result<()> {
+pub fn run_devloop(iters: u32, warmup: u32, project: Option<PathBuf>, json: bool) -> Result<()> {
     let params = BuildBenchParams {
         target: BenchTarget::Devloop,
         iters,

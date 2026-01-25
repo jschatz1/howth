@@ -106,7 +106,7 @@ pub struct ResolveTrace {
 
 impl ResolveTrace {
     /// Create a new empty trace.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

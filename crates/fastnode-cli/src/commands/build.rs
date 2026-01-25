@@ -215,9 +215,9 @@ fn print_human_output(result: &BuildRunResult, show_why: bool) {
     for node_result in &result.results {
         let (symbol, base_status) = if node_result.ok {
             match node_result.cache {
-                BuildCacheStatus::Hit => ("\u{2713}", "cached"),      // ✓
-                BuildCacheStatus::Miss => ("\u{2713}", "rebuilt"),    // ✓
-                BuildCacheStatus::Bypass => ("\u{2713}", "rebuilt"),  // forced = rebuilt
+                BuildCacheStatus::Hit => ("\u{2713}", "cached"), // ✓
+                BuildCacheStatus::Miss => ("\u{2713}", "rebuilt"), // ✓
+                BuildCacheStatus::Bypass => ("\u{2713}", "rebuilt"), // forced = rebuilt
                 BuildCacheStatus::Skipped => ("-", "skipped"),
             }
         } else {
@@ -248,7 +248,11 @@ fn print_human_output(result: &BuildRunResult, show_why: bool) {
         // Collect --why info for non-cached nodes
         if show_why && node_result.cache != BuildCacheStatus::Hit {
             if let Some(ref reason) = node_result.reason {
-                why_nodes.push((&node_result.id, reason.to_human_string(), node_result.auto_discovered));
+                why_nodes.push((
+                    &node_result.id,
+                    reason.to_human_string(),
+                    node_result.auto_discovered,
+                ));
             }
         }
     }

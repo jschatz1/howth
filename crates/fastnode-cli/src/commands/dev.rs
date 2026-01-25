@@ -76,7 +76,10 @@ impl HmrMessage {
                 format!(r#"{{"type":"update","modules":[{}]}}"#, mods)
             }
             HmrMessage::Error { message } => {
-                format!(r#"{{"type":"error","message":"{}"}}"#, message.replace('"', "\\\""))
+                format!(
+                    r#"{{"type":"error","message":"{}"}}"#,
+                    message.replace('"', "\\\"")
+                )
             }
         }
     }
@@ -97,7 +100,10 @@ pub async fn run(action: DevAction) -> Result<()> {
         Ok(result) => inject_hmr_runtime(&result.code),
         Err(e) => {
             eprintln!("  Build error: {}", e);
-            format!("console.error('Build error: {}');", e.message.replace('\'', "\\'"))
+            format!(
+                "console.error('Build error: {}');",
+                e.message.replace('\'', "\\'")
+            )
         }
     };
 
@@ -163,7 +169,9 @@ pub async fn run(action: DevAction) -> Result<()> {
         let _ = open_browser(&url);
     }
 
-    let listener = tokio::net::TcpListener::bind(addr).await.into_diagnostic()?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .into_diagnostic()?;
     axum::serve(listener, app).await.into_diagnostic()?;
 
     Ok(())
@@ -198,7 +206,9 @@ async fn handle_hmr_socket(mut socket: WebSocket, state: Arc<DevState>) {
     let mut rx = state.hmr_tx.subscribe();
 
     // Send connected message
-    let _ = socket.send(Message::Text(r#"{"type":"connected"}"#.to_string())).await;
+    let _ = socket
+        .send(Message::Text(r#"{"type":"connected"}"#.to_string()))
+        .await;
 
     // Forward HMR messages to client
     while let Ok(msg) = rx.recv().await {
@@ -240,7 +250,9 @@ fn watch_files(cwd: PathBuf, rebuild_tx: mpsc::Sender<Vec<String>>) -> Result<()
     let (tx, rx) = std::sync::mpsc::channel();
 
     let mut watcher = RecommendedWatcher::new(tx, Config::default()).into_diagnostic()?;
-    watcher.watch(&cwd, RecursiveMode::Recursive).into_diagnostic()?;
+    watcher
+        .watch(&cwd, RecursiveMode::Recursive)
+        .into_diagnostic()?;
 
     let mut debounce_set: HashSet<PathBuf> = HashSet::new();
     let mut last_rebuild = std::time::Instant::now();
@@ -287,7 +299,10 @@ fn watch_files(cwd: PathBuf, rebuild_tx: mpsc::Sender<Vec<String>>) -> Result<()
 
                 last_rebuild = now;
 
-                println!("  File changed: {}", changed.first().unwrap_or(&"unknown".to_string()));
+                println!(
+                    "  File changed: {}",
+                    changed.first().unwrap_or(&"unknown".to_string())
+                );
 
                 // Send rebuild event through channel
                 if rebuild_tx.blocking_send(changed).is_err() {
@@ -308,7 +323,10 @@ fn watch_files(cwd: PathBuf, rebuild_tx: mpsc::Sender<Vec<String>>) -> Result<()
 async fn rebuild(state: &DevState, changed: Vec<String>) {
     let start = std::time::Instant::now();
 
-    match state.bundler.bundle(&state.entry, &state.cwd, &state.options) {
+    match state
+        .bundler
+        .bundle(&state.entry, &state.cwd, &state.options)
+    {
         Ok(result) => {
             let code = inject_hmr_runtime(&result.code);
             *state.bundle.write().await = code;
@@ -345,7 +363,9 @@ fn open_browser(url: &str) -> std::io::Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd").args(["/C", "start", url]).spawn()?;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", url])
+            .spawn()?;
     }
     Ok(())
 }

@@ -49,7 +49,10 @@ fn test_build_json_daemon_not_running_is_valid_json() {
     );
 
     // Since daemon is not running, ok should be false
-    assert_eq!(json["ok"], false, "ok should be false when daemon not running");
+    assert_eq!(
+        json["ok"], false,
+        "ok should be false when daemon not running"
+    );
 
     // Should have notes array (may be empty)
     assert!(json["notes"].is_array(), "notes should be an array");
@@ -169,8 +172,7 @@ fn test_build_dry_run_flag_accepted() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON (flag accepted, daemon not running is ok)
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 #[test]
@@ -194,8 +196,7 @@ fn test_build_force_flag_accepted() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 #[test]
@@ -219,8 +220,7 @@ fn test_build_max_parallel_flag_accepted() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 #[test]
@@ -244,8 +244,7 @@ fn test_build_profile_flag_accepted() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 #[test]
@@ -298,8 +297,7 @@ fn test_build_with_targets_flag_accepted() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON (flag accepted, daemon not running is ok)
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 #[test]
@@ -323,8 +321,7 @@ fn test_build_with_comma_separated_targets() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 // ============================================================
@@ -352,8 +349,7 @@ fn test_build_why_flag_accepted() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 #[test]
@@ -407,8 +403,7 @@ fn test_build_why_with_force_flag() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Should still be valid JSON
-    let _: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let _: serde_json::Value = serde_json::from_str(&stdout).expect("Output should be valid JSON");
 }
 
 // ============================================================

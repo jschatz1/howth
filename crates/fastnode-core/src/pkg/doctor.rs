@@ -763,10 +763,12 @@ mod tests {
         )
         .with_package("a-pkg");
 
-        let mut findings = [f_info.clone(),
+        let mut findings = [
+            f_info.clone(),
             f_warn_z.clone(),
             f_error.clone(),
-            f_warn_a.clone()];
+            f_warn_a.clone(),
+        ];
         findings.sort_by(|a, b| doctor_sort_key(a).cmp(&doctor_sort_key(b)));
 
         // Error should be first (highest rank)

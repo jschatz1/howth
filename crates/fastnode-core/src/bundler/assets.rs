@@ -2,6 +2,8 @@
 //!
 //! Handles importing CSS files and static assets (images, fonts, etc.).
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +25,9 @@ impl AssetType {
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_lowercase().as_str() {
             "css" => Some(AssetType::Css),
-            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" | "avif" => Some(AssetType::Image),
+            "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" | "avif" => {
+                Some(AssetType::Image)
+            }
             "woff" | "woff2" | "ttf" | "otf" | "eot" => Some(AssetType::Font),
             "json" | "txt" | "xml" | "wasm" => Some(AssetType::Other),
             _ => None,
@@ -79,13 +83,16 @@ impl AssetCollection {
 
         let path_str = path.display().to_string();
 
-        self.assets.insert(path_str.clone(), Asset {
-            source_path: path.to_path_buf(),
-            asset_type: AssetType::Css,
-            hash: hash.clone(),
-            output_name: output_name.clone(),
-            content: Some(content.clone()),
-        });
+        self.assets.insert(
+            path_str.clone(),
+            Asset {
+                source_path: path.to_path_buf(),
+                asset_type: AssetType::Css,
+                hash: hash.clone(),
+                output_name: output_name.clone(),
+                content: Some(content.clone()),
+            },
+        );
 
         self.css_chunks.push(content);
 
@@ -102,20 +109,25 @@ impl AssetCollection {
         let path_str = path.display().to_string();
         let asset_type = AssetType::from_extension(ext).unwrap_or(AssetType::Other);
 
-        self.assets.insert(path_str, Asset {
-            source_path: path.to_path_buf(),
-            asset_type,
-            hash,
-            output_name: output_name.clone(),
-            content: None,
-        });
+        self.assets.insert(
+            path_str,
+            Asset {
+                source_path: path.to_path_buf(),
+                asset_type,
+                hash,
+                output_name: output_name.clone(),
+                content: None,
+            },
+        );
 
         output_name
     }
 
     /// Get the output URL for an asset.
     pub fn get_output_url(&self, path: &str) -> Option<String> {
-        self.assets.get(path).map(|a| format!("./{}", a.output_name))
+        self.assets
+            .get(path)
+            .map(|a| format!("./{}", a.output_name))
     }
 
     /// Get all CSS concatenated.
@@ -125,7 +137,9 @@ impl AssetCollection {
 
     /// Get all assets for copying.
     pub fn get_assets(&self) -> impl Iterator<Item = &Asset> {
-        self.assets.values().filter(|a| a.asset_type != AssetType::Css)
+        self.assets
+            .values()
+            .filter(|a| a.asset_type != AssetType::Css)
     }
 
     /// Check if there's any CSS.
@@ -181,7 +195,11 @@ pub fn process_css(content: &str) -> String {
 
         // Collapse whitespace
         if c.is_whitespace() {
-            if !last_char.is_whitespace() && last_char != '{' && last_char != ';' && last_char != ':' {
+            if !last_char.is_whitespace()
+                && last_char != '{'
+                && last_char != ';'
+                && last_char != ':'
+            {
                 result.push(' ');
             }
             last_char = ' ';
@@ -203,13 +221,13 @@ pub fn process_css(content: &str) -> String {
 /// Generate JavaScript code for CSS injection.
 pub fn generate_css_injection(css_url: &str) -> String {
     format!(
-        r#"(function() {{
+        r"(function() {{
   var link = document.createElement('link');
   link.rel = 'stylesheet';
   link.href = '{}';
   document.head.appendChild(link);
 }})();
-"#,
+",
         css_url
     )
 }
@@ -233,13 +251,13 @@ mod tests {
 
     #[test]
     fn test_css_minification() {
-        let css = r#"
+        let css = "
             .foo {
                 color: red;
                 /* comment */
                 margin: 10px;
             }
-        "#;
+        ";
         let minified = process_css(css);
         assert!(!minified.contains("comment"));
         assert!(minified.contains("color:red"));
