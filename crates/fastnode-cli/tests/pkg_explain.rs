@@ -191,8 +191,10 @@ fn test_explain_bare_specifier_json() {
     let resolved = result["resolved"]
         .as_str()
         .expect("Should have resolved path");
+    // Normalize path separators for cross-platform comparison
+    let normalized = resolved.replace('\\', "/");
     assert!(
-        resolved.ends_with("esm/index.js"),
+        normalized.ends_with("esm/index.js"),
         "Should resolve to esm/index.js, got: {}",
         resolved
     );
@@ -247,8 +249,10 @@ fn test_explain_require_kind() {
     let resolved = result["resolved"]
         .as_str()
         .expect("Should have resolved path");
+    // Normalize path separators for cross-platform comparison
+    let normalized = resolved.replace('\\', "/");
     assert!(
-        resolved.ends_with("cjs/index.js"),
+        normalized.ends_with("cjs/index.js"),
         "Should resolve to cjs/index.js, got: {}",
         resolved
     );
