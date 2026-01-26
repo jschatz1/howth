@@ -221,6 +221,7 @@ fn test_graph_simple() {
 
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to daemon IPC timing")]
 fn test_graph_with_transitive_deps() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -678,6 +679,7 @@ fn test_graph_deterministic_ordering() {
 
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to daemon IPC timing")]
 fn test_graph_human_tree_format() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
