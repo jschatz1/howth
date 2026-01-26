@@ -205,7 +205,8 @@ fn test_watcher_invalidates_cache() {
     std::fs::write(&dep_path, "export const x = 2; // modified").unwrap();
 
     // 6. Wait for watcher to process the event (deterministic polling)
-    let event_detected = wait_for_watcher_event(&endpoint, baseline_ts, 5000);
+    // Use longer timeout for Windows CI where file watchers can be slower
+    let event_detected = wait_for_watcher_event(&endpoint, baseline_ts, 15000);
     assert!(
         event_detected,
         "Watcher should detect file modification within timeout"
