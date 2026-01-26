@@ -293,6 +293,9 @@ fn wait_for_daemon(endpoint: &str, registry_url: &str) -> bool {
 
         if let Ok(output) = result {
             if output.status.success() {
+                // Extra stabilization time for Windows named pipes
+                #[cfg(windows)]
+                thread::sleep(Duration::from_millis(500));
                 return true;
             }
         }
