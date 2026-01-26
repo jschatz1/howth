@@ -2220,20 +2220,12 @@ mod tests {
         // Import kind should select esm
         let result = resolve_with_kind(&ctx, "cond-sub/utils", ResolutionKind::Import);
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .ends_with("esm/utils.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).ends_with("esm/utils.js"));
 
         // Require kind should select cjs
         let result = resolve_with_kind(&ctx, "cond-sub/utils", ResolutionKind::Require);
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .ends_with("cjs/utils.cjs"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).ends_with("cjs/utils.cjs"));
     }
 
     #[test]
@@ -2298,19 +2290,11 @@ mod tests {
         // Pattern resolution
         let result = resolve_v0(&ctx, "pattern-pkg/foo");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("dist/foo.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("dist/foo.js"));
 
         let result = resolve_v0(&ctx, "pattern-pkg/bar");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("dist/bar.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("dist/bar.js"));
     }
 
     #[test]
@@ -2342,19 +2326,11 @@ mod tests {
 
         let result = resolve_v0(&ctx, "nested-pattern/features/auth");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("features/auth.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("features/auth.js"));
 
         let result = resolve_v0(&ctx, "nested-pattern/features/user");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("features/user.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("features/user.js"));
     }
 
     #[test]
@@ -2396,20 +2372,12 @@ mod tests {
         // Exact match should take precedence
         let result = resolve_v0(&ctx, "exact-pattern/special");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("special/index.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("special/index.js"));
 
         // Pattern match for other paths
         let result = resolve_v0(&ctx, "exact-pattern/other");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("dist/other.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("dist/other.js"));
     }
 
     #[test]
@@ -2453,17 +2421,13 @@ mod tests {
         assert_eq!(result.status, ResolveStatus::Resolved);
         // Should resolve to ./features/auth.js, not ./dist/features/auth.js
         let resolved = result.resolved.unwrap();
-        assert!(resolved.to_string_lossy().ends_with("features/auth.js"));
+        assert!(normalize_path_for_test(&resolved).ends_with("features/auth.js"));
         assert!(!normalize_path_for_test(&resolved).contains("dist/features"));
 
         // "./utils" should use "./*"
         let result = resolve_v0(&ctx, "specificity/utils");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("dist/utils.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("dist/utils.js"));
     }
 
     #[test]
@@ -2496,11 +2460,7 @@ mod tests {
         // Without exports, direct filesystem resolution should work
         let result = resolve_v0(&ctx, "no-exports/lib/utils");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("lib/utils.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("lib/utils.js"));
     }
 
     #[test]
