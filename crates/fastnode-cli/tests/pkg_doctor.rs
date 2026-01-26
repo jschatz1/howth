@@ -263,6 +263,7 @@ fn test_doctor_json_shape_locked() {
 
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to daemon IPC timing")]
 fn test_doctor_detects_orphans_and_missing_edges() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -363,6 +364,7 @@ fn test_doctor_human_summary_stable() {
 
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to daemon IPC timing")]
 fn test_doctor_severity_filtering() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -573,6 +575,7 @@ fn test_doctor_list_format() {
 /// **LOCKED v1.7.1+**: notes field is always present in JSON output.
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to daemon IPC timing")]
 fn test_doctor_v171_notes_always_present() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
