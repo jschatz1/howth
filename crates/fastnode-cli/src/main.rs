@@ -75,6 +75,10 @@ enum Commands {
         #[arg(long)]
         daemon: bool,
 
+        /// Only show the execution plan without running
+        #[arg(long)]
+        dry_run: bool,
+
         /// Arguments to pass to the script (after --)
         #[arg(last = true)]
         args: Vec<String>,
@@ -466,10 +470,19 @@ fn main() -> Result<()> {
     if let Some(Commands::Run {
         entry,
         daemon,
+        dry_run,
         args,
     }) = &cli.command
     {
-        return commands::run::run(&cwd, entry, args, *daemon, Channel::Stable, cli.json);
+        return commands::run::run(
+            &cwd,
+            entry,
+            args,
+            *daemon,
+            *dry_run,
+            Channel::Stable,
+            cli.json,
+        );
     }
 
     if let Some(Commands::Watch { watch_cmd }) = &cli.command {
