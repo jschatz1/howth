@@ -29,8 +29,12 @@
         return ops.op_howth_env_get(String(key));
       },
       set(_, key, value) {
-        // Environment variables are read-only in this runtime
-        return false;
+        ops.op_howth_env_set(String(key), String(value));
+        return true;
+      },
+      deleteProperty(_, key) {
+        ops.op_howth_env_set(String(key), "");
+        return true;
       },
     }),
     cwd() {
@@ -46,6 +50,14 @@
       node: "20.0.0",
       v8: "11.0.0",
       howth: "0.1.0",
+    },
+    hrtime: {
+      bigint() {
+        return BigInt(ops.op_howth_hrtime());
+      },
+    },
+    nextTick(callback, ...args) {
+      queueMicrotask(() => callback(...args));
     },
   };
 
@@ -478,6 +490,404 @@
     }
     return result;
   };
+
+  // Event / EventTarget (minimal implementation) - must be before AbortSignal
+  globalThis.Event = class Event {
+    constructor(type, options = {}) {
+      this.type = type;
+      this.bubbles = options.bubbles || false;
+      this.cancelable = options.cancelable || false;
+      this.composed = options.composed || false;
+      this.defaultPrevented = false;
+      this.timeStamp = Date.now();
+    }
+
+    preventDefault() {
+      if (this.cancelable) {
+        this.defaultPrevented = true;
+      }
+    }
+
+    stopPropagation() {}
+    stopImmediatePropagation() {}
+  };
+
+  globalThis.EventTarget = class EventTarget {
+    #listeners = new Map();
+
+    addEventListener(type, callback, options) {
+      if (!this.#listeners.has(type)) {
+        this.#listeners.set(type, []);
+      }
+      this.#listeners.get(type).push({ callback, options });
+    }
+
+    removeEventListener(type, callback) {
+      const listeners = this.#listeners.get(type);
+      if (listeners) {
+        const index = listeners.findIndex(l => l.callback === callback);
+        if (index !== -1) {
+          listeners.splice(index, 1);
+        }
+      }
+    }
+
+    dispatchEvent(event) {
+      const listeners = this.#listeners.get(event.type);
+      if (listeners) {
+        for (const { callback, options } of [...listeners]) {
+          callback.call(this, event);
+          if (options?.once) {
+            this.removeEventListener(event.type, callback);
+          }
+        }
+      }
+      return !event.defaultPrevented;
+    }
+  };
+
+  // DOMException - must be before AbortSignal
+  globalThis.DOMException = class DOMException extends Error {
+    constructor(message, name = "Error") {
+      super(message);
+      this.name = name;
+    }
+  };
+
+  // crypto implementation
+  globalThis.crypto = {
+    getRandomValues(array) {
+      const bytes = ops.op_howth_random_bytes(array.length);
+      for (let i = 0; i < array.length; i++) {
+        array[i] = bytes[i];
+      }
+      return array;
+    },
+    randomUUID() {
+      return ops.op_howth_random_uuid();
+    },
+    subtle: {
+      async digest(algorithm, data) {
+        const algo = typeof algorithm === "string" ? algorithm : algorithm.name;
+        const bytes = data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : data instanceof Uint8Array
+            ? data
+            : new TextEncoder().encode(String(data));
+        const result = ops.op_howth_hash(algo, bytes);
+        return new Uint8Array(result).buffer;
+      },
+    },
+  };
+
+  // AbortController / AbortSignal
+  globalThis.AbortSignal = class AbortSignal extends EventTarget {
+    #aborted = false;
+    #reason = undefined;
+
+    get aborted() {
+      return this.#aborted;
+    }
+
+    get reason() {
+      return this.#reason;
+    }
+
+    throwIfAborted() {
+      if (this.#aborted) {
+        throw this.#reason;
+      }
+    }
+
+    static abort(reason) {
+      const signal = new AbortSignal();
+      signal.#aborted = true;
+      signal.#reason = reason ?? new DOMException("signal is aborted without reason", "AbortError");
+      return signal;
+    }
+
+    static timeout(ms) {
+      const signal = new AbortSignal();
+      setTimeout(() => {
+        signal.#aborted = true;
+        signal.#reason = new DOMException("signal timed out", "TimeoutError");
+        signal.dispatchEvent(new Event("abort"));
+      }, ms);
+      return signal;
+    }
+
+    // Internal method for AbortController
+    _abort(reason) {
+      if (this.#aborted) return;
+      this.#aborted = true;
+      this.#reason = reason ?? new DOMException("signal is aborted without reason", "AbortError");
+      this.dispatchEvent(new Event("abort"));
+    }
+  };
+
+  globalThis.AbortController = class AbortController {
+    #signal = new AbortSignal();
+
+    get signal() {
+      return this.#signal;
+    }
+
+    abort(reason) {
+      this.#signal._abort(reason);
+    }
+  };
+
+  // Blob implementation
+  globalThis.Blob = class Blob {
+    #parts = [];
+    #type = "";
+
+    constructor(parts = [], options = {}) {
+      this.#type = options.type || "";
+      for (const part of parts) {
+        if (part instanceof Blob) {
+          this.#parts.push(...part.#parts);
+        } else if (part instanceof ArrayBuffer) {
+          this.#parts.push(new Uint8Array(part));
+        } else if (ArrayBuffer.isView(part)) {
+          this.#parts.push(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+        } else {
+          this.#parts.push(new TextEncoder().encode(String(part)));
+        }
+      }
+    }
+
+    get size() {
+      return this.#parts.reduce((acc, part) => acc + part.length, 0);
+    }
+
+    get type() {
+      return this.#type;
+    }
+
+    async text() {
+      const decoder = new TextDecoder();
+      return this.#parts.map(p => decoder.decode(p)).join("");
+    }
+
+    async arrayBuffer() {
+      const size = this.size;
+      const buffer = new ArrayBuffer(size);
+      const view = new Uint8Array(buffer);
+      let offset = 0;
+      for (const part of this.#parts) {
+        view.set(part, offset);
+        offset += part.length;
+      }
+      return buffer;
+    }
+
+    slice(start = 0, end = this.size, type = "") {
+      const buffer = new Uint8Array(this.size);
+      let offset = 0;
+      for (const part of this.#parts) {
+        buffer.set(part, offset);
+        offset += part.length;
+      }
+      return new Blob([buffer.slice(start, end)], { type });
+    }
+
+    stream() {
+      const parts = this.#parts;
+      return new ReadableStream({
+        start(controller) {
+          for (const part of parts) {
+            controller.enqueue(part);
+          }
+          controller.close();
+        },
+      });
+    }
+  };
+
+  // File extends Blob
+  globalThis.File = class File extends Blob {
+    #name;
+    #lastModified;
+
+    constructor(parts, name, options = {}) {
+      super(parts, options);
+      this.#name = name;
+      this.#lastModified = options.lastModified || Date.now();
+    }
+
+    get name() {
+      return this.#name;
+    }
+
+    get lastModified() {
+      return this.#lastModified;
+    }
+  };
+
+  // FormData implementation
+  globalThis.FormData = class FormData {
+    #entries = [];
+
+    append(name, value, filename) {
+      if (value instanceof Blob && filename === undefined) {
+        filename = value instanceof File ? value.name : "blob";
+      }
+      this.#entries.push([name, value, filename]);
+    }
+
+    delete(name) {
+      this.#entries = this.#entries.filter(([n]) => n !== name);
+    }
+
+    get(name) {
+      const entry = this.#entries.find(([n]) => n === name);
+      return entry ? entry[1] : null;
+    }
+
+    getAll(name) {
+      return this.#entries.filter(([n]) => n === name).map(([, v]) => v);
+    }
+
+    has(name) {
+      return this.#entries.some(([n]) => n === name);
+    }
+
+    set(name, value, filename) {
+      this.delete(name);
+      this.append(name, value, filename);
+    }
+
+    *entries() {
+      for (const [name, value] of this.#entries) {
+        yield [name, value];
+      }
+    }
+
+    *keys() {
+      for (const [name] of this.#entries) {
+        yield name;
+      }
+    }
+
+    *values() {
+      for (const [, value] of this.#entries) {
+        yield value;
+      }
+    }
+
+    [Symbol.iterator]() {
+      return this.entries();
+    }
+
+    forEach(callback, thisArg) {
+      for (const [name, value] of this) {
+        callback.call(thisArg, value, name, this);
+      }
+    }
+  };
+
+  // ReadableStream (minimal implementation)
+  globalThis.ReadableStream = class ReadableStream {
+    #source;
+    #reader = null;
+
+    constructor(source = {}) {
+      this.#source = source;
+    }
+
+    getReader() {
+      if (this.#reader) {
+        throw new TypeError("ReadableStream is locked");
+      }
+      this.#reader = new ReadableStreamDefaultReader(this, this.#source);
+      return this.#reader;
+    }
+
+    async *[Symbol.asyncIterator]() {
+      const reader = this.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          yield value;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+  };
+
+  class ReadableStreamDefaultReader {
+    #stream;
+    #source;
+    #controller;
+    #closed = false;
+
+    constructor(stream, source) {
+      this.#stream = stream;
+      this.#source = source;
+      this.#controller = {
+        enqueue: (chunk) => this._queue.push(chunk),
+        close: () => { this.#closed = true; },
+        error: (e) => { this._error = e; this.#closed = true; },
+      };
+      this._queue = [];
+      this._error = null;
+
+      if (source.start) {
+        source.start(this.#controller);
+      }
+    }
+
+    async read() {
+      if (this._error) {
+        throw this._error;
+      }
+      if (this._queue.length > 0) {
+        return { done: false, value: this._queue.shift() };
+      }
+      if (this.#closed) {
+        return { done: true, value: undefined };
+      }
+      if (this.#source.pull) {
+        await this.#source.pull(this.#controller);
+        if (this._queue.length > 0) {
+          return { done: false, value: this._queue.shift() };
+        }
+      }
+      return { done: true, value: undefined };
+    }
+
+    releaseLock() {
+      this.#stream._reader = null;
+    }
+  }
+
+  // performance API
+  const performanceStart = Date.now();
+  globalThis.performance = {
+    now() {
+      return Date.now() - performanceStart;
+    },
+    timeOrigin: performanceStart,
+    mark(name) {
+      // Minimal implementation
+      return { name, startTime: this.now() };
+    },
+    measure(name, startMark, endMark) {
+      return { name, duration: 0 };
+    },
+  };
+
+  // structuredClone
+  globalThis.structuredClone = (value) => {
+    // Simple implementation using JSON (doesn't handle all cases)
+    return JSON.parse(JSON.stringify(value));
+  };
+
+  // sleep helper (non-standard but useful)
+  globalThis.sleep = (ms) => ops.op_howth_sleep(ms);
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

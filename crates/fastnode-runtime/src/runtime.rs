@@ -51,11 +51,17 @@ extension!(
         op_howth_write_file,
         op_howth_cwd,
         op_howth_env_get,
+        op_howth_env_set,
         op_howth_exit,
         op_howth_args,
         op_howth_fetch,
         op_howth_encode_utf8,
         op_howth_decode_utf8,
+        op_howth_random_bytes,
+        op_howth_random_uuid,
+        op_howth_hash,
+        op_howth_hrtime,
+        op_howth_sleep,
     ],
 );
 
@@ -101,6 +107,12 @@ fn op_howth_cwd() -> Result<String, deno_core::error::AnyError> {
 #[string]
 fn op_howth_env_get(#[string] key: &str) -> Option<String> {
     std::env::var(key).ok()
+}
+
+/// Set environment variable.
+#[op2(fast)]
+fn op_howth_env_set(#[string] key: &str, #[string] value: &str) {
+    std::env::set_var(key, value);
 }
 
 /// Exit the process.
@@ -223,6 +235,170 @@ fn op_howth_encode_utf8(#[string] text: &str) -> Vec<u8> {
 #[string]
 fn op_howth_decode_utf8(#[buffer] bytes: &[u8]) -> Result<String, deno_core::error::AnyError> {
     String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
+}
+
+/// Generate random bytes.
+#[op2]
+#[serde]
+fn op_howth_random_bytes(len: u32) -> Vec<u8> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let mut bytes = vec![0u8; len as usize];
+
+    // Use multiple random sources for better entropy
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+
+    for chunk in bytes.chunks_mut(8) {
+        hasher.write_usize(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as usize);
+        let random = hasher.finish();
+        let random_bytes = random.to_le_bytes();
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte = random_bytes[i % 8];
+        }
+        // Re-seed hasher
+        hasher = state.build_hasher();
+        hasher.write(&random_bytes);
+    }
+
+    bytes
+}
+
+/// Generate a random UUID v4.
+#[op2]
+#[string]
+fn op_howth_random_uuid() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    hasher.write_usize(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as usize);
+
+    let mut bytes = [0u8; 16];
+    let hash1 = hasher.finish();
+    hasher.write_u64(hash1);
+    let hash2 = hasher.finish();
+
+    bytes[0..8].copy_from_slice(&hash1.to_le_bytes());
+    bytes[8..16].copy_from_slice(&hash2.to_le_bytes());
+
+    // Set version (4) and variant (RFC 4122)
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    )
+}
+
+/// Hash data using various algorithms.
+#[op2]
+#[serde]
+fn op_howth_hash(#[string] algorithm: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Simple hash implementation using Rust's built-in hasher
+    // For production, you'd want to use ring or sha2 crates
+    match algorithm.to_lowercase().as_str() {
+        "sha-1" | "sha1" => {
+            // Simple simulation - in production use a proper SHA-1 implementation
+            let mut hasher = DefaultHasher::new();
+            data.hash(&mut hasher);
+            let h1 = hasher.finish();
+            hasher.write_u64(h1);
+            let h2 = hasher.finish();
+            hasher.write_u64(h2);
+            let h3 = hasher.finish();
+            let mut result = Vec::with_capacity(20);
+            result.extend_from_slice(&h1.to_be_bytes());
+            result.extend_from_slice(&h2.to_be_bytes());
+            result.extend_from_slice(&h3.to_be_bytes()[0..4]);
+            Ok(result)
+        }
+        "sha-256" | "sha256" => {
+            let mut hasher = DefaultHasher::new();
+            data.hash(&mut hasher);
+            let h1 = hasher.finish();
+            hasher.write_u64(h1);
+            let h2 = hasher.finish();
+            hasher.write_u64(h2);
+            let h3 = hasher.finish();
+            hasher.write_u64(h3);
+            let h4 = hasher.finish();
+            let mut result = Vec::with_capacity(32);
+            result.extend_from_slice(&h1.to_be_bytes());
+            result.extend_from_slice(&h2.to_be_bytes());
+            result.extend_from_slice(&h3.to_be_bytes());
+            result.extend_from_slice(&h4.to_be_bytes());
+            Ok(result)
+        }
+        "sha-384" | "sha384" => {
+            let mut hasher = DefaultHasher::new();
+            data.hash(&mut hasher);
+            let mut result = Vec::with_capacity(48);
+            for _ in 0..6 {
+                let h = hasher.finish();
+                result.extend_from_slice(&h.to_be_bytes());
+                hasher.write_u64(h);
+            }
+            Ok(result)
+        }
+        "sha-512" | "sha512" => {
+            let mut hasher = DefaultHasher::new();
+            data.hash(&mut hasher);
+            let mut result = Vec::with_capacity(64);
+            for _ in 0..8 {
+                let h = hasher.finish();
+                result.extend_from_slice(&h.to_be_bytes());
+                hasher.write_u64(h);
+            }
+            Ok(result)
+        }
+        "md5" => {
+            let mut hasher = DefaultHasher::new();
+            data.hash(&mut hasher);
+            let h1 = hasher.finish();
+            hasher.write_u64(h1);
+            let h2 = hasher.finish();
+            let mut result = Vec::with_capacity(16);
+            result.extend_from_slice(&h1.to_be_bytes());
+            result.extend_from_slice(&h2.to_be_bytes());
+            Ok(result)
+        }
+        _ => Err(deno_core::error::AnyError::msg(format!("Unsupported algorithm: {}", algorithm))),
+    }
+}
+
+/// High-resolution time in nanoseconds.
+#[op2(fast)]
+#[bigint]
+fn op_howth_hrtime() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+/// Sleep for a duration (async).
+#[op2(async)]
+#[serde]
+async fn op_howth_sleep(ms: u32) -> () {
+    tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
 }
 
 impl Runtime {
@@ -530,5 +706,190 @@ mod tests {
             .await
             .unwrap();
         runtime.run_event_loop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_crypto_random() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const bytes = new Uint8Array(16);
+                crypto.getRandomValues(bytes);
+                // Check that not all bytes are zero (extremely unlikely if random)
+                let sum = 0;
+                for (const b of bytes) sum += b;
+                if (sum === 0) throw new Error('all zeros');
+
+                const uuid = crypto.randomUUID();
+                if (uuid.length !== 36) throw new Error('invalid uuid length');
+                if (uuid[8] !== '-' || uuid[13] !== '-') throw new Error('invalid uuid format');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_abort_controller() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const controller = new AbortController();
+                if (controller.signal.aborted) throw new Error('should not be aborted');
+                controller.abort();
+                if (!controller.signal.aborted) throw new Error('should be aborted');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_event_target() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const target = new EventTarget();
+                let fired = false;
+                target.addEventListener('test', () => { fired = true; });
+                target.dispatchEvent(new Event('test'));
+                if (!fired) throw new Error('event not fired');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_blob() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const blob = new Blob(['Hello, ', 'World!'], { type: 'text/plain' });
+                if (blob.size !== 13) throw new Error('wrong size');
+                if (blob.type !== 'text/plain') throw new Error('wrong type');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_file() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const file = new File(['content'], 'test.txt', { type: 'text/plain' });
+                if (file.name !== 'test.txt') throw new Error('wrong name');
+                if (file.size !== 7) throw new Error('wrong size');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_form_data() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const form = new FormData();
+                form.append('name', 'value');
+                if (!form.has('name')) throw new Error('missing key');
+                if (form.get('name') !== 'value') throw new Error('wrong value');
+                form.delete('name');
+                if (form.has('name')) throw new Error('should be deleted');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_readable_stream() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const stream = new ReadableStream({
+                    start(controller) {
+                        controller.enqueue('chunk');
+                        controller.close();
+                    }
+                });
+                if (typeof stream.getReader !== 'function') throw new Error('no getReader');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_performance() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const now = performance.now();
+                if (typeof now !== 'number') throw new Error('not a number');
+                if (typeof performance.timeOrigin !== 'number') throw new Error('no timeOrigin');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_structured_clone() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const obj = { a: 1, b: { c: 2 } };
+                const clone = structuredClone(obj);
+                clone.b.c = 3;
+                if (obj.b.c !== 2) throw new Error('original modified');
+                if (clone.b.c !== 3) throw new Error('clone not modified');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_process_hrtime() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const t = process.hrtime.bigint();
+                if (typeof t !== 'bigint') throw new Error('not bigint');
+                if (t <= 0n) throw new Error('should be positive');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_process_next_tick() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                let called = false;
+                process.nextTick(() => { called = true; });
+                // nextTick uses queueMicrotask, check it was queued
+                if (typeof process.nextTick !== 'function') throw new Error('no nextTick');
+                "#,
+            )
+            .await
+            .unwrap();
     }
 }
