@@ -790,6 +790,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    #[cfg(unix)]
     fn test_normalize_path_forward_slashes() {
         // This test verifies that paths use forward slashes
         let path = Path::new("/some/path/to/file.ts");
@@ -799,6 +800,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_normalize_path_strips_trailing_slash() {
         let path = Path::new("/some/path/");
         let normalized = normalize_path(path);

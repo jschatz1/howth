@@ -428,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_normalize_output_path() {
         let root = Path::new("/project");
         let path = Path::new("/project/dist/bundle.js");
@@ -435,6 +436,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_normalize_output_path_backslashes() {
         let root = Path::new("/project");
         let path = Path::new("dist\\output\\file.js");

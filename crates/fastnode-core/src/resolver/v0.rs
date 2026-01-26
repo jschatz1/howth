@@ -1511,6 +1511,11 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Normalize path for cross-platform comparison (replace backslashes with forward slashes)
+    fn normalize_path_for_test(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     #[test]
     fn test_relative_file_exists() {
         let dir = tempdir().unwrap();
@@ -1823,7 +1828,7 @@ mod tests {
         let result = resolve_v0(&ctx, "test-pkg");
         assert_eq!(result.status, ResolveStatus::Resolved);
         let resolved = result.resolved.unwrap();
-        assert!(resolved.to_string_lossy().contains("dist/index.js"));
+        assert!(normalize_path_for_test(&resolved).contains("dist/index.js"));
     }
 
     #[test]
@@ -1941,7 +1946,7 @@ mod tests {
         let result = resolve_v0(&ctx, "main-pkg");
         assert_eq!(result.status, ResolveStatus::Resolved);
         let resolved = result.resolved.unwrap();
-        assert!(resolved.to_string_lossy().contains("lib/index.js"));
+        assert!(normalize_path_for_test(&resolved).contains("lib/index.js"));
     }
 
     #[test]
@@ -2044,7 +2049,7 @@ mod tests {
         let result = resolve_v0(&ctx, "#utils");
         assert_eq!(result.status, ResolveStatus::Resolved);
         let resolved = result.resolved.unwrap();
-        assert!(resolved.to_string_lossy().contains("src/utils.js"));
+        assert!(normalize_path_for_test(&resolved).contains("src/utils.js"));
     }
 
     #[test]
@@ -2170,11 +2175,7 @@ mod tests {
         // Subpath resolution
         let result = resolve_v0(&ctx, "test-pkg/feature");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("dist/feature.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("dist/feature.js"));
     }
 
     #[test]
@@ -2453,7 +2454,7 @@ mod tests {
         // Should resolve to ./features/auth.js, not ./dist/features/auth.js
         let resolved = result.resolved.unwrap();
         assert!(resolved.to_string_lossy().ends_with("features/auth.js"));
-        assert!(!resolved.to_string_lossy().contains("dist/features"));
+        assert!(!normalize_path_for_test(&resolved).contains("dist/features"));
 
         // "./utils" should use "./*"
         let result = resolve_v0(&ctx, "specificity/utils");
@@ -2534,11 +2535,7 @@ mod tests {
         // Scoped package subpath resolution
         let result = resolve_v0(&ctx, "@myorg/my-pkg/feature");
         assert_eq!(result.status, ResolveStatus::Resolved);
-        assert!(result
-            .resolved
-            .unwrap()
-            .to_string_lossy()
-            .contains("dist/feature.js"));
+        assert!(normalize_path_for_test(&result.resolved.unwrap()).contains("dist/feature.js"));
     }
 
     // v1.5 resolve_with_trace tests

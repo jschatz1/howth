@@ -226,6 +226,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_ipc_endpoint_env_override() {
         let test_endpoint = "/tmp/test-howth.sock";
         std::env::set_var(IPC_ENDPOINT_ENV, test_endpoint);
