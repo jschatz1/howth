@@ -1,0 +1,16 @@
+[package]
+name = "fastnode-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native JavaScript runtime for howth (V8-based via deno_core)"
+
+[dependencies]
+deno_core = "0.311"
+tokio.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

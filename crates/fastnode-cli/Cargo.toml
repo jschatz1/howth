@@ -14,11 +14,16 @@ path = "src/main.rs"
 name = "fastnode"
 path = "src/compat.rs"
 
+[features]
+default = []
+native-runtime = ["fastnode-runtime"]
+
 [dependencies]
 fastnode-core = { workspace = true, features = ["swc"] }
 fastnode-daemon.workspace = true
 fastnode-proto.workspace = true
 fastnode-util.workspace = true
+fastnode-runtime = { workspace = true, optional = true }
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true

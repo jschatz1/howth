@@ -79,6 +79,10 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
 
+        /// Use native V8 runtime instead of Node.js (requires native-runtime feature)
+        #[arg(long)]
+        native: bool,
+
         /// Arguments to pass to the script (after --)
         #[arg(last = true)]
         args: Vec<String>,
@@ -471,6 +475,7 @@ fn main() -> Result<()> {
         entry,
         daemon,
         dry_run,
+        native,
         args,
     }) = &cli.command
     {
@@ -480,6 +485,7 @@ fn main() -> Result<()> {
             args,
             *daemon,
             *dry_run,
+            *native,
             Channel::Stable,
             cli.json,
         );

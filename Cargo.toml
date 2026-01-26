@@ -8,6 +8,7 @@ members = [
     "crates/fastnode-bench",
     "crates/fastnode-daemon",
     "crates/fastnode-proto",
+    "crates/fastnode-runtime",
 ]
 
 [workspace.package]
@@ -71,6 +72,7 @@ fastnode-util = { path = "crates/fastnode-util" }
 fastnode-compat = { path = "crates/fastnode-compat" }
 fastnode-proto = { path = "crates/fastnode-proto" }
 fastnode-daemon = { path = "crates/fastnode-daemon" }
+fastnode-runtime = { path = "crates/fastnode-runtime" }
 
 [profile.release]
 lto = true

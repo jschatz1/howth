@@ -21,20 +21,104 @@ const EXIT_INTERNAL_ERROR: i32 = 1;
 /// Run the run command.
 ///
 /// If dry_run is true, just outputs the execution plan.
-/// Otherwise, transpiles (if needed) and executes the file via Node.
+/// Otherwise, transpiles (if needed) and executes the file via Node (or native V8 if enabled).
 pub fn run(
     cwd: &Path,
     entry: &Path,
     args: &[String],
     daemon: bool,
     dry_run: bool,
+    native: bool,
     channel: Channel,
     json: bool,
 ) -> Result<()> {
+    // Native runtime (V8) execution
+    #[cfg(feature = "native-runtime")]
+    if native {
+        return run_native(cwd, entry, args, json);
+    }
+
+    #[cfg(not(feature = "native-runtime"))]
+    if native {
+        eprintln!("error: native runtime not available");
+        eprintln!("hint: rebuild with `--features native-runtime`");
+        std::process::exit(EXIT_INTERNAL_ERROR);
+    }
+
     if daemon {
         run_via_daemon(cwd, entry, args, dry_run, channel, json)
     } else {
         run_local(cwd, entry, args, dry_run, channel, json)
+    }
+}
+
+/// Run using native V8 runtime (no Node.js subprocess).
+#[cfg(feature = "native-runtime")]
+fn run_native(cwd: &Path, entry: &Path, _args: &[String], json: bool) -> Result<()> {
+    use fastnode_runtime::{Runtime, RuntimeOptions};
+
+    // Read and transpile the entry file
+    let entry_path = if entry.is_absolute() {
+        entry.to_path_buf()
+    } else {
+        cwd.join(entry)
+    };
+
+    let source = std::fs::read_to_string(&entry_path).map_err(|e| {
+        miette::miette!("Failed to read file {}: {}", entry_path.display(), e)
+    })?;
+
+    // Transpile if needed
+    let code = if needs_transpilation(&entry_path) {
+        let backend = SwcBackend::new();
+        let spec = TranspileSpec::new(&entry_path, "");
+        let output = backend
+            .transpile(&spec, &source)
+            .map_err(|e| miette::miette!("Transpilation failed: {}", e.message))?;
+        output.code
+    } else {
+        source
+    };
+
+    // Create runtime and execute
+    let rt = tokio::runtime::Runtime::new().into_diagnostic()?;
+    let result = rt.block_on(async {
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(cwd.to_path_buf()),
+            ..Default::default()
+        })
+        .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
+
+        runtime
+            .execute_script(&code)
+            .await
+            .map_err(|e| miette::miette!("Execution failed: {}", e))?;
+
+        runtime
+            .run_event_loop()
+            .await
+            .map_err(|e| miette::miette!("Event loop error: {}", e))?;
+
+        Ok::<(), miette::Report>(())
+    });
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if json {
+                let error_json = serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "RUNTIME_ERROR",
+                        "message": e.to_string()
+                    }
+                });
+                println!("{}", serde_json::to_string_pretty(&error_json).unwrap());
+            } else {
+                eprintln!("error: {e}");
+            }
+            std::process::exit(EXIT_INTERNAL_ERROR);
+        }
     }
 }
 
