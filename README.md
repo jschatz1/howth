@@ -6,14 +6,21 @@ A deterministic Node toolchain inspector and runtime foundation.
 
 ## Status
 
-**Skeleton only** - This is the initial project structure. No runtime or package manager functionality is implemented yet.
+**Active Development** - Core toolchain functionality is implemented:
+
+- Native V8 runtime (via deno_core) with Web API support
+- ES module loading with TypeScript transpilation
+- Package installation and dependency management
+- Bundler with tree shaking
+- Test runner
+- Dev server with HMR
 
 ## Vision
 
 A multi-year project to build a Bun-class (and eventually faster-than-Bun) JavaScript/TypeScript toolchain and runtime:
 
-- **Phase 1**: Toolchain around Node (package manager, test runner, bundler)
-- **Phase 2**: Runtime experiments + Node compatibility harness
+- **Phase 1**: Toolchain around Node (package manager, test runner, bundler) - **Complete**
+- **Phase 2**: Runtime experiments + Node compatibility harness - **In Progress**
 - **Phase 3**: Eliminate fallbacks + performance optimization
 
 ## Building
@@ -44,6 +51,83 @@ cargo bench -p fastnode-bench
 .\scripts\smoke.ps1       # Windows
 ```
 
+## Native Runtime
+
+When built with `--features native-runtime`, howth uses a native V8 runtime (via deno_core) instead of spawning Node.js. This provides faster startup and tighter integration.
+
+```bash
+# Build with native runtime
+cargo build --features native-runtime -p fastnode-cli
+
+# Run uses native V8 by default
+howth run script.ts
+
+# Fall back to Node.js if needed
+howth run --node script.ts
+```
+
+### Web API Coverage
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `console.log/error/warn/info/debug` | ✅ | Full support |
+| `setTimeout`, `setInterval` | ✅ | Full support |
+| `clearTimeout`, `clearInterval` | ✅ | Full support |
+| `queueMicrotask` | ✅ | Full support |
+| `fetch` | ✅ | Full HTTP client via reqwest |
+| `Request`, `Response`, `Headers` | ✅ | Full support |
+| `URL`, `URLSearchParams` | ✅ | Full support |
+| `TextEncoder`, `TextDecoder` | ✅ | UTF-8 only |
+| `atob`, `btoa` | ✅ | Base64 encode/decode |
+| `crypto.getRandomValues()` | ✅ | Full support |
+| `crypto.randomUUID()` | ✅ | Full support |
+| `crypto.subtle.digest()` | ✅ | SHA-1, SHA-256, SHA-384, SHA-512, MD5 |
+| `AbortController`, `AbortSignal` | ✅ | Full support |
+| `Event`, `EventTarget` | ✅ | Basic implementation |
+| `DOMException` | ✅ | Full support |
+| `Blob` | ✅ | Full support |
+| `File` | ✅ | Full support |
+| `FormData` | ✅ | Full support |
+| `ReadableStream` | ✅ | Basic implementation |
+| `WritableStream` | ❌ | Not yet implemented |
+| `TransformStream` | ❌ | Not yet implemented |
+| `performance.now()` | ✅ | Full support |
+| `structuredClone` | ✅ | Via JSON (limited) |
+
+### Node.js API Coverage
+
+| API | Status | Notes |
+|-----|--------|-------|
+| `process.env` | ✅ | Get and set |
+| `process.cwd()` | ✅ | Full support |
+| `process.exit()` | ✅ | Full support |
+| `process.argv` | ✅ | Full support |
+| `process.platform` | ✅ | Full support |
+| `process.version` | ✅ | Reports v20.0.0 |
+| `process.hrtime.bigint()` | ✅ | Full support |
+| `process.nextTick()` | ✅ | Via queueMicrotask |
+| `fs.readFileSync()` | ✅ | Via `__howth_fs` |
+| `fs.writeFileSync()` | ✅ | Via `__howth_fs` |
+| `node:fs` | ❌ | Not yet implemented |
+| `node:path` | ❌ | Not yet implemented |
+| `node:http` | ❌ | Not yet implemented |
+| `node:https` | ❌ | Not yet implemented |
+| `node:crypto` | ❌ | Not yet implemented |
+| `node:buffer` | ❌ | Not yet implemented |
+| `node:stream` | ❌ | Not yet implemented |
+| `node:util` | ❌ | Not yet implemented |
+| `node:events` | ❌ | Not yet implemented |
+| `require()` | ❌ | ESM only, no CommonJS |
+
+### ES Module Support
+
+- ✅ ES module imports (`import`/`export`)
+- ✅ TypeScript transpilation on-the-fly
+- ✅ Extension-less imports (auto-resolves `.ts`, `.js`, etc.)
+- ✅ Index file resolution (`./dir` → `./dir/index.ts`)
+- ❌ Bare specifiers (`import lodash from 'lodash'`) - not yet implemented
+- ❌ CommonJS (`require()`) - not supported
+
 ## CLI Usage
 
 ```bash
@@ -55,17 +139,28 @@ howth --version
 howth doctor
 howth --json doctor  # Machine-readable output
 
-# Run a file (not implemented yet)
+# Run a JavaScript/TypeScript file (native V8 runtime by default)
+howth run script.ts
 howth run script.js
+howth run --node script.ts   # Fall back to Node.js subprocess
 
-# Install dependencies (not implemented yet)
+# Install dependencies
 howth install
+howth install --frozen-lockfile  # CI mode
 
-# Build project (not implemented yet)
+# Bundle modules
+howth bundle src/index.ts -o dist/bundle.js
+howth bundle src/index.ts --minify --sourcemap
+
+# Build project
 howth build
+howth build --watch          # Watch mode
 
-# Run tests (not implemented yet)
+# Run tests
 howth test
+
+# Start dev server
+howth dev src/index.ts --port 3000
 
 # Global flags
 howth -v run script.js       # DEBUG logging
@@ -244,11 +339,12 @@ scripts/
 
 ## Feature Flags
 
-Defined at workspace level for future use:
+Defined at workspace level:
 
-- `engine-v8` - V8 JavaScript engine
-- `engine-sm` - SpiderMonkey engine
-- `engine-jsc` - JavaScriptCore engine
+- `native-runtime` - Native V8 runtime via deno_core (recommended)
+- `engine-v8` - V8 JavaScript engine (placeholder)
+- `engine-sm` - SpiderMonkey engine (placeholder)
+- `engine-jsc` - JavaScriptCore engine (placeholder)
 - `daemon` - Daemon mode
 - `pm` - Package manager
 - `bundler` - Bundler
