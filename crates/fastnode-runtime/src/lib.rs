@@ -11,9 +11,11 @@
 //! runtime.execute_script("console.log('Hello from V8!')")?;
 //! ```
 
+mod module_loader;
 mod ops;
 mod runtime;
 
+pub use module_loader::HowthModuleLoader;
 pub use runtime::{Runtime, RuntimeError, RuntimeOptions};
 
 /// Run a JavaScript file and return the exit code.

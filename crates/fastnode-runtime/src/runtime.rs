@@ -1,6 +1,7 @@
 //! Runtime implementation using deno_core.
 
-use deno_core::{extension, op2, JsRuntime, RuntimeOptions as DenoRuntimeOptions};
+use crate::module_loader::HowthModuleLoader;
+use deno_core::{extension, op2, JsRuntime, ModuleSpecifier, RuntimeOptions as DenoRuntimeOptions};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -117,8 +118,15 @@ impl Runtime {
     pub fn new(options: RuntimeOptions) -> Result<Self, RuntimeError> {
         let state = Rc::new(RefCell::new(RuntimeState::default()));
 
+        let cwd = options.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        });
+
+        let module_loader = Rc::new(HowthModuleLoader::new(cwd.clone()));
+
         let mut js_runtime = JsRuntime::new(DenoRuntimeOptions {
             extensions: vec![howth_runtime::init_ops()],
+            module_loader: Some(module_loader),
             ..Default::default()
         });
 
@@ -136,11 +144,30 @@ impl Runtime {
         Ok(Self { js_runtime, state })
     }
 
-    /// Execute a script.
+    /// Execute a script (non-module code).
     pub async fn execute_script(&mut self, code: &str) -> Result<(), RuntimeError> {
         self.js_runtime
             .execute_script("<howth>", code.to_string())
             .map_err(|e| RuntimeError::JavaScript(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Execute an ES module from a file path.
+    pub async fn execute_module(&mut self, path: &std::path::Path) -> Result<(), RuntimeError> {
+        let specifier = ModuleSpecifier::from_file_path(path)
+            .map_err(|_| RuntimeError::Io(format!("Invalid path: {}", path.display())))?;
+
+        let module_id = self
+            .js_runtime
+            .load_main_es_module(&specifier)
+            .await
+            .map_err(|e| RuntimeError::JavaScript(format!("Failed to load module: {}", e)))?;
+
+        self.js_runtime
+            .mod_evaluate(module_id)
+            .await
+            .map_err(|e| RuntimeError::JavaScript(format!("Module evaluation failed: {}", e)))?;
+
         Ok(())
     }
 

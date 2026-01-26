@@ -79,9 +79,13 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
 
-        /// Use native V8 runtime instead of Node.js (requires native-runtime feature)
+        /// Use native V8 runtime (default when native-runtime feature is enabled)
         #[arg(long)]
         native: bool,
+
+        /// Force Node.js subprocess instead of native runtime
+        #[arg(long)]
+        node: bool,
 
         /// Arguments to pass to the script (after --)
         #[arg(last = true)]
@@ -476,6 +480,7 @@ fn main() -> Result<()> {
         daemon,
         dry_run,
         native,
+        node,
         args,
     }) = &cli.command
     {
@@ -486,6 +491,7 @@ fn main() -> Result<()> {
             *daemon,
             *dry_run,
             *native,
+            *node,
             Channel::Stable,
             cli.json,
         );

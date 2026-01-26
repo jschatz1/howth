@@ -22,6 +22,11 @@ const EXIT_INTERNAL_ERROR: i32 = 1;
 ///
 /// If dry_run is true, just outputs the execution plan.
 /// Otherwise, transpiles (if needed) and executes the file via Node (or native V8 if enabled).
+///
+/// When compiled with native-runtime feature:
+/// - Native V8 runtime is used by default
+/// - Use `--node` to fall back to Node.js subprocess
+/// - Use `--native` to explicitly request native (no-op when it's already the default)
 pub fn run(
     cwd: &Path,
     entry: &Path,
@@ -29,13 +34,19 @@ pub fn run(
     daemon: bool,
     dry_run: bool,
     native: bool,
+    node: bool,
     channel: Channel,
     json: bool,
 ) -> Result<()> {
-    // Native runtime (V8) execution
+    // When native-runtime feature is enabled, use native by default unless --node is passed
     #[cfg(feature = "native-runtime")]
-    if native {
-        return run_native(cwd, entry, args, json);
+    {
+        // --node forces Node.js subprocess
+        // Otherwise use native (either explicitly via --native or by default)
+        if !node {
+            return run_native(cwd, entry, args, json);
+        }
+        // Fall through to Node.js execution
     }
 
     #[cfg(not(feature = "native-runtime"))]
@@ -44,6 +55,9 @@ pub fn run(
         eprintln!("hint: rebuild with `--features native-runtime`");
         std::process::exit(EXIT_INTERNAL_ERROR);
     }
+
+    // Suppress unused variable warnings
+    let _ = (native, node);
 
     if daemon {
         run_via_daemon(cwd, entry, args, dry_run, channel, json)
@@ -57,40 +71,28 @@ pub fn run(
 fn run_native(cwd: &Path, entry: &Path, _args: &[String], json: bool) -> Result<()> {
     use fastnode_runtime::{Runtime, RuntimeOptions};
 
-    // Read and transpile the entry file
+    // Resolve entry path
     let entry_path = if entry.is_absolute() {
         entry.to_path_buf()
     } else {
         cwd.join(entry)
     };
 
-    let source = std::fs::read_to_string(&entry_path).map_err(|e| {
-        miette::miette!("Failed to read file {}: {}", entry_path.display(), e)
+    let entry_path = entry_path.canonicalize().map_err(|e| {
+        miette::miette!("Cannot find file {}: {}", entry.display(), e)
     })?;
 
-    // Transpile if needed
-    let code = if needs_transpilation(&entry_path) {
-        let backend = SwcBackend::new();
-        let spec = TranspileSpec::new(&entry_path, "");
-        let output = backend
-            .transpile(&spec, &source)
-            .map_err(|e| miette::miette!("Transpilation failed: {}", e.message))?;
-        output.code
-    } else {
-        source
-    };
-
-    // Create runtime and execute
+    // Create runtime and execute as module (supports imports)
     let rt = tokio::runtime::Runtime::new().into_diagnostic()?;
     let result = rt.block_on(async {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(cwd.to_path_buf()),
-            ..Default::default()
+            main_module: Some(entry_path.clone()),
         })
         .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
 
         runtime
-            .execute_script(&code)
+            .execute_module(&entry_path)
             .await
             .map_err(|e| miette::miette!("Execution failed: {}", e))?;
 

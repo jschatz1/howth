@@ -919,6 +919,7 @@ name = "fastnode-runtime"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "fastnode-core",
  "serde",
  "serde_json",
  "tempfile",
