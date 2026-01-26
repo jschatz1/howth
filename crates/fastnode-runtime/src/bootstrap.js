@@ -23,7 +23,66 @@
   };
 
   // Process implementation (Node.js compatibility)
+  // Event emitter functionality for process
+  const processListeners = new Map();
+
   globalThis.process = {
+    // Event emitter methods
+    on(event, listener) {
+      if (!processListeners.has(event)) {
+        processListeners.set(event, []);
+      }
+      processListeners.get(event).push(listener);
+      return this;
+    },
+    addListener(event, listener) {
+      return this.on(event, listener);
+    },
+    once(event, listener) {
+      const wrapper = (...args) => {
+        this.off(event, wrapper);
+        listener(...args);
+      };
+      wrapper.listener = listener;
+      return this.on(event, wrapper);
+    },
+    off(event, listener) {
+      const listeners = processListeners.get(event);
+      if (listeners) {
+        const index = listeners.findIndex(l => l === listener || l.listener === listener);
+        if (index !== -1) {
+          listeners.splice(index, 1);
+        }
+      }
+      return this;
+    },
+    removeListener(event, listener) {
+      return this.off(event, listener);
+    },
+    removeAllListeners(event) {
+      if (event) {
+        processListeners.delete(event);
+      } else {
+        processListeners.clear();
+      }
+      return this;
+    },
+    emit(event, ...args) {
+      const listeners = processListeners.get(event);
+      if (!listeners || listeners.length === 0) return false;
+      for (const listener of [...listeners]) {
+        listener(...args);
+      }
+      return true;
+    },
+    listeners(event) {
+      return processListeners.get(event) || [];
+    },
+    listenerCount(event) {
+      return (processListeners.get(event) || []).length;
+    },
+
+    // Environment
     env: new Proxy({}, {
       get(_, key) {
         return ops.op_howth_env_get(String(key));
@@ -41,8 +100,12 @@
       return ops.op_howth_cwd();
     },
     exit(code = 0) {
+      // Emit exit event before exiting
+      this.exitCode = code;
+      this.emit("exit", code);
       ops.op_howth_exit(code);
     },
+    exitCode: 0,
     argv: ops.op_howth_args(),
     platform: Deno.build?.os || "unknown",
     version: "v20.0.0", // Fake Node.js version for compatibility
@@ -51,6 +114,10 @@
       v8: "11.0.0",
       howth: "0.1.0",
     },
+    pid: 1,
+    ppid: 0,
+    arch: "x64",
+    title: "howth",
     hrtime: {
       bigint() {
         return BigInt(ops.op_howth_hrtime());
@@ -58,6 +125,42 @@
     },
     nextTick(callback, ...args) {
       queueMicrotask(() => callback(...args));
+    },
+    // Standard streams (minimal implementation)
+    stdout: {
+      write(data) {
+        ops.op_howth_print(String(data));
+        return true;
+      },
+      isTTY: false,
+    },
+    stderr: {
+      write(data) {
+        ops.op_howth_print_error(String(data));
+        return true;
+      },
+      isTTY: false,
+    },
+    stdin: {
+      isTTY: false,
+    },
+    // Memory usage stub
+    memoryUsage() {
+      return {
+        rss: 0,
+        heapTotal: 0,
+        heapUsed: 0,
+        external: 0,
+        arrayBuffers: 0,
+      };
+    },
+    // CPU usage stub
+    cpuUsage() {
+      return { user: 0, system: 0 };
+    },
+    // uptime stub
+    uptime() {
+      return 0;
     },
   };
 
@@ -864,6 +967,370 @@
     }
   }
 
+  // WritableStream implementation
+  globalThis.WritableStream = class WritableStream {
+    #sink;
+    #writer = null;
+    #closed = false;
+
+    constructor(sink = {}) {
+      this.#sink = sink;
+    }
+
+    getWriter() {
+      if (this.#writer) {
+        throw new TypeError("WritableStream is locked");
+      }
+      this.#writer = new WritableStreamDefaultWriter(this, this.#sink);
+      return this.#writer;
+    }
+
+    get locked() {
+      return this.#writer !== null;
+    }
+
+    async close() {
+      if (this.#sink.close) {
+        await this.#sink.close();
+      }
+      this.#closed = true;
+    }
+
+    abort(reason) {
+      if (this.#sink.abort) {
+        return this.#sink.abort(reason);
+      }
+      this.#closed = true;
+    }
+  };
+
+  class WritableStreamDefaultWriter {
+    #stream;
+    #sink;
+    #controller;
+    #readyPromise;
+    #closedPromise;
+    #resolveReady;
+    #resolveClose;
+
+    constructor(stream, sink) {
+      this.#stream = stream;
+      this.#sink = sink;
+      this.#controller = {
+        error: (e) => { throw e; },
+      };
+
+      this.#readyPromise = Promise.resolve();
+      this.#closedPromise = new Promise(resolve => {
+        this.#resolveClose = resolve;
+      });
+
+      if (sink.start) {
+        sink.start(this.#controller);
+      }
+    }
+
+    get ready() {
+      return this.#readyPromise;
+    }
+
+    get closed() {
+      return this.#closedPromise;
+    }
+
+    async write(chunk) {
+      if (this.#sink.write) {
+        await this.#sink.write(chunk, this.#controller);
+      }
+    }
+
+    async close() {
+      if (this.#sink.close) {
+        await this.#sink.close();
+      }
+      this.#resolveClose();
+    }
+
+    abort(reason) {
+      if (this.#sink.abort) {
+        return this.#sink.abort(reason);
+      }
+    }
+
+    releaseLock() {
+      this.#stream._writer = null;
+    }
+  }
+
+  // TransformStream implementation
+  globalThis.TransformStream = class TransformStream {
+    #readable;
+    #writable;
+    #transformer;
+    #controller;
+    #queue = [];
+
+    constructor(transformer = {}) {
+      this.#transformer = transformer;
+
+      const self = this;
+      this.#controller = {
+        enqueue(chunk) {
+          self.#queue.push(chunk);
+        },
+        error(reason) {
+          throw reason;
+        },
+        terminate() {
+          // No-op for basic implementation
+        },
+      };
+
+      if (transformer.start) {
+        transformer.start(this.#controller);
+      }
+
+      this.#readable = new ReadableStream({
+        pull: async (controller) => {
+          while (this.#queue.length > 0) {
+            controller.enqueue(this.#queue.shift());
+          }
+        },
+      });
+
+      this.#writable = new WritableStream({
+        write: async (chunk) => {
+          if (this.#transformer.transform) {
+            await this.#transformer.transform(chunk, this.#controller);
+          } else {
+            this.#controller.enqueue(chunk);
+          }
+        },
+        close: async () => {
+          if (this.#transformer.flush) {
+            await this.#transformer.flush(this.#controller);
+          }
+        },
+      });
+    }
+
+    get readable() {
+      return this.#readable;
+    }
+
+    get writable() {
+      return this.#writable;
+    }
+  };
+
+  // Buffer implementation (Node.js compatibility)
+  globalThis.Buffer = class Buffer extends Uint8Array {
+    static alloc(size, fill = 0) {
+      const buf = new Buffer(size);
+      buf.fill(fill);
+      return buf;
+    }
+
+    static allocUnsafe(size) {
+      return new Buffer(size);
+    }
+
+    static from(data, encoding = "utf8") {
+      if (typeof data === "string") {
+        if (encoding === "base64") {
+          const binary = atob(data);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          return new Buffer(bytes);
+        } else if (encoding === "hex") {
+          const bytes = new Uint8Array(data.length / 2);
+          for (let i = 0; i < data.length; i += 2) {
+            bytes[i / 2] = parseInt(data.substr(i, 2), 16);
+          }
+          return new Buffer(bytes);
+        } else {
+          // Default to UTF-8
+          const encoder = new TextEncoder();
+          return new Buffer(encoder.encode(data));
+        }
+      } else if (Array.isArray(data)) {
+        return new Buffer(new Uint8Array(data));
+      } else if (data instanceof ArrayBuffer) {
+        return new Buffer(new Uint8Array(data));
+      } else if (ArrayBuffer.isView(data)) {
+        return new Buffer(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+      }
+      throw new TypeError("Invalid data type for Buffer.from");
+    }
+
+    static isBuffer(obj) {
+      return obj instanceof Buffer;
+    }
+
+    static concat(list, totalLength) {
+      if (totalLength === undefined) {
+        totalLength = list.reduce((acc, buf) => acc + buf.length, 0);
+      }
+      const result = new Buffer(totalLength);
+      let offset = 0;
+      for (const buf of list) {
+        result.set(buf, offset);
+        offset += buf.length;
+      }
+      return result;
+    }
+
+    static byteLength(string, encoding = "utf8") {
+      if (encoding === "utf8" || encoding === "utf-8") {
+        return new TextEncoder().encode(string).length;
+      }
+      return string.length;
+    }
+
+    toString(encoding = "utf8") {
+      if (encoding === "base64") {
+        let binary = "";
+        for (let i = 0; i < this.length; i++) {
+          binary += String.fromCharCode(this[i]);
+        }
+        return btoa(binary);
+      } else if (encoding === "hex") {
+        return Array.from(this).map(b => b.toString(16).padStart(2, "0")).join("");
+      } else {
+        // Default to UTF-8
+        const decoder = new TextDecoder();
+        return decoder.decode(this);
+      }
+    }
+
+    write(string, offset = 0, length, encoding = "utf8") {
+      const bytes = Buffer.from(string, encoding);
+      const writeLength = Math.min(bytes.length, length ?? bytes.length, this.length - offset);
+      this.set(bytes.subarray(0, writeLength), offset);
+      return writeLength;
+    }
+
+    copy(target, targetStart = 0, sourceStart = 0, sourceEnd = this.length) {
+      const slice = this.subarray(sourceStart, sourceEnd);
+      target.set(slice, targetStart);
+      return slice.length;
+    }
+
+    slice(start, end) {
+      return new Buffer(this.subarray(start, end));
+    }
+
+    equals(other) {
+      if (this.length !== other.length) return false;
+      for (let i = 0; i < this.length; i++) {
+        if (this[i] !== other[i]) return false;
+      }
+      return true;
+    }
+
+    compare(other) {
+      const len = Math.min(this.length, other.length);
+      for (let i = 0; i < len; i++) {
+        if (this[i] < other[i]) return -1;
+        if (this[i] > other[i]) return 1;
+      }
+      if (this.length < other.length) return -1;
+      if (this.length > other.length) return 1;
+      return 0;
+    }
+
+    indexOf(value, byteOffset = 0) {
+      if (typeof value === "string") {
+        value = Buffer.from(value);
+      }
+      if (typeof value === "number") {
+        for (let i = byteOffset; i < this.length; i++) {
+          if (this[i] === value) return i;
+        }
+        return -1;
+      }
+      // Search for buffer
+      outer: for (let i = byteOffset; i <= this.length - value.length; i++) {
+        for (let j = 0; j < value.length; j++) {
+          if (this[i + j] !== value[j]) continue outer;
+        }
+        return i;
+      }
+      return -1;
+    }
+
+    includes(value, byteOffset = 0) {
+      return this.indexOf(value, byteOffset) !== -1;
+    }
+
+    // Read methods
+    readUInt8(offset = 0) { return this[offset]; }
+    readUInt16LE(offset = 0) { return this[offset] | (this[offset + 1] << 8); }
+    readUInt16BE(offset = 0) { return (this[offset] << 8) | this[offset + 1]; }
+    readUInt32LE(offset = 0) {
+      return (this[offset] | (this[offset + 1] << 8) | (this[offset + 2] << 16) | (this[offset + 3] << 24)) >>> 0;
+    }
+    readUInt32BE(offset = 0) {
+      return ((this[offset] << 24) | (this[offset + 1] << 16) | (this[offset + 2] << 8) | this[offset + 3]) >>> 0;
+    }
+    readInt8(offset = 0) {
+      const val = this[offset];
+      return val > 127 ? val - 256 : val;
+    }
+    readInt16LE(offset = 0) {
+      const val = this.readUInt16LE(offset);
+      return val > 32767 ? val - 65536 : val;
+    }
+    readInt16BE(offset = 0) {
+      const val = this.readUInt16BE(offset);
+      return val > 32767 ? val - 65536 : val;
+    }
+    readInt32LE(offset = 0) {
+      return this[offset] | (this[offset + 1] << 8) | (this[offset + 2] << 16) | (this[offset + 3] << 24);
+    }
+    readInt32BE(offset = 0) {
+      return (this[offset] << 24) | (this[offset + 1] << 16) | (this[offset + 2] << 8) | this[offset + 3];
+    }
+
+    // Write methods
+    writeUInt8(value, offset = 0) { this[offset] = value & 0xff; return offset + 1; }
+    writeUInt16LE(value, offset = 0) {
+      this[offset] = value & 0xff;
+      this[offset + 1] = (value >> 8) & 0xff;
+      return offset + 2;
+    }
+    writeUInt16BE(value, offset = 0) {
+      this[offset] = (value >> 8) & 0xff;
+      this[offset + 1] = value & 0xff;
+      return offset + 2;
+    }
+    writeUInt32LE(value, offset = 0) {
+      this[offset] = value & 0xff;
+      this[offset + 1] = (value >> 8) & 0xff;
+      this[offset + 2] = (value >> 16) & 0xff;
+      this[offset + 3] = (value >> 24) & 0xff;
+      return offset + 4;
+    }
+    writeUInt32BE(value, offset = 0) {
+      this[offset] = (value >> 24) & 0xff;
+      this[offset + 1] = (value >> 16) & 0xff;
+      this[offset + 2] = (value >> 8) & 0xff;
+      this[offset + 3] = value & 0xff;
+      return offset + 4;
+    }
+    writeInt8(value, offset = 0) { return this.writeUInt8(value < 0 ? value + 256 : value, offset); }
+    writeInt16LE(value, offset = 0) { return this.writeUInt16LE(value < 0 ? value + 65536 : value, offset); }
+    writeInt16BE(value, offset = 0) { return this.writeUInt16BE(value < 0 ? value + 65536 : value, offset); }
+    writeInt32LE(value, offset = 0) { return this.writeUInt32LE(value >>> 0, offset); }
+    writeInt32BE(value, offset = 0) { return this.writeUInt32BE(value >>> 0, offset); }
+
+    toJSON() {
+      return { type: "Buffer", data: Array.from(this) };
+    }
+  };
+
   // performance API
   const performanceStart = Date.now();
   globalThis.performance = {
@@ -888,6 +1355,2488 @@
 
   // sleep helper (non-standard but useful)
   globalThis.sleep = (ms) => ops.op_howth_sleep(ms);
+
+  // ============================================
+  // Node.js built-in modules
+  // ============================================
+
+  // Detect platform
+  const isWindows = (Deno.build?.os || "").toLowerCase() === "windows" ||
+                    globalThis.process?.platform === "win32";
+
+  // Character constants (matching Node.js internal/constants)
+  const CHAR_UPPERCASE_A = 65;
+  const CHAR_LOWERCASE_A = 97;
+  const CHAR_UPPERCASE_Z = 90;
+  const CHAR_LOWERCASE_Z = 122;
+  const CHAR_DOT = 46;
+  const CHAR_FORWARD_SLASH = 47;
+  const CHAR_BACKWARD_SLASH = 92;
+  const CHAR_COLON = 58;
+
+  // Argument validation helper (matching Node.js)
+  function validateString(value, name) {
+    if (typeof value !== 'string') {
+      const err = new TypeError(`The "${name}" argument must be of type string. Received ${typeof value === 'object' ? (value === null ? 'null' : 'object') : typeof value}`);
+      err.code = 'ERR_INVALID_ARG_TYPE';
+      throw err;
+    }
+  }
+
+  // Helper functions (matching Node.js lib/path.js)
+  function isPathSeparator(code) {
+    return code === CHAR_FORWARD_SLASH || code === CHAR_BACKWARD_SLASH;
+  }
+
+  function isPosixPathSeparator(code) {
+    return code === CHAR_FORWARD_SLASH;
+  }
+
+  function isWindowsDeviceRoot(code) {
+    return (code >= CHAR_UPPERCASE_A && code <= CHAR_UPPERCASE_Z) ||
+           (code >= CHAR_LOWERCASE_A && code <= CHAR_LOWERCASE_Z);
+  }
+
+  // Windows reserved device names
+  const WINDOWS_RESERVED_NAMES = [
+    'CON', 'PRN', 'AUX', 'NUL',
+    'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+    'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+  ];
+
+  function isWindowsReservedName(path, colonIndex) {
+    const devicePart = path.slice(0, colonIndex).toUpperCase();
+    return WINDOWS_RESERVED_NAMES.includes(devicePart);
+  }
+
+  // Core path normalization function (from Node.js)
+  function normalizeString(path, allowAboveRoot, separator, isPathSeparatorFn) {
+    let res = '';
+    let lastSegmentLength = 0;
+    let lastSlash = -1;
+    let dots = 0;
+    let code = 0;
+
+    for (let i = 0; i <= path.length; ++i) {
+      if (i < path.length)
+        code = path.charCodeAt(i);
+      else if (isPathSeparatorFn(code))
+        break;
+      else
+        code = CHAR_FORWARD_SLASH;
+
+      if (isPathSeparatorFn(code)) {
+        if (lastSlash === i - 1 || dots === 1) {
+          // NOOP
+        } else if (dots === 2) {
+          if (res.length < 2 || lastSegmentLength !== 2 ||
+              res.charCodeAt(res.length - 1) !== CHAR_DOT ||
+              res.charCodeAt(res.length - 2) !== CHAR_DOT) {
+            if (res.length > 2) {
+              const lastSlashIndex = res.lastIndexOf(separator);
+              if (lastSlashIndex === -1) {
+                res = '';
+                lastSegmentLength = 0;
+              } else {
+                res = res.slice(0, lastSlashIndex);
+                lastSegmentLength = res.length - 1 - res.lastIndexOf(separator);
+              }
+              lastSlash = i;
+              dots = 0;
+              continue;
+            } else if (res.length !== 0) {
+              res = '';
+              lastSegmentLength = 0;
+              lastSlash = i;
+              dots = 0;
+              continue;
+            }
+          }
+          if (allowAboveRoot) {
+            res += res.length > 0 ? `${separator}..` : '..';
+            lastSegmentLength = 2;
+          }
+        } else {
+          if (res.length > 0)
+            res += `${separator}${path.slice(lastSlash + 1, i)}`;
+          else
+            res = path.slice(lastSlash + 1, i);
+          lastSegmentLength = i - lastSlash - 1;
+        }
+        lastSlash = i;
+        dots = 0;
+      } else if (code === CHAR_DOT && dots !== -1) {
+        ++dots;
+      } else {
+        dots = -1;
+      }
+    }
+    return res;
+  }
+
+  // ============================================
+  // POSIX path implementation
+  // ============================================
+  const posixPath = {};
+
+  posixPath.sep = "/";
+  posixPath.delimiter = ":";
+
+  posixPath.normalize = function normalize(path) {
+    validateString(path, 'path');
+    if (path.length === 0) return '.';
+
+    const isAbsolute = path.charCodeAt(0) === CHAR_FORWARD_SLASH;
+    const trailingSeparator = path.charCodeAt(path.length - 1) === CHAR_FORWARD_SLASH;
+
+    path = normalizeString(path, !isAbsolute, '/', isPosixPathSeparator);
+
+    if (path.length === 0) {
+      if (isAbsolute) return '/';
+      return trailingSeparator ? './' : '.';
+    }
+    if (trailingSeparator) path += '/';
+
+    return isAbsolute ? `/${path}` : path;
+  };
+
+  posixPath.join = function join(...args) {
+    if (args.length === 0) return '.';
+
+    let joined;
+    for (let i = 0; i < args.length; ++i) {
+      const arg = args[i];
+      validateString(arg, 'path');
+      if (arg.length > 0) {
+        if (joined === undefined) joined = arg;
+        else joined += `/${arg}`;
+      }
+    }
+
+    if (joined === undefined) return '.';
+
+    return posixPath.normalize(joined);
+  };
+
+  posixPath.resolve = function resolve(...args) {
+    let resolvedPath = '';
+    let resolvedAbsolute = false;
+
+    for (let i = args.length - 1; i >= -1 && !resolvedAbsolute; i--) {
+      let path;
+      if (i >= 0) {
+        path = args[i];
+        validateString(path, 'path');
+      } else {
+        path = ops.op_howth_cwd();
+      }
+
+      if (path.length === 0) continue;
+
+      resolvedPath = `${path}/${resolvedPath}`;
+      resolvedAbsolute = path.charCodeAt(0) === CHAR_FORWARD_SLASH;
+    }
+
+    resolvedPath = normalizeString(resolvedPath, !resolvedAbsolute, '/', isPosixPathSeparator);
+
+    if (resolvedAbsolute) {
+      return `/${resolvedPath}`;
+    }
+    return resolvedPath.length > 0 ? resolvedPath : '.';
+  };
+
+  posixPath.isAbsolute = function isAbsolute(path) {
+    validateString(path, 'path');
+    return path.length > 0 && path.charCodeAt(0) === CHAR_FORWARD_SLASH;
+  };
+
+  posixPath.dirname = function dirname(path) {
+    validateString(path, 'path');
+    if (path.length === 0) return '.';
+
+    const hasRoot = path.charCodeAt(0) === CHAR_FORWARD_SLASH;
+    let end = -1;
+    let matchedSlash = true;
+
+    for (let i = path.length - 1; i >= 1; --i) {
+      if (path.charCodeAt(i) === CHAR_FORWARD_SLASH) {
+        if (!matchedSlash) {
+          end = i;
+          break;
+        }
+      } else {
+        matchedSlash = false;
+      }
+    }
+
+    if (end === -1) return hasRoot ? '/' : '.';
+    if (hasRoot && end === 1) return '//';
+    return path.slice(0, end);
+  };
+
+  posixPath.basename = function basename(path, ext) {
+    validateString(path, 'path');
+    if (ext !== undefined) validateString(ext, 'ext');
+
+    let start = 0;
+    let end = -1;
+    let matchedSlash = true;
+
+    if (ext !== undefined && ext.length > 0 && ext.length <= path.length) {
+      if (ext === path) return '';
+      let extIdx = ext.length - 1;
+      let firstNonSlashEnd = -1;
+
+      for (let i = path.length - 1; i >= 0; --i) {
+        const code = path.charCodeAt(i);
+        if (code === CHAR_FORWARD_SLASH) {
+          if (!matchedSlash) {
+            start = i + 1;
+            break;
+          }
+        } else {
+          if (firstNonSlashEnd === -1) {
+            matchedSlash = false;
+            firstNonSlashEnd = i + 1;
+          }
+          if (extIdx >= 0) {
+            if (code === ext.charCodeAt(extIdx)) {
+              if (--extIdx === -1) {
+                end = i;
+              }
+            } else {
+              extIdx = -1;
+              end = firstNonSlashEnd;
+            }
+          }
+        }
+      }
+
+      if (start === end) end = firstNonSlashEnd;
+      else if (end === -1) end = path.length;
+      return path.slice(start, end);
+    }
+
+    for (let i = path.length - 1; i >= 0; --i) {
+      if (path.charCodeAt(i) === CHAR_FORWARD_SLASH) {
+        if (!matchedSlash) {
+          start = i + 1;
+          break;
+        }
+      } else if (end === -1) {
+        matchedSlash = false;
+        end = i + 1;
+      }
+    }
+
+    if (end === -1) return '';
+    return path.slice(start, end);
+  };
+
+  posixPath.extname = function extname(path) {
+    validateString(path, 'path');
+
+    let startDot = -1;
+    let startPart = 0;
+    let end = -1;
+    let matchedSlash = true;
+    let preDotState = 0;
+
+    for (let i = path.length - 1; i >= 0; --i) {
+      const code = path.charCodeAt(i);
+      if (code === CHAR_FORWARD_SLASH) {
+        if (!matchedSlash) {
+          startPart = i + 1;
+          break;
+        }
+        continue;
+      }
+      if (end === -1) {
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === CHAR_DOT) {
+        if (startDot === -1) startDot = i;
+        else if (preDotState !== 1) preDotState = 1;
+      } else if (startDot !== -1) {
+        preDotState = -1;
+      }
+    }
+
+    if (startDot === -1 || end === -1 ||
+        preDotState === 0 ||
+        (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) {
+      return '';
+    }
+    return path.slice(startDot, end);
+  };
+
+  posixPath.relative = function relative(from, to) {
+    validateString(from, 'from');
+    validateString(to, 'to');
+
+    if (from === to) return '';
+
+    from = posixPath.resolve(from);
+    to = posixPath.resolve(to);
+
+    if (from === to) return '';
+
+    const fromStart = 1;
+    const fromEnd = from.length;
+    const fromLen = fromEnd - fromStart;
+    const toStart = 1;
+    const toLen = to.length - toStart;
+
+    const length = fromLen < toLen ? fromLen : toLen;
+    let lastCommonSep = -1;
+    let i = 0;
+
+    for (; i < length; i++) {
+      const fromCode = from.charCodeAt(fromStart + i);
+      if (fromCode !== to.charCodeAt(toStart + i)) break;
+      else if (fromCode === CHAR_FORWARD_SLASH) lastCommonSep = i;
+    }
+
+    if (i === length) {
+      if (toLen > length) {
+        if (to.charCodeAt(toStart + i) === CHAR_FORWARD_SLASH) {
+          return to.slice(toStart + i + 1);
+        }
+        if (i === 0) {
+          return to.slice(toStart + i);
+        }
+      } else if (fromLen > length) {
+        if (from.charCodeAt(fromStart + i) === CHAR_FORWARD_SLASH) {
+          lastCommonSep = i;
+        } else if (i === 0) {
+          lastCommonSep = 0;
+        }
+      }
+    }
+
+    let out = '';
+    for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+      if (i === fromEnd || from.charCodeAt(i) === CHAR_FORWARD_SLASH) {
+        out += out.length === 0 ? '..' : '/..';
+      }
+    }
+
+    return `${out}${to.slice(toStart + lastCommonSep)}`;
+  };
+
+  posixPath.parse = function parse(path) {
+    validateString(path, 'path');
+
+    const ret = { root: '', dir: '', base: '', ext: '', name: '' };
+    if (path.length === 0) return ret;
+
+    const isAbsolute = path.charCodeAt(0) === CHAR_FORWARD_SLASH;
+    let start;
+    if (isAbsolute) {
+      ret.root = '/';
+      start = 1;
+    } else {
+      start = 0;
+    }
+
+    let startDot = -1;
+    let startPart = 0;
+    let end = -1;
+    let matchedSlash = true;
+    let i = path.length - 1;
+    let preDotState = 0;
+
+    for (; i >= start; --i) {
+      const code = path.charCodeAt(i);
+      if (code === CHAR_FORWARD_SLASH) {
+        if (!matchedSlash) {
+          startPart = i + 1;
+          break;
+        }
+        continue;
+      }
+      if (end === -1) {
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === CHAR_DOT) {
+        if (startDot === -1) startDot = i;
+        else if (preDotState !== 1) preDotState = 1;
+      } else if (startDot !== -1) {
+        preDotState = -1;
+      }
+    }
+
+    if (end !== -1) {
+      const start2 = startPart === 0 && isAbsolute ? 1 : startPart;
+      if (startDot === -1 || preDotState === 0 ||
+          (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) {
+        ret.base = ret.name = path.slice(start2, end);
+      } else {
+        ret.name = path.slice(start2, startDot);
+        ret.base = path.slice(start2, end);
+        ret.ext = path.slice(startDot, end);
+      }
+    }
+
+    if (startPart > 0) ret.dir = path.slice(0, startPart - 1);
+    else if (isAbsolute) ret.dir = '/';
+
+    return ret;
+  };
+
+  posixPath.format = function format(pathObject) {
+    if (pathObject === null || typeof pathObject !== 'object') {
+      let received;
+      if (pathObject == null) {
+        received = `Received ${pathObject}`;
+      } else {
+        const inspected = JSON.stringify(pathObject);
+        received = `Received type ${typeof pathObject} (${inspected})`;
+      }
+      const err = new TypeError(`The "pathObject" argument must be of type object. ${received}`);
+      err.code = 'ERR_INVALID_ARG_TYPE';
+      throw err;
+    }
+    const dir = pathObject.dir || pathObject.root;
+    let base = pathObject.base;
+    if (!base) {
+      const name = pathObject.name || '';
+      let ext = pathObject.ext || '';
+      // Normalize ext to ensure it starts with a dot (if non-empty)
+      if (ext && ext.charCodeAt(0) !== CHAR_DOT) {
+        ext = `.${ext}`;
+      }
+      base = `${name}${ext}`;
+    }
+    if (!dir) return base;
+    return dir === pathObject.root ? `${dir}${base}` : `${dir}/${base}`;
+  };
+
+  posixPath.toNamespacedPath = function toNamespacedPath(path) {
+    return path;
+  };
+
+  // ============================================
+  // Windows path implementation
+  // ============================================
+  const win32Path = {};
+
+  win32Path.sep = "\\";
+  win32Path.delimiter = ";";
+
+  win32Path.normalize = function normalize(path) {
+    validateString(path, 'path');
+    const len = path.length;
+    if (len === 0) return '.';
+
+    let rootEnd = 0;
+    let device;
+    let isAbsolute = false;
+    const code = path.charCodeAt(0);
+
+    if (len === 1) {
+      return isPosixPathSeparator(code) ? '\\' : path;
+    }
+
+    if (isPathSeparator(code)) {
+      isAbsolute = true;
+
+      if (isPathSeparator(path.charCodeAt(1))) {
+        let j = 2;
+        let last = j;
+        while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+          j++;
+        }
+        if (j < len && j !== last) {
+          const firstPart = path.slice(last, j);
+          last = j;
+          while (j < len && isPathSeparator(path.charCodeAt(j))) {
+            j++;
+          }
+          if (j < len && j !== last) {
+            last = j;
+            while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+              j++;
+            }
+            if (j === len || j !== last) {
+              if (firstPart === '.' || firstPart === '?') {
+                device = `\\\\${firstPart}`;
+                rootEnd = 4;
+              } else if (j === len) {
+                return `\\\\${firstPart}\\${path.slice(last)}\\`;
+              } else {
+                device = `\\\\${firstPart}\\${path.slice(last, j)}`;
+                rootEnd = j;
+              }
+            }
+          }
+        }
+      }
+      if (device === undefined) {
+        rootEnd = 1;
+      }
+    } else if (isWindowsDeviceRoot(code) && path.charCodeAt(1) === CHAR_COLON) {
+      device = path.slice(0, 2);
+      rootEnd = 2;
+      if (len > 2 && isPathSeparator(path.charCodeAt(2))) {
+        isAbsolute = true;
+        rootEnd = 3;
+      }
+    }
+
+    let tail = rootEnd < len ?
+      normalizeString(path.slice(rootEnd), !isAbsolute, '\\', isPathSeparator) : '';
+
+    if (tail.length === 0 && !isAbsolute) tail = '.';
+    if (tail.length > 0 && isPathSeparator(path.charCodeAt(len - 1))) tail += '\\';
+
+    if (device === undefined) {
+      return isAbsolute ? `\\${tail}` : tail;
+    }
+    return isAbsolute ? `${device}\\${tail}` : `${device}${tail}`;
+  };
+
+  win32Path.join = function join(...args) {
+    if (args.length === 0) return '.';
+
+    let joined;
+    let firstPart;
+    for (let i = 0; i < args.length; ++i) {
+      const arg = args[i];
+      validateString(arg, 'path');
+      if (arg.length > 0) {
+        if (joined === undefined) {
+          joined = firstPart = arg;
+        } else {
+          joined += `\\${arg}`;
+        }
+      }
+    }
+
+    if (joined === undefined) return '.';
+
+    let needsReplace = true;
+    let slashCount = 0;
+
+    if (isPathSeparator(firstPart.charCodeAt(0))) {
+      ++slashCount;
+      const firstLen = firstPart.length;
+      if (firstLen > 1 && isPathSeparator(firstPart.charCodeAt(1))) {
+        ++slashCount;
+        if (firstLen > 2) {
+          if (isPathSeparator(firstPart.charCodeAt(2))) ++slashCount;
+          else needsReplace = false;
+        }
+      }
+    }
+
+    if (needsReplace) {
+      while (slashCount < joined.length && isPathSeparator(joined.charCodeAt(slashCount))) {
+        slashCount++;
+      }
+      if (slashCount >= 2) {
+        joined = `\\${joined.slice(slashCount)}`;
+      }
+    }
+
+    return win32Path.normalize(joined);
+  };
+
+  win32Path.resolve = function resolve(...args) {
+    let resolvedDevice = '';
+    let resolvedTail = '';
+    let resolvedAbsolute = false;
+
+    for (let i = args.length - 1; i >= -1; i--) {
+      let path;
+      if (i >= 0) {
+        path = args[i];
+        validateString(path, 'path');
+        if (path.length === 0) continue;
+      } else if (resolvedDevice.length === 0) {
+        path = ops.op_howth_cwd();
+      } else {
+        path = `${resolvedDevice}\\`;
+      }
+
+      const len = path.length;
+      let rootEnd = 0;
+      let device = '';
+      let isAbsolute = false;
+      const code = path.charCodeAt(0);
+
+      if (len === 1) {
+        if (isPathSeparator(code)) {
+          rootEnd = 1;
+          isAbsolute = true;
+        }
+      } else if (isPathSeparator(code)) {
+        isAbsolute = true;
+
+        if (isPathSeparator(path.charCodeAt(1))) {
+          let j = 2;
+          let last = j;
+          while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+            j++;
+          }
+          if (j < len && j !== last) {
+            const firstPart = path.slice(last, j);
+            last = j;
+            while (j < len && isPathSeparator(path.charCodeAt(j))) {
+              j++;
+            }
+            if (j < len && j !== last) {
+              last = j;
+              while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+                j++;
+              }
+              if (j === len || j !== last) {
+                if (firstPart !== '.' && firstPart !== '?') {
+                  device = `\\\\${firstPart}\\${path.slice(last, j)}`;
+                  rootEnd = j;
+                } else {
+                  device = `\\\\${firstPart}`;
+                  rootEnd = 4;
+                }
+              }
+            }
+          }
+        } else {
+          rootEnd = 1;
+        }
+      } else if (isWindowsDeviceRoot(code) && path.charCodeAt(1) === CHAR_COLON) {
+        device = path.slice(0, 2);
+        rootEnd = 2;
+        if (len > 2 && isPathSeparator(path.charCodeAt(2))) {
+          isAbsolute = true;
+          rootEnd = 3;
+        }
+      }
+
+      if (device.length > 0) {
+        if (resolvedDevice.length > 0) {
+          if (device.toLowerCase() !== resolvedDevice.toLowerCase()) continue;
+        } else {
+          resolvedDevice = device;
+        }
+      }
+
+      if (resolvedAbsolute) {
+        if (resolvedDevice.length > 0) break;
+      } else {
+        resolvedTail = `${path.slice(rootEnd)}\\${resolvedTail}`;
+        resolvedAbsolute = isAbsolute;
+        if (isAbsolute && resolvedDevice.length > 0) {
+          break;
+        }
+      }
+    }
+
+    resolvedTail = normalizeString(resolvedTail, !resolvedAbsolute, '\\', isPathSeparator);
+
+    return resolvedAbsolute ?
+      `${resolvedDevice}\\${resolvedTail}` :
+      `${resolvedDevice}${resolvedTail}` || '.';
+  };
+
+  win32Path.isAbsolute = function isAbsolute(path) {
+    validateString(path, 'path');
+    if (path.length === 0) return false;
+
+    const code = path.charCodeAt(0);
+    return isPathSeparator(code) ||
+      (path.length > 2 && isWindowsDeviceRoot(code) &&
+       path.charCodeAt(1) === CHAR_COLON && isPathSeparator(path.charCodeAt(2)));
+  };
+
+  win32Path.dirname = function dirname(path) {
+    validateString(path, 'path');
+    const len = path.length;
+    if (len === 0) return '.';
+
+    let rootEnd = -1;
+    let offset = 0;
+    const code = path.charCodeAt(0);
+
+    if (len === 1) {
+      return isPathSeparator(code) ? path : '.';
+    }
+
+    if (isPathSeparator(code)) {
+      rootEnd = offset = 1;
+      if (isPathSeparator(path.charCodeAt(1))) {
+        let j = 2;
+        let last = j;
+        while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+          j++;
+        }
+        if (j < len && j !== last) {
+          last = j;
+          while (j < len && isPathSeparator(path.charCodeAt(j))) {
+            j++;
+          }
+          if (j < len && j !== last) {
+            last = j;
+            while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+              j++;
+            }
+            if (j === len) {
+              return path;
+            }
+            if (j !== last) {
+              rootEnd = offset = j + 1;
+            }
+          }
+        }
+      }
+    } else if (isWindowsDeviceRoot(code) && path.charCodeAt(1) === CHAR_COLON) {
+      rootEnd = len > 2 && isPathSeparator(path.charCodeAt(2)) ? 3 : 2;
+      offset = rootEnd;
+    }
+
+    let end = -1;
+    let matchedSlash = true;
+    for (let i = len - 1; i >= offset; --i) {
+      if (isPathSeparator(path.charCodeAt(i))) {
+        if (!matchedSlash) {
+          end = i;
+          break;
+        }
+      } else {
+        matchedSlash = false;
+      }
+    }
+
+    if (end === -1) {
+      if (rootEnd === -1) return '.';
+      end = rootEnd;
+    }
+    return path.slice(0, end);
+  };
+
+  win32Path.basename = function basename(path, ext) {
+    validateString(path, 'path');
+    if (ext !== undefined) validateString(ext, 'ext');
+
+    let start = 0;
+    let end = -1;
+    let matchedSlash = true;
+
+    if (path.length >= 2 && isWindowsDeviceRoot(path.charCodeAt(0)) &&
+        path.charCodeAt(1) === CHAR_COLON) {
+      start = 2;
+    }
+
+    if (ext !== undefined && ext.length > 0 && ext.length <= path.length) {
+      if (ext === path) return '';
+      let extIdx = ext.length - 1;
+      let firstNonSlashEnd = -1;
+
+      for (let i = path.length - 1; i >= start; --i) {
+        const code = path.charCodeAt(i);
+        if (isPathSeparator(code)) {
+          if (!matchedSlash) {
+            start = i + 1;
+            break;
+          }
+        } else {
+          if (firstNonSlashEnd === -1) {
+            matchedSlash = false;
+            firstNonSlashEnd = i + 1;
+          }
+          if (extIdx >= 0) {
+            if (code === ext.charCodeAt(extIdx)) {
+              if (--extIdx === -1) {
+                end = i;
+              }
+            } else {
+              extIdx = -1;
+              end = firstNonSlashEnd;
+            }
+          }
+        }
+      }
+
+      if (start === end) end = firstNonSlashEnd;
+      else if (end === -1) end = path.length;
+      return path.slice(start, end);
+    }
+
+    for (let i = path.length - 1; i >= start; --i) {
+      if (isPathSeparator(path.charCodeAt(i))) {
+        if (!matchedSlash) {
+          start = i + 1;
+          break;
+        }
+      } else if (end === -1) {
+        matchedSlash = false;
+        end = i + 1;
+      }
+    }
+
+    if (end === -1) return '';
+    return path.slice(start, end);
+  };
+
+  win32Path.extname = function extname(path) {
+    validateString(path, 'path');
+
+    let start = 0;
+    let startDot = -1;
+    let startPart = 0;
+    let end = -1;
+    let matchedSlash = true;
+    let preDotState = 0;
+
+    if (path.length >= 2 && path.charCodeAt(1) === CHAR_COLON &&
+        isWindowsDeviceRoot(path.charCodeAt(0))) {
+      start = startPart = 2;
+    }
+
+    for (let i = path.length - 1; i >= start; --i) {
+      const code = path.charCodeAt(i);
+      if (isPathSeparator(code)) {
+        if (!matchedSlash) {
+          startPart = i + 1;
+          break;
+        }
+        continue;
+      }
+      if (end === -1) {
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === CHAR_DOT) {
+        if (startDot === -1) startDot = i;
+        else if (preDotState !== 1) preDotState = 1;
+      } else if (startDot !== -1) {
+        preDotState = -1;
+      }
+    }
+
+    if (startDot === -1 || end === -1 ||
+        preDotState === 0 ||
+        (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) {
+      return '';
+    }
+    return path.slice(startDot, end);
+  };
+
+  win32Path.relative = function relative(from, to) {
+    validateString(from, 'from');
+    validateString(to, 'to');
+
+    if (from === to) return '';
+
+    const fromOrig = win32Path.resolve(from);
+    const toOrig = win32Path.resolve(to);
+
+    if (fromOrig === toOrig) return '';
+
+    from = fromOrig.toLowerCase();
+    to = toOrig.toLowerCase();
+
+    if (from === to) return '';
+
+    let fromStart = 0;
+    while (fromStart < from.length && from.charCodeAt(fromStart) === CHAR_BACKWARD_SLASH) {
+      fromStart++;
+    }
+    let fromEnd = from.length;
+    while (fromEnd - 1 > fromStart && from.charCodeAt(fromEnd - 1) === CHAR_BACKWARD_SLASH) {
+      fromEnd--;
+    }
+    const fromLen = fromEnd - fromStart;
+
+    let toStart = 0;
+    while (toStart < to.length && to.charCodeAt(toStart) === CHAR_BACKWARD_SLASH) {
+      toStart++;
+    }
+    let toEnd = to.length;
+    while (toEnd - 1 > toStart && to.charCodeAt(toEnd - 1) === CHAR_BACKWARD_SLASH) {
+      toEnd--;
+    }
+    const toLen = toEnd - toStart;
+
+    const length = fromLen < toLen ? fromLen : toLen;
+    let lastCommonSep = -1;
+    let i = 0;
+
+    for (; i < length; i++) {
+      const fromCode = from.charCodeAt(fromStart + i);
+      if (fromCode !== to.charCodeAt(toStart + i)) break;
+      else if (fromCode === CHAR_BACKWARD_SLASH) lastCommonSep = i;
+    }
+
+    if (i !== length) {
+      if (lastCommonSep === -1) return toOrig;
+    } else {
+      if (toLen > length) {
+        if (to.charCodeAt(toStart + i) === CHAR_BACKWARD_SLASH) {
+          return toOrig.slice(toStart + i + 1);
+        }
+        if (i === 2) {
+          return toOrig.slice(toStart + i);
+        }
+      }
+      if (fromLen > length) {
+        if (from.charCodeAt(fromStart + i) === CHAR_BACKWARD_SLASH) {
+          lastCommonSep = i;
+        } else if (i === 2) {
+          lastCommonSep = 3;
+        }
+      }
+      if (lastCommonSep === -1) lastCommonSep = 0;
+    }
+
+    let out = '';
+    for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+      if (i === fromEnd || from.charCodeAt(i) === CHAR_BACKWARD_SLASH) {
+        out += out.length === 0 ? '..' : '\\..';
+      }
+    }
+
+    toStart += lastCommonSep;
+
+    if (out.length > 0) return `${out}${toOrig.slice(toStart, toEnd)}`;
+
+    if (toOrig.charCodeAt(toStart) === CHAR_BACKWARD_SLASH) ++toStart;
+    return toOrig.slice(toStart, toEnd);
+  };
+
+  win32Path.parse = function parse(path) {
+    validateString(path, 'path');
+
+    const ret = { root: '', dir: '', base: '', ext: '', name: '' };
+    if (path.length === 0) return ret;
+
+    const len = path.length;
+    let rootEnd = 0;
+    let code = path.charCodeAt(0);
+
+    if (len === 1) {
+      if (isPathSeparator(code)) {
+        ret.root = ret.dir = path;
+        return ret;
+      }
+      ret.base = ret.name = path;
+      return ret;
+    }
+
+    if (isPathSeparator(code)) {
+      rootEnd = 1;
+      if (isPathSeparator(path.charCodeAt(1))) {
+        let j = 2;
+        let last = j;
+        while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+          j++;
+        }
+        if (j < len && j !== last) {
+          last = j;
+          while (j < len && isPathSeparator(path.charCodeAt(j))) {
+            j++;
+          }
+          if (j < len && j !== last) {
+            last = j;
+            while (j < len && !isPathSeparator(path.charCodeAt(j))) {
+              j++;
+            }
+            if (j === len) {
+              rootEnd = j;
+            } else if (j !== last) {
+              rootEnd = j + 1;
+            }
+          }
+        }
+      }
+    } else if (isWindowsDeviceRoot(code) && path.charCodeAt(1) === CHAR_COLON) {
+      if (len <= 2) {
+        ret.root = ret.dir = path;
+        return ret;
+      }
+      rootEnd = 2;
+      if (isPathSeparator(path.charCodeAt(2))) {
+        if (len === 3) {
+          ret.root = ret.dir = path;
+          return ret;
+        }
+        rootEnd = 3;
+      }
+    }
+
+    if (rootEnd > 0) ret.root = path.slice(0, rootEnd);
+
+    let startDot = -1;
+    let startPart = rootEnd;
+    let end = -1;
+    let matchedSlash = true;
+    let i = path.length - 1;
+    let preDotState = 0;
+
+    for (; i >= rootEnd; --i) {
+      code = path.charCodeAt(i);
+      if (isPathSeparator(code)) {
+        if (!matchedSlash) {
+          startPart = i + 1;
+          break;
+        }
+        continue;
+      }
+      if (end === -1) {
+        matchedSlash = false;
+        end = i + 1;
+      }
+      if (code === CHAR_DOT) {
+        if (startDot === -1) startDot = i;
+        else if (preDotState !== 1) preDotState = 1;
+      } else if (startDot !== -1) {
+        preDotState = -1;
+      }
+    }
+
+    if (end !== -1) {
+      if (startDot === -1 || preDotState === 0 ||
+          (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) {
+        ret.base = ret.name = path.slice(startPart, end);
+      } else {
+        ret.name = path.slice(startPart, startDot);
+        ret.base = path.slice(startPart, end);
+        ret.ext = path.slice(startDot, end);
+      }
+    }
+
+    if (startPart > 0 && startPart !== rootEnd) {
+      ret.dir = path.slice(0, startPart - 1);
+    } else {
+      ret.dir = ret.root;
+    }
+
+    return ret;
+  };
+
+  win32Path.format = function format(pathObject) {
+    if (pathObject === null || typeof pathObject !== 'object') {
+      let received;
+      if (pathObject == null) {
+        received = `Received ${pathObject}`;
+      } else {
+        const inspected = JSON.stringify(pathObject);
+        received = `Received type ${typeof pathObject} (${inspected})`;
+      }
+      const err = new TypeError(`The "pathObject" argument must be of type object. ${received}`);
+      err.code = 'ERR_INVALID_ARG_TYPE';
+      throw err;
+    }
+    const dir = pathObject.dir || pathObject.root;
+    let base = pathObject.base;
+    if (!base) {
+      const name = pathObject.name || '';
+      let ext = pathObject.ext || '';
+      // Normalize ext to ensure it starts with a dot (if non-empty)
+      if (ext && ext.charCodeAt(0) !== CHAR_DOT) {
+        ext = `.${ext}`;
+      }
+      base = `${name}${ext}`;
+    }
+    if (!dir) return base;
+    return dir === pathObject.root ? `${dir}${base}` : `${dir}\\${base}`;
+  };
+
+  win32Path.toNamespacedPath = function toNamespacedPath(path) {
+    if (typeof path !== 'string' || path.length === 0) return path;
+
+    const resolvedPath = win32Path.resolve(path);
+
+    if (resolvedPath.length <= 2) return path;
+
+    if (resolvedPath.charCodeAt(0) === CHAR_BACKWARD_SLASH) {
+      if (resolvedPath.charCodeAt(1) === CHAR_BACKWARD_SLASH) {
+        const code = resolvedPath.charCodeAt(2);
+        if (code !== 63 && code !== 46) {
+          return `\\\\?\\UNC\\${resolvedPath.slice(2)}`;
+        }
+      }
+    } else if (isWindowsDeviceRoot(resolvedPath.charCodeAt(0)) &&
+               resolvedPath.charCodeAt(1) === CHAR_COLON &&
+               resolvedPath.charCodeAt(2) === CHAR_BACKWARD_SLASH) {
+      return `\\\\?\\${resolvedPath}`;
+    }
+
+    return path;
+  };
+
+  // Create the main path module (platform-specific)
+  // Note: On POSIX, path === path.posix; on Windows, path === path.win32
+  // We add the cross-platform references to the objects themselves
+  posixPath.posix = posixPath;
+  posixPath.win32 = win32Path;
+  win32Path.posix = posixPath;
+  win32Path.win32 = win32Path;
+
+  const pathModule = isWindows ? win32Path : posixPath;
+
+  // Register the path module
+  globalThis.__howth_modules = globalThis.__howth_modules || {};
+  globalThis.__howth_modules["node:path"] = pathModule;
+  globalThis.__howth_modules["path"] = pathModule;
+  // ============================================
+  // node:fs module
+  // ============================================
+
+  // Stats class to mimic Node.js fs.Stats
+  class Stats {
+    constructor(stat) {
+      this.dev = stat.dev;
+      this.ino = stat.ino;
+      this.mode = stat.mode;
+      this.nlink = stat.nlink;
+      this.uid = stat.uid;
+      this.gid = stat.gid;
+      this.rdev = 0;
+      this.size = stat.size;
+      this.blksize = 4096;
+      this.blocks = Math.ceil(stat.size / 512);
+      this.atimeMs = stat.atime_ms;
+      this.mtimeMs = stat.mtime_ms;
+      this.ctimeMs = stat.ctime_ms;
+      this.birthtimeMs = stat.birthtime_ms;
+      this.atime = new Date(stat.atime_ms);
+      this.mtime = new Date(stat.mtime_ms);
+      this.ctime = new Date(stat.ctime_ms);
+      this.birthtime = new Date(stat.birthtime_ms);
+      this._isFile = stat.is_file;
+      this._isDirectory = stat.is_directory;
+      this._isSymlink = stat.is_symlink;
+    }
+
+    isFile() { return this._isFile; }
+    isDirectory() { return this._isDirectory; }
+    isSymbolicLink() { return this._isSymlink; }
+    isBlockDevice() { return false; }
+    isCharacterDevice() { return false; }
+    isFIFO() { return false; }
+    isSocket() { return false; }
+  }
+
+  // Dirent class for readdir with withFileTypes
+  class Dirent {
+    constructor(entry, parentPath) {
+      this.name = entry.name;
+      this.parentPath = parentPath;
+      this.path = parentPath; // Node 20+ compatibility
+      this._isFile = entry.is_file;
+      this._isDirectory = entry.is_directory;
+      this._isSymlink = entry.is_symlink;
+    }
+
+    isFile() { return this._isFile; }
+    isDirectory() { return this._isDirectory; }
+    isSymbolicLink() { return this._isSymlink; }
+    isBlockDevice() { return false; }
+    isCharacterDevice() { return false; }
+    isFIFO() { return false; }
+    isSocket() { return false; }
+  }
+
+  // Helper to normalize encoding option
+  function normalizeEncoding(options) {
+    if (typeof options === "string") return options;
+    if (options && options.encoding) return options.encoding;
+    return null;
+  }
+
+  // Synchronous file system functions
+  const fsSync = {
+    readFileSync(path, options) {
+      const encoding = normalizeEncoding(options);
+      if (encoding === "utf8" || encoding === "utf-8") {
+        return ops.op_howth_read_file(String(path));
+      }
+      // Return Buffer for binary reads
+      const base64 = ops.op_howth_fs_read_bytes(String(path));
+      const buf = Buffer.from(base64, "base64");
+      if (encoding) {
+        return buf.toString(encoding);
+      }
+      return buf;
+    },
+
+    writeFileSync(path, data, options) {
+      if (typeof data === "string") {
+        ops.op_howth_write_file(String(path), data);
+      } else if (data instanceof Uint8Array || Buffer.isBuffer(data)) {
+        const base64 = Buffer.from(data).toString("base64");
+        ops.op_howth_fs_write_bytes(String(path), base64);
+      } else {
+        ops.op_howth_write_file(String(path), String(data));
+      }
+    },
+
+    appendFileSync(path, data, options) {
+      if (typeof data === "string") {
+        ops.op_howth_fs_append(String(path), data);
+      } else {
+        // For binary data, read existing, concat, and write
+        const existing = this.existsSync(path) ? this.readFileSync(path) : Buffer.alloc(0);
+        const newData = Buffer.concat([existing, Buffer.from(data)]);
+        this.writeFileSync(path, newData);
+      }
+    },
+
+    existsSync(path) {
+      return ops.op_howth_fs_exists(String(path));
+    },
+
+    mkdirSync(path, options) {
+      const recursive = options?.recursive || false;
+      ops.op_howth_fs_mkdir(String(path), recursive);
+    },
+
+    rmdirSync(path, options) {
+      const recursive = options?.recursive || false;
+      ops.op_howth_fs_rmdir(String(path), recursive);
+    },
+
+    rmSync(path, options) {
+      const recursive = options?.recursive || false;
+      const force = options?.force || false;
+
+      try {
+        const stat = ops.op_howth_fs_stat(String(path), true);
+        if (stat.is_directory) {
+          ops.op_howth_fs_rmdir(String(path), recursive);
+        } else {
+          ops.op_howth_fs_unlink(String(path));
+        }
+      } catch (e) {
+        if (!force) throw e;
+      }
+    },
+
+    unlinkSync(path) {
+      ops.op_howth_fs_unlink(String(path));
+    },
+
+    renameSync(oldPath, newPath) {
+      ops.op_howth_fs_rename(String(oldPath), String(newPath));
+    },
+
+    copyFileSync(src, dest, mode) {
+      ops.op_howth_fs_copy(String(src), String(dest));
+    },
+
+    readdirSync(path, options) {
+      const entries = ops.op_howth_fs_readdir(String(path));
+      const withFileTypes = options?.withFileTypes || false;
+      const encoding = normalizeEncoding(options) || "utf8";
+
+      if (withFileTypes) {
+        return entries.map(e => new Dirent(e, String(path)));
+      }
+
+      return entries.map(e => e.name);
+    },
+
+    statSync(path, options) {
+      const throwIfNoEntry = options?.throwIfNoEntry !== false;
+      try {
+        const stat = ops.op_howth_fs_stat(String(path), true);
+        return new Stats(stat);
+      } catch (e) {
+        if (!throwIfNoEntry) return undefined;
+        throw e;
+      }
+    },
+
+    lstatSync(path, options) {
+      const throwIfNoEntry = options?.throwIfNoEntry !== false;
+      try {
+        const stat = ops.op_howth_fs_stat(String(path), false);
+        return new Stats(stat);
+      } catch (e) {
+        if (!throwIfNoEntry) return undefined;
+        throw e;
+      }
+    },
+
+    realpathSync(path, options) {
+      return ops.op_howth_fs_realpath(String(path));
+    },
+
+    chmodSync(path, mode) {
+      ops.op_howth_fs_chmod(String(path), mode);
+    },
+
+    accessSync(path, mode) {
+      // mode: F_OK=0, R_OK=4, W_OK=2, X_OK=1
+      const m = mode === undefined ? 0 : mode;
+      ops.op_howth_fs_access(String(path), m);
+    },
+
+    // File descriptor-based operations (simplified implementation)
+    // We use a simple fd counter and map to simulate file descriptors
+    openSync(path, flags, mode) {
+      // Simplified: just verify file exists/can be created and return a pseudo-fd
+      const strPath = String(path);
+      const flagStr = typeof flags === 'string' ? flags : '';
+
+      // Check if file exists for read operations
+      if (flagStr === 'r' || flags === 0) {
+        if (!ops.op_howth_fs_exists(strPath)) {
+          const err = new Error(`ENOENT: no such file or directory, open '${strPath}'`);
+          err.code = 'ENOENT';
+          err.syscall = 'open';
+          err.path = strPath;
+          throw err;
+        }
+      }
+
+      // For write operations, create the file if it doesn't exist
+      if (flagStr === 'w' || flagStr === 'w+' || (flags & 64)) { // O_CREAT
+        if (!ops.op_howth_fs_exists(strPath)) {
+          ops.op_howth_write_file(strPath, '');
+        }
+      }
+
+      // Return a pseudo file descriptor (we track paths by fd)
+      if (!globalThis.__howth_fd_map) {
+        globalThis.__howth_fd_map = new Map();
+        globalThis.__howth_fd_counter = 3; // Start after stdin/stdout/stderr
+      }
+      const fd = globalThis.__howth_fd_counter++;
+      globalThis.__howth_fd_map.set(fd, { path: strPath, flags, mode });
+      return fd;
+    },
+
+    closeSync(fd) {
+      if (globalThis.__howth_fd_map) {
+        globalThis.__howth_fd_map.delete(fd);
+      }
+    },
+
+    fstatSync(fd, options) {
+      if (!globalThis.__howth_fd_map || !globalThis.__howth_fd_map.has(fd)) {
+        const err = new Error(`EBADF: bad file descriptor, fstat`);
+        err.code = 'EBADF';
+        err.syscall = 'fstat';
+        throw err;
+      }
+      const info = globalThis.__howth_fd_map.get(fd);
+      return fsSync.statSync(info.path, options);
+    },
+
+    truncateSync(path, len) {
+      const content = ops.op_howth_read_file(String(path));
+      const newContent = content.slice(0, len || 0);
+      ops.op_howth_write_file(String(path), newContent);
+    },
+
+    ftruncateSync(fd, len) {
+      if (!globalThis.__howth_fd_map || !globalThis.__howth_fd_map.has(fd)) {
+        const err = new Error(`EBADF: bad file descriptor, ftruncate`);
+        err.code = 'EBADF';
+        err.syscall = 'ftruncate';
+        throw err;
+      }
+      const info = globalThis.__howth_fd_map.get(fd);
+      fsSync.truncateSync(info.path, len);
+    },
+  };
+
+  // Promise-based file system functions
+  const fsPromises = {
+    async readFile(path, options) {
+      return fsSync.readFileSync(path, options);
+    },
+
+    async writeFile(path, data, options) {
+      return fsSync.writeFileSync(path, data, options);
+    },
+
+    async appendFile(path, data, options) {
+      return fsSync.appendFileSync(path, data, options);
+    },
+
+    async mkdir(path, options) {
+      return fsSync.mkdirSync(path, options);
+    },
+
+    async rmdir(path, options) {
+      return fsSync.rmdirSync(path, options);
+    },
+
+    async rm(path, options) {
+      return fsSync.rmSync(path, options);
+    },
+
+    async unlink(path) {
+      return fsSync.unlinkSync(path);
+    },
+
+    async rename(oldPath, newPath) {
+      return fsSync.renameSync(oldPath, newPath);
+    },
+
+    async copyFile(src, dest, mode) {
+      return fsSync.copyFileSync(src, dest, mode);
+    },
+
+    async readdir(path, options) {
+      return fsSync.readdirSync(path, options);
+    },
+
+    async stat(path, options) {
+      return fsSync.statSync(path, options);
+    },
+
+    async lstat(path, options) {
+      return fsSync.lstatSync(path, options);
+    },
+
+    async realpath(path, options) {
+      return fsSync.realpathSync(path, options);
+    },
+
+    async chmod(path, mode) {
+      return fsSync.chmodSync(path, mode);
+    },
+
+    async access(path, mode) {
+      return fsSync.accessSync(path, mode);
+    },
+  };
+
+  // Constants
+  const fsConstants = {
+    F_OK: 0,
+    R_OK: 4,
+    W_OK: 2,
+    X_OK: 1,
+    COPYFILE_EXCL: 1,
+    COPYFILE_FICLONE: 2,
+    COPYFILE_FICLONE_FORCE: 4,
+    O_RDONLY: 0,
+    O_WRONLY: 1,
+    O_RDWR: 2,
+    O_CREAT: 64,
+    O_EXCL: 128,
+    O_TRUNC: 512,
+    O_APPEND: 1024,
+  };
+
+  // Build the fs module
+  const fsModule = {
+    // Sync methods
+    ...fsSync,
+
+    // Promises API
+    promises: fsPromises,
+
+    // Constants
+    constants: fsConstants,
+    ...fsConstants,
+
+    // Classes
+    Stats,
+    Dirent,
+
+    // Callback-based methods (wrap sync with nextTick for compatibility)
+    readFile(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        const result = fsSync.readFileSync(path, options);
+        queueMicrotask(() => callback(null, result));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    writeFile(path, data, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        fsSync.writeFileSync(path, data, options);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    appendFile(path, data, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        fsSync.appendFileSync(path, data, options);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    mkdir(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        fsSync.mkdirSync(path, options);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    rmdir(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        fsSync.rmdirSync(path, options);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    rm(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        fsSync.rmSync(path, options);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    unlink(path, callback) {
+      try {
+        fsSync.unlinkSync(path);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    rename(oldPath, newPath, callback) {
+      try {
+        fsSync.renameSync(oldPath, newPath);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    copyFile(src, dest, mode, callback) {
+      if (typeof mode === "function") {
+        callback = mode;
+        mode = 0;
+      }
+      try {
+        fsSync.copyFileSync(src, dest, mode);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    readdir(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        const result = fsSync.readdirSync(path, options);
+        queueMicrotask(() => callback(null, result));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    stat(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        const result = fsSync.statSync(path, options);
+        queueMicrotask(() => callback(null, result));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    lstat(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        const result = fsSync.lstatSync(path, options);
+        queueMicrotask(() => callback(null, result));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    realpath(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        const result = fsSync.realpathSync(path, options);
+        queueMicrotask(() => callback(null, result));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    chmod(path, mode, callback) {
+      try {
+        fsSync.chmodSync(path, mode);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    access(path, mode, callback) {
+      if (typeof mode === "function") {
+        callback = mode;
+        mode = 0;
+      }
+      try {
+        fsSync.accessSync(path, mode);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    exists(path, callback) {
+      // Node.js throws if callback is not a function
+      if (typeof callback !== 'function') {
+        const err = new TypeError('The "callback" argument must be of type function. Received ' + typeof callback);
+        err.code = 'ERR_INVALID_ARG_TYPE';
+        throw err;
+      }
+      // For invalid path types, call callback with false instead of throwing
+      if (typeof path !== 'string' && !(path instanceof URL)) {
+        queueMicrotask(() => callback(false));
+        return;
+      }
+      try {
+        const exists = fsSync.existsSync(path);
+        queueMicrotask(() => callback(exists));
+      } catch (e) {
+        queueMicrotask(() => callback(false));
+      }
+    },
+
+    open(path, flags, mode, callback) {
+      if (typeof flags === 'function') {
+        callback = flags;
+        flags = 'r';
+        mode = 0o666;
+      } else if (typeof mode === 'function') {
+        callback = mode;
+        mode = 0o666;
+      }
+      try {
+        const fd = fsSync.openSync(path, flags, mode);
+        queueMicrotask(() => callback(null, fd));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    close(fd, callback) {
+      if (typeof callback !== 'function') {
+        callback = () => {};
+      }
+      try {
+        fsSync.closeSync(fd);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    fstat(fd, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        const result = fsSync.fstatSync(fd, options);
+        queueMicrotask(() => callback(null, result));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    truncate(path, len, callback) {
+      if (typeof len === 'function') {
+        callback = len;
+        len = 0;
+      }
+      try {
+        fsSync.truncateSync(path, len);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    ftruncate(fd, len, callback) {
+      if (typeof len === 'function') {
+        callback = len;
+        len = 0;
+      }
+      try {
+        fsSync.ftruncateSync(fd, len);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+  };
+
+  // Register the fs module
+  globalThis.__howth_modules["node:fs"] = fsModule;
+  globalThis.__howth_modules["fs"] = fsModule;
+  globalThis.__howth_modules["node:fs/promises"] = fsPromises;
+  globalThis.__howth_modules["fs/promises"] = fsPromises;
+
+  // ============================================
+  // CommonJS Module System
+  // ============================================
+
+  // Module cache to prevent re-loading and handle circular deps
+  const moduleCache = new Map();
+
+  // The Module class (similar to Node.js Module)
+  class Module {
+    constructor(id, parent) {
+      this.id = id;
+      this.filename = id;
+      this.dirname = posixPath.dirname(id);
+      this.parent = parent;
+      this.children = [];
+      this.exports = {};
+      this.loaded = false;
+      this.paths = Module._nodeModulePaths(this.dirname);
+    }
+
+    static _nodeModulePaths(from) {
+      // Generate node_modules lookup paths
+      const paths = [];
+      let current = from;
+      while (current !== "/") {
+        const nodeModules = posixPath.join(current, "node_modules");
+        paths.push(nodeModules);
+        const parent = posixPath.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+      paths.push("/node_modules");
+      return paths;
+    }
+
+    static _resolveFilename(request, parent) {
+      // Handle built-in modules
+      if (request.startsWith("node:") || globalThis.__howth_modules[request]) {
+        return request;
+      }
+
+      // Handle relative and absolute paths
+      if (request.startsWith("./") || request.startsWith("../") || request.startsWith("/")) {
+        const basePath = request.startsWith("/")
+          ? request
+          : posixPath.resolve(parent ? parent.dirname : ops.op_howth_cwd(), request);
+        return Module._resolveAsFile(basePath) || Module._resolveAsDirectory(basePath);
+      }
+
+      // Handle bare specifiers (node_modules)
+      const paths = parent ? parent.paths : Module._nodeModulePaths(ops.op_howth_cwd());
+      for (const modulesPath of paths) {
+        const modulePath = posixPath.join(modulesPath, request);
+        const resolved = Module._resolveAsFile(modulePath) || Module._resolveAsDirectory(modulePath);
+        if (resolved) return resolved;
+      }
+
+      throw new Error(`Cannot find module '${request}'`);
+    }
+
+    static _resolveAsFile(path) {
+      // Check exact path
+      if (ops.op_howth_fs_exists(path) && !Module._isDirectory(path)) {
+        return path;
+      }
+      // Try extensions
+      const extensions = [".js", ".cjs", ".json", ".node"];
+      for (const ext of extensions) {
+        const withExt = path + ext;
+        if (ops.op_howth_fs_exists(withExt) && !Module._isDirectory(withExt)) {
+          return withExt;
+        }
+      }
+      return null;
+    }
+
+    static _resolveAsDirectory(path) {
+      // Check for package.json
+      const pkgPath = posixPath.join(path, "package.json");
+      if (ops.op_howth_fs_exists(pkgPath)) {
+        try {
+          const pkg = JSON.parse(ops.op_howth_read_file(pkgPath));
+          const main = pkg.main || "index.js";
+          const mainPath = posixPath.resolve(path, main);
+          return Module._resolveAsFile(mainPath) || Module._resolveAsFile(posixPath.join(mainPath, "index"));
+        } catch (e) {
+          // Fall through to index.js
+        }
+      }
+      // Try index files
+      return Module._resolveAsFile(posixPath.join(path, "index"));
+    }
+
+    static _isDirectory(path) {
+      try {
+        const stat = ops.op_howth_fs_stat(path, true);
+        return stat.is_directory;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    static _load(request, parent) {
+      const filename = Module._resolveFilename(request, parent);
+
+      // Check cache
+      if (moduleCache.has(filename)) {
+        return moduleCache.get(filename).exports;
+      }
+
+      // Handle built-in modules
+      if (globalThis.__howth_modules[filename]) {
+        return globalThis.__howth_modules[filename];
+      }
+
+      // Create new module
+      const module = new Module(filename, parent);
+      moduleCache.set(filename, module);
+
+      if (parent) {
+        parent.children.push(module);
+      }
+
+      // Load the module
+      module.load(filename);
+
+      return module.exports;
+    }
+
+    load(filename) {
+      const extension = posixPath.extname(filename) || ".js";
+
+      if (extension === ".json") {
+        // JSON files
+        const content = ops.op_howth_read_file(filename);
+        this.exports = JSON.parse(content);
+      } else if (extension === ".node") {
+        // Native addons not supported
+        throw new Error("Native addons (.node) are not supported");
+      } else {
+        // JavaScript files
+        this._compile(filename);
+      }
+
+      this.loaded = true;
+    }
+
+    _compile(filename) {
+      const content = ops.op_howth_read_file(filename);
+
+      // The Node.js module wrapper
+      const wrapper = [
+        "(function (exports, require, module, __filename, __dirname) { ",
+        "\n});"
+      ];
+
+      const wrappedCode = wrapper[0] + content + wrapper[1];
+
+      // Create a require function for this module
+      const self = this;
+      function require(id) {
+        return Module._load(id, self);
+      }
+      require.resolve = (id) => Module._resolveFilename(id, self);
+      require.cache = Object.fromEntries(moduleCache);
+      require.main = globalThis.__howth_main_module;
+
+      // Execute the wrapped code
+      try {
+        const compiledWrapper = (0, eval)(wrappedCode);
+        compiledWrapper.call(
+          this.exports,
+          this.exports,
+          require,
+          this,
+          this.filename,
+          this.dirname
+        );
+      } catch (e) {
+        // Remove from cache on error
+        moduleCache.delete(filename);
+        throw e;
+      }
+    }
+  }
+
+  // The main require function
+  function createRequire(parentFilename) {
+    const parent = new Module(parentFilename, null);
+
+    function require(id) {
+      return Module._load(id, parent);
+    }
+
+    require.resolve = (id) => Module._resolveFilename(id, parent);
+    require.cache = Object.fromEntries(moduleCache);
+    require.main = globalThis.__howth_main_module;
+
+    return require;
+  }
+
+  // Global require (uses main module path or cwd as parent)
+  function globalRequire(id) {
+    // Use main module path if set, otherwise fall back to cwd
+    const parentPath = globalThis.__howth_main_module_path ||
+                       posixPath.join(ops.op_howth_cwd(), "__entrypoint__");
+    const parentModule = new Module(parentPath, null);
+    return Module._load(id, parentModule);
+  }
+  globalRequire.resolve = (id) => {
+    const parentPath = globalThis.__howth_main_module_path ||
+                       posixPath.join(ops.op_howth_cwd(), "__entrypoint__");
+    const parentModule = new Module(parentPath, null);
+    return Module._resolveFilename(id, parentModule);
+  };
+  globalRequire.cache = {};
+  Object.defineProperty(globalRequire, "cache", {
+    get() { return Object.fromEntries(moduleCache); }
+  });
+
+  // Export require globally
+  globalThis.require = globalRequire;
+  globalThis.module = { exports: {} };
+  globalThis.exports = globalThis.module.exports;
+
+  // createRequire for ESM interop
+  const moduleModule = {
+    createRequire,
+    Module,
+    _cache: moduleCache,
+    _resolveFilename: Module._resolveFilename.bind(Module),
+    builtinModules: Object.keys(globalThis.__howth_modules),
+  };
+
+  globalThis.__howth_modules["node:module"] = moduleModule;
+  globalThis.__howth_modules["module"] = moduleModule;
+
+  // ============================================
+  // node:assert module
+  // ============================================
+
+  class AssertionError extends Error {
+    constructor(options = {}) {
+      const { message, actual, expected, operator, stackStartFn } = options;
+
+      let msg = message;
+      if (!msg) {
+        if (operator === "strictEqual" || operator === "deepStrictEqual") {
+          msg = `Expected values to be strictly ${operator === "deepStrictEqual" ? "deep-" : ""}equal:\n` +
+                `+ actual - expected\n\n` +
+                `+ ${JSON.stringify(actual)}\n- ${JSON.stringify(expected)}`;
+        } else if (operator === "notStrictEqual" || operator === "notDeepStrictEqual") {
+          msg = `Expected values not to be strictly ${operator === "notDeepStrictEqual" ? "deep-" : ""}equal:\n` +
+                `${JSON.stringify(actual)}`;
+        } else {
+          msg = `${JSON.stringify(actual)} ${operator} ${JSON.stringify(expected)}`;
+        }
+      }
+
+      super(msg);
+      this.name = "AssertionError";
+      this.code = "ERR_ASSERTION";
+      this.actual = actual;
+      this.expected = expected;
+      this.operator = operator;
+      this.generatedMessage = !message;
+
+      if (Error.captureStackTrace) {
+        Error.captureStackTrace(this, stackStartFn || this.constructor);
+      }
+    }
+  }
+
+  // Deep equality check
+  function deepEqual(actual, expected, strict) {
+    if (actual === expected) return true;
+
+    if (actual === null || expected === null) return actual === expected;
+    if (typeof actual !== typeof expected) return false;
+
+    if (typeof actual !== "object") {
+      if (strict) return actual === expected;
+      // eslint-disable-next-line eqeqeq
+      return actual == expected;
+    }
+
+    // Handle Date
+    if (actual instanceof Date && expected instanceof Date) {
+      return actual.getTime() === expected.getTime();
+    }
+
+    // Handle RegExp
+    if (actual instanceof RegExp && expected instanceof RegExp) {
+      return actual.source === expected.source && actual.flags === expected.flags;
+    }
+
+    // Handle arrays
+    if (Array.isArray(actual) && Array.isArray(expected)) {
+      if (actual.length !== expected.length) return false;
+      for (let i = 0; i < actual.length; i++) {
+        if (!deepEqual(actual[i], expected[i], strict)) return false;
+      }
+      return true;
+    }
+
+    // Handle typed arrays and buffers
+    if (ArrayBuffer.isView(actual) && ArrayBuffer.isView(expected)) {
+      if (actual.length !== expected.length) return false;
+      for (let i = 0; i < actual.length; i++) {
+        if (actual[i] !== expected[i]) return false;
+      }
+      return true;
+    }
+
+    // Handle plain objects
+    const actualKeys = Object.keys(actual);
+    const expectedKeys = Object.keys(expected);
+
+    if (actualKeys.length !== expectedKeys.length) return false;
+
+    for (const key of actualKeys) {
+      if (!Object.prototype.hasOwnProperty.call(expected, key)) return false;
+      if (!deepEqual(actual[key], expected[key], strict)) return false;
+    }
+
+    return true;
+  }
+
+  // Check if error matches expectation
+  function checkError(actual, expected) {
+    if (expected === undefined) return true;
+
+    if (typeof expected === "function") {
+      // Expected is a constructor
+      if (expected.prototype !== undefined && actual instanceof expected) {
+        return true;
+      }
+      // Expected is a validation function
+      if (expected.call({}, actual) === true) {
+        return true;
+      }
+      return false;
+    }
+
+    if (expected instanceof RegExp) {
+      return expected.test(String(actual));
+    }
+
+    if (typeof expected === "object" && expected !== null) {
+      // Match error properties
+      for (const key of Object.keys(expected)) {
+        if (typeof actual[key] === "string" && expected[key] instanceof RegExp) {
+          if (!expected[key].test(actual[key])) return false;
+        } else if (!deepEqual(actual[key], expected[key], true)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  // Main assert function
+  function assert(value, message) {
+    if (!value) {
+      throw new AssertionError({
+        message: message || "The expression evaluated to a falsy value",
+        actual: value,
+        expected: true,
+        operator: "==",
+        stackStartFn: assert,
+      });
+    }
+  }
+
+  assert.ok = function ok(value, message) {
+    if (!value) {
+      throw new AssertionError({
+        message: message || "The expression evaluated to a falsy value",
+        actual: value,
+        expected: true,
+        operator: "ok",
+        stackStartFn: ok,
+      });
+    }
+  };
+
+  assert.equal = function equal(actual, expected, message) {
+    // eslint-disable-next-line eqeqeq
+    if (actual != expected) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "==",
+        stackStartFn: equal,
+      });
+    }
+  };
+
+  assert.notEqual = function notEqual(actual, expected, message) {
+    // eslint-disable-next-line eqeqeq
+    if (actual == expected) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "!=",
+        stackStartFn: notEqual,
+      });
+    }
+  };
+
+  assert.strictEqual = function strictEqual(actual, expected, message) {
+    if (actual !== expected) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "strictEqual",
+        stackStartFn: strictEqual,
+      });
+    }
+  };
+
+  assert.notStrictEqual = function notStrictEqual(actual, expected, message) {
+    if (actual === expected) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "notStrictEqual",
+        stackStartFn: notStrictEqual,
+      });
+    }
+  };
+
+  assert.deepEqual = function deepEqualFn(actual, expected, message) {
+    if (!deepEqual(actual, expected, false)) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "deepEqual",
+        stackStartFn: deepEqualFn,
+      });
+    }
+  };
+
+  assert.notDeepEqual = function notDeepEqual(actual, expected, message) {
+    if (deepEqual(actual, expected, false)) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "notDeepEqual",
+        stackStartFn: notDeepEqual,
+      });
+    }
+  };
+
+  assert.deepStrictEqual = function deepStrictEqual(actual, expected, message) {
+    if (!deepEqual(actual, expected, true)) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "deepStrictEqual",
+        stackStartFn: deepStrictEqual,
+      });
+    }
+  };
+
+  assert.notDeepStrictEqual = function notDeepStrictEqual(actual, expected, message) {
+    if (deepEqual(actual, expected, true)) {
+      throw new AssertionError({
+        message,
+        actual,
+        expected,
+        operator: "notDeepStrictEqual",
+        stackStartFn: notDeepStrictEqual,
+      });
+    }
+  };
+
+  assert.throws = function throws(fn, expected, message) {
+    if (typeof expected === "string") {
+      message = expected;
+      expected = undefined;
+    }
+
+    let thrown = false;
+    let actual;
+
+    try {
+      fn();
+    } catch (e) {
+      thrown = true;
+      actual = e;
+    }
+
+    if (!thrown) {
+      throw new AssertionError({
+        message: message || "Missing expected exception",
+        actual: undefined,
+        expected,
+        operator: "throws",
+        stackStartFn: throws,
+      });
+    }
+
+    if (expected !== undefined && !checkError(actual, expected)) {
+      throw new AssertionError({
+        message: message || `The error did not match the expected`,
+        actual,
+        expected,
+        operator: "throws",
+        stackStartFn: throws,
+      });
+    }
+  };
+
+  assert.doesNotThrow = function doesNotThrow(fn, expected, message) {
+    if (typeof expected === "string") {
+      message = expected;
+      expected = undefined;
+    }
+
+    try {
+      fn();
+    } catch (e) {
+      if (expected === undefined || checkError(e, expected)) {
+        throw new AssertionError({
+          message: message || `Got unwanted exception: ${e.message}`,
+          actual: e,
+          expected,
+          operator: "doesNotThrow",
+          stackStartFn: doesNotThrow,
+        });
+      }
+      throw e;
+    }
+  };
+
+  assert.rejects = async function rejects(asyncFn, expected, message) {
+    if (typeof expected === "string") {
+      message = expected;
+      expected = undefined;
+    }
+
+    let thrown = false;
+    let actual;
+
+    try {
+      const promise = typeof asyncFn === "function" ? asyncFn() : asyncFn;
+      await promise;
+    } catch (e) {
+      thrown = true;
+      actual = e;
+    }
+
+    if (!thrown) {
+      throw new AssertionError({
+        message: message || "Missing expected rejection",
+        actual: undefined,
+        expected,
+        operator: "rejects",
+        stackStartFn: rejects,
+      });
+    }
+
+    if (expected !== undefined && !checkError(actual, expected)) {
+      throw new AssertionError({
+        message: message || "The rejection did not match the expected",
+        actual,
+        expected,
+        operator: "rejects",
+        stackStartFn: rejects,
+      });
+    }
+  };
+
+  assert.doesNotReject = async function doesNotReject(asyncFn, expected, message) {
+    if (typeof expected === "string") {
+      message = expected;
+      expected = undefined;
+    }
+
+    try {
+      const promise = typeof asyncFn === "function" ? asyncFn() : asyncFn;
+      await promise;
+    } catch (e) {
+      if (expected === undefined || checkError(e, expected)) {
+        throw new AssertionError({
+          message: message || `Got unwanted rejection: ${e.message}`,
+          actual: e,
+          expected,
+          operator: "doesNotReject",
+          stackStartFn: doesNotReject,
+        });
+      }
+      throw e;
+    }
+  };
+
+  assert.fail = function fail(message) {
+    if (arguments.length === 0) {
+      message = "Failed";
+    } else if (arguments.length === 2) {
+      // Legacy: assert.fail(actual, expected)
+      message = `${arguments[0]} undefined ${arguments[1]}`;
+    } else if (arguments.length >= 3) {
+      // Legacy: assert.fail(actual, expected, message, operator)
+      message = arguments[2] || `${arguments[0]} ${arguments[3] || "!="} ${arguments[1]}`;
+    }
+
+    throw new AssertionError({
+      message,
+      operator: "fail",
+      stackStartFn: fail,
+    });
+  };
+
+  assert.ifError = function ifError(value) {
+    if (value !== null && value !== undefined) {
+      throw value instanceof Error ? value : new AssertionError({
+        message: `ifError got unwanted exception: ${value}`,
+        actual: value,
+        expected: null,
+        operator: "ifError",
+        stackStartFn: ifError,
+      });
+    }
+  };
+
+  assert.match = function match(string, regexp, message) {
+    if (!(regexp instanceof RegExp)) {
+      throw new TypeError("The 'regexp' argument must be a RegExp");
+    }
+    if (typeof string !== "string") {
+      throw new TypeError("The 'string' argument must be a string");
+    }
+
+    if (!regexp.test(string)) {
+      throw new AssertionError({
+        message: message || `The input did not match the regular expression ${regexp}`,
+        actual: string,
+        expected: regexp,
+        operator: "match",
+        stackStartFn: match,
+      });
+    }
+  };
+
+  assert.doesNotMatch = function doesNotMatch(string, regexp, message) {
+    if (!(regexp instanceof RegExp)) {
+      throw new TypeError("The 'regexp' argument must be a RegExp");
+    }
+    if (typeof string !== "string") {
+      throw new TypeError("The 'string' argument must be a string");
+    }
+
+    if (regexp.test(string)) {
+      throw new AssertionError({
+        message: message || `The input was expected to not match the regular expression ${regexp}`,
+        actual: string,
+        expected: regexp,
+        operator: "doesNotMatch",
+        stackStartFn: doesNotMatch,
+      });
+    }
+  };
+
+  // Strict mode - all functions use strict equality
+  assert.strict = Object.assign(
+    function strictAssert(value, message) {
+      if (!value) {
+        throw new AssertionError({
+          message: message || "The expression evaluated to a falsy value",
+          actual: value,
+          expected: true,
+          operator: "==",
+          stackStartFn: strictAssert,
+        });
+      }
+    },
+    {
+      ok: assert.ok,
+      equal: assert.strictEqual,
+      notEqual: assert.notStrictEqual,
+      deepEqual: assert.deepStrictEqual,
+      notDeepEqual: assert.notDeepStrictEqual,
+      strictEqual: assert.strictEqual,
+      notStrictEqual: assert.notStrictEqual,
+      deepStrictEqual: assert.deepStrictEqual,
+      notDeepStrictEqual: assert.notDeepStrictEqual,
+      throws: assert.throws,
+      doesNotThrow: assert.doesNotThrow,
+      rejects: assert.rejects,
+      doesNotReject: assert.doesNotReject,
+      fail: assert.fail,
+      ifError: assert.ifError,
+      match: assert.match,
+      doesNotMatch: assert.doesNotMatch,
+      AssertionError,
+    }
+  );
+
+  assert.AssertionError = AssertionError;
+
+  // Register the assert module
+  globalThis.__howth_modules["node:assert"] = assert;
+  globalThis.__howth_modules["assert"] = assert;
+  globalThis.__howth_modules["node:assert/strict"] = assert.strict;
+  globalThis.__howth_modules["assert/strict"] = assert.strict;
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

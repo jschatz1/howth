@@ -1,8 +1,26 @@
 # howth
 
+<p align="center">
+  <img src="assets/earwig.png" alt="howth mascot - an earwig on Howth Castle" width="200">
+</p>
+
+<p align="center"><em>A commodius vicus of recirculation for your JavaScript.</em></p>
+
 A deterministic Node toolchain inspector and runtime foundation.
 
 > `howth` is the new name of the project formerly known as `fastnode`.
+
+## Why "howth"?
+
+The name comes from the opening of James Joyce's *Finnegans Wake*:
+
+> *"riverrun, past Eve and Adam's, from swerve of shore to bend of bay, brings us by a commodius vicus of recirculation back to **Howth Castle and Environs**."*
+
+The circular structure of the Wake — where the final sentence flows back into the first — mirrors the JavaScript event loop: code flows from parse to execute to await and back again, an endless commodius vicus of recirculation.
+
+**HCE** (Howth Castle and Environs) also stands for **Here Comes Everybody** in Joyce's dream-logic, which fits nicely for a toolchain meant for everyone.
+
+The connection runs deeper: deterministic builds are about always arriving back at the same place. Same inputs, same outputs. The riverrun ends where it begins.
 
 ## Status
 
@@ -89,8 +107,8 @@ howth run --node script.ts
 | `File` | ✅ | Full support |
 | `FormData` | ✅ | Full support |
 | `ReadableStream` | ✅ | Basic implementation |
-| `WritableStream` | ❌ | Not yet implemented |
-| `TransformStream` | ❌ | Not yet implemented |
+| `WritableStream` | ✅ | Basic implementation |
+| `TransformStream` | ✅ | Basic implementation |
 | `performance.now()` | ✅ | Full support |
 | `structuredClone` | ✅ | Via JSON (limited) |
 
@@ -106,10 +124,11 @@ howth run --node script.ts
 | `process.version` | ✅ | Reports v20.0.0 |
 | `process.hrtime.bigint()` | ✅ | Full support |
 | `process.nextTick()` | ✅ | Via queueMicrotask |
+| `Buffer` | ✅ | Full support (alloc, from, concat, encoding, read/write) |
 | `fs.readFileSync()` | ✅ | Via `__howth_fs` |
 | `fs.writeFileSync()` | ✅ | Via `__howth_fs` |
-| `node:fs` | ❌ | Not yet implemented |
-| `node:path` | ❌ | Not yet implemented |
+| `node:fs` | ✅ | Sync, async, and promises API |
+| `node:path` | ✅ | Full support (join, resolve, dirname, basename, etc.) |
 | `node:http` | ❌ | Not yet implemented |
 | `node:https` | ❌ | Not yet implemented |
 | `node:crypto` | ❌ | Not yet implemented |
@@ -117,7 +136,55 @@ howth run --node script.ts
 | `node:stream` | ❌ | Not yet implemented |
 | `node:util` | ❌ | Not yet implemented |
 | `node:events` | ❌ | Not yet implemented |
-| `require()` | ❌ | ESM only, no CommonJS |
+| `require()` | ✅ | Full CommonJS support |
+
+### Node.js Compatibility Testing
+
+howth includes a Node.js compatibility test suite that validates behavior against official Node.js tests.
+
+**Running the tests:**
+
+```bash
+# Build with native runtime
+cargo build --features native-runtime
+
+# Run compatibility tests (requires Node.js for test runner)
+HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
+```
+
+**Current Results (as of January 2025):**
+
+| Category | Passed | Failed | Skipped |
+|----------|--------|--------|---------|
+| Path module | 6 | 1 | 4 |
+| FS module | 1 | 2 | 5 |
+| **Total** | **6** | **3** | **9** |
+
+**Passing Tests:**
+- `test-path.js` - Main path module tests
+- `test-path-parse-format.js` - `path.parse()` and `path.format()`
+- `test-path-basename.js` - `path.basename()`
+- `test-path-extname.js` - `path.extname()`
+- `test-path-isabsolute.js` - `path.isAbsolute()`
+- `test-fs-exists.js` - `fs.exists()` and `fs.existsSync()`
+
+**Skipped Tests (known limitations):**
+| Test | Reason |
+|------|--------|
+| `test-path-resolve.js` | Requires `child_process` module |
+| `test-path-normalize.js` | CVE-2024-36139 security fixes not implemented |
+| `test-path-join.js` | CVE-2024-36139 security fixes not implemented |
+| `test-path-dirname.js` | Directory structure assumptions |
+| `test-fs-stat.js` | `fstat()` on stdin/stdout not supported |
+| `test-fs-mkdir.js` | Requires `worker_threads` module |
+| `test-fs-realpath.js` | Requires `worker_threads` module |
+| `test-fs-access.js` | Requires `internal/test/binding` |
+| `test-fs-copyfile.js` | Requires `internal/test/binding` |
+
+**Known Failing Tests:**
+- `test-path-relative.js` - Turkish Unicode case-folding edge cases
+- `test-fs-readdir.js` - Error message format differences
+- `test-fs-readfile.js` - Error property handling
 
 ### ES Module Support
 
@@ -125,8 +192,14 @@ howth run --node script.ts
 - ✅ TypeScript transpilation on-the-fly
 - ✅ Extension-less imports (auto-resolves `.ts`, `.js`, etc.)
 - ✅ Index file resolution (`./dir` → `./dir/index.ts`)
-- ❌ Bare specifiers (`import lodash from 'lodash'`) - not yet implemented
-- ❌ CommonJS (`require()`) - not supported
+- ✅ Bare specifiers (`import lodash from 'lodash'`) - resolves from node_modules
+- ✅ Scoped packages (`import x from '@scope/pkg'`)
+- ✅ Subpath imports (`import fp from 'lodash/fp'`)
+- ✅ Package.json `exports` field (conditional exports)
+- ✅ CommonJS (`require()`, `module.exports`, `exports`)
+- ✅ JSON imports via require
+- ✅ `__dirname` and `__filename`
+- ✅ Module caching
 
 ## CLI Usage
 
