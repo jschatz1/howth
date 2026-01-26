@@ -2,6 +2,7 @@
 //!
 //! These tests create node_modules structures and verify the why output.
 
+use serial_test::serial;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -162,6 +163,7 @@ fn create_project_with_dep_chain() -> TempDir {
 }
 
 #[test]
+#[serial]
 fn test_why_direct_dependency() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -218,6 +220,7 @@ fn test_why_direct_dependency() {
 }
 
 #[test]
+#[serial]
 fn test_why_transitive_dependency() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -273,6 +276,7 @@ fn test_why_transitive_dependency() {
 }
 
 #[test]
+#[serial]
 fn test_why_not_found() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -320,6 +324,7 @@ fn test_why_not_found() {
 }
 
 #[test]
+#[serial]
 fn test_why_human_tree_is_deterministic() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -370,6 +375,7 @@ fn test_why_human_tree_is_deterministic() {
 }
 
 #[test]
+#[serial]
 fn test_why_json_shape_is_locked() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -427,6 +433,7 @@ fn test_why_json_shape_is_locked() {
 }
 
 #[test]
+#[serial]
 fn test_why_list_format() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);

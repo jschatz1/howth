@@ -2,6 +2,7 @@
 //!
 //! These tests create node_modules structures and verify the explain output.
 
+use serial_test::serial;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -136,6 +137,7 @@ fn create_project_with_exports_package() -> TempDir {
 }
 
 #[test]
+#[serial]
 fn test_explain_bare_specifier_json() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -201,6 +203,7 @@ fn test_explain_bare_specifier_json() {
 }
 
 #[test]
+#[serial]
 fn test_explain_require_kind() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -252,6 +255,7 @@ fn test_explain_require_kind() {
 }
 
 #[test]
+#[serial]
 fn test_explain_unresolved_package() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -307,6 +311,7 @@ fn test_explain_unresolved_package() {
 }
 
 #[test]
+#[serial]
 fn test_explain_subpath() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);

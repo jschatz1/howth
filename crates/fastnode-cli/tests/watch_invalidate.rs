@@ -3,6 +3,7 @@
 //! Tests that file changes trigger cache invalidation, causing subsequent
 //! `fastnode run` commands to re-resolve imports instead of using cached results.
 
+use serial_test::serial;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -123,6 +124,7 @@ fn run_and_get_plan(
 }
 
 #[test]
+#[serial]
 fn test_watcher_invalidates_cache() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -233,6 +235,7 @@ fn test_watcher_invalidates_cache() {
 }
 
 #[test]
+#[serial]
 fn test_watcher_status_reports_running() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);

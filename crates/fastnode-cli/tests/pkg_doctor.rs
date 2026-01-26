@@ -2,6 +2,7 @@
 //!
 //! These tests create node_modules structures and verify the doctor output.
 
+use serial_test::serial;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -185,6 +186,7 @@ fn create_healthy_project() -> TempDir {
 }
 
 #[test]
+#[serial]
 fn test_doctor_json_shape_locked() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -260,6 +262,7 @@ fn test_doctor_json_shape_locked() {
 }
 
 #[test]
+#[serial]
 fn test_doctor_detects_orphans_and_missing_edges() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -322,6 +325,7 @@ fn test_doctor_detects_orphans_and_missing_edges() {
 }
 
 #[test]
+#[serial]
 fn test_doctor_human_summary_stable() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -358,6 +362,7 @@ fn test_doctor_human_summary_stable() {
 }
 
 #[test]
+#[serial]
 fn test_doctor_severity_filtering() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -407,6 +412,7 @@ fn test_doctor_severity_filtering() {
 }
 
 #[test]
+#[serial]
 fn test_doctor_no_node_modules_is_report_not_failure() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -472,6 +478,7 @@ fn test_doctor_no_node_modules_is_report_not_failure() {
 }
 
 #[test]
+#[serial]
 fn test_doctor_healthy_project() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -520,6 +527,7 @@ fn test_doctor_healthy_project() {
 }
 
 #[test]
+#[serial]
 fn test_doctor_list_format() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -563,6 +571,7 @@ fn test_doctor_list_format() {
 
 /// **LOCKED v1.7.1+**: notes field is always present in JSON output.
 #[test]
+#[serial]
 fn test_doctor_v171_notes_always_present() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -606,6 +615,7 @@ fn test_doctor_v171_notes_always_present() {
 /// This test ensures the exact keys are present at each level using set equality.
 /// No key ordering assumptions (serde JSON maps aren't ordered).
 #[test]
+#[serial]
 fn test_doctor_json_keyguard() {
     use std::collections::HashSet;
 
@@ -757,6 +767,7 @@ fn test_doctor_json_keyguard() {
 /// **LOCKED**: In --json mode, stdout must be valid JSON only (no extra output).
 /// Errors and warnings go to stderr only.
 #[test]
+#[serial]
 fn test_doctor_json_no_extra_stdout() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -862,6 +873,7 @@ fn cargo_bin_fastnode_with_howth(howth_bin: &str) -> Command {
 
 /// **LOCKED v1.8.0+**: The `fastnode` compat shim forwards to `howth` with deprecation warning.
 #[test]
+#[serial]
 fn test_fastnode_shim_forwards() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -962,6 +974,7 @@ fn test_fastnode_shim_forwards() {
 
 /// **LOCKED v1.8.0+**: The `fastnode` shim shows deprecation warning in non-JSON mode.
 #[test]
+#[serial]
 fn test_fastnode_shim_deprecation_warning() {
     // Build howth and get its path
     let howth_bin = get_howth_bin_path();
@@ -1001,6 +1014,7 @@ fn test_fastnode_shim_deprecation_warning() {
 
 /// **LOCKED v1.7.1+**: Deterministic sort order is severity_rank desc, code asc, package asc, path asc.
 #[test]
+#[serial]
 fn test_doctor_v171_deterministic_sort_order() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);

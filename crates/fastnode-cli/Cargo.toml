@@ -35,3 +35,4 @@ axum.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 flate2.workspace = true
 tar.workspace = true
+serial_test.workspace = true

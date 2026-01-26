@@ -63,6 +63,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Testing / Dev server
 axum = { version = "0.7", features = ["ws"] }
+serial_test = "3"
 
 # Internal crates
 fastnode-core = { path = "crates/fastnode-core" }

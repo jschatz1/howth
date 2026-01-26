@@ -1,5 +1,6 @@
 //! Integration tests for `fastnode daemon` and `fastnode ping`.
 
+use serial_test::serial;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -62,6 +63,7 @@ fn cleanup_endpoint(endpoint: &str) {
 }
 
 #[test]
+#[serial]
 fn test_ping_without_daemon_fails() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -94,6 +96,7 @@ fn test_ping_without_daemon_fails() {
 }
 
 #[test]
+#[serial]
 fn test_ping_without_daemon_json_output() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -118,6 +121,7 @@ fn test_ping_without_daemon_json_output() {
 }
 
 #[test]
+#[serial]
 fn test_daemon_and_ping() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -162,6 +166,7 @@ fn test_daemon_and_ping() {
 }
 
 #[test]
+#[serial]
 fn test_daemon_and_ping_json() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);

@@ -4,6 +4,7 @@
 
 #![allow(clippy::type_complexity)]
 
+use serial_test::serial;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -152,6 +153,7 @@ fn create_project_with_node_modules(
 }
 
 #[test]
+#[serial]
 fn test_graph_simple() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -218,6 +220,7 @@ fn test_graph_simple() {
 }
 
 #[test]
+#[serial]
 fn test_graph_with_transitive_deps() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -285,6 +288,7 @@ fn test_graph_with_transitive_deps() {
 }
 
 #[test]
+#[serial]
 fn test_graph_orphan_detection() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -342,6 +346,7 @@ fn test_graph_orphan_detection() {
 }
 
 #[test]
+#[serial]
 fn test_graph_dev_dependencies_excluded_by_default() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -397,6 +402,7 @@ fn test_graph_dev_dependencies_excluded_by_default() {
 }
 
 #[test]
+#[serial]
 fn test_graph_dev_dependencies_included_with_flag() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -452,6 +458,7 @@ fn test_graph_dev_dependencies_included_with_flag() {
 }
 
 #[test]
+#[serial]
 fn test_graph_depth_limit() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -516,6 +523,7 @@ fn test_graph_depth_limit() {
 }
 
 #[test]
+#[serial]
 fn test_graph_no_node_modules_error() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -587,6 +595,7 @@ fn test_graph_no_node_modules_error() {
 }
 
 #[test]
+#[serial]
 fn test_graph_deterministic_ordering() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -668,6 +677,7 @@ fn test_graph_deterministic_ordering() {
 }
 
 #[test]
+#[serial]
 fn test_graph_human_tree_format() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -710,6 +720,7 @@ fn test_graph_human_tree_format() {
 }
 
 #[test]
+#[serial]
 fn test_graph_human_list_format() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);

@@ -1,5 +1,6 @@
 //! Integration tests for `fastnode run` execution plan.
 
+use serial_test::serial;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -51,6 +52,7 @@ fn cleanup_endpoint(endpoint: &str) {
 }
 
 #[test]
+#[serial]
 fn test_run_local_json_success() {
     let dir = tempfile::tempdir().unwrap();
     let entry_path = dir.path().join("main.js");
@@ -111,6 +113,7 @@ fn test_run_local_json_success() {
 }
 
 #[test]
+#[serial]
 fn test_run_local_typescript_entry() {
     let dir = tempfile::tempdir().unwrap();
     let entry_path = dir.path().join("app.ts");
@@ -138,6 +141,7 @@ fn test_run_local_typescript_entry() {
 }
 
 #[test]
+#[serial]
 fn test_run_local_with_args() {
     let dir = tempfile::tempdir().unwrap();
     let entry_path = dir.path().join("main.js");
@@ -171,6 +175,7 @@ fn test_run_local_with_args() {
 }
 
 #[test]
+#[serial]
 fn test_run_local_missing_entry_exit_2() {
     let dir = tempfile::tempdir().unwrap();
 
@@ -189,6 +194,7 @@ fn test_run_local_missing_entry_exit_2() {
 }
 
 #[test]
+#[serial]
 fn test_run_local_missing_entry_json() {
     let dir = tempfile::tempdir().unwrap();
 
@@ -213,6 +219,7 @@ fn test_run_local_missing_entry_json() {
 }
 
 #[test]
+#[serial]
 fn test_run_local_directory_entry_exit_2() {
     let dir = tempfile::tempdir().unwrap();
     let subdir = dir.path().join("subdir");
@@ -233,6 +240,7 @@ fn test_run_local_directory_entry_exit_2() {
 }
 
 #[test]
+#[serial]
 fn test_run_local_human_output() {
     let dir = tempfile::tempdir().unwrap();
     let entry_path = dir.path().join("index.js");
@@ -271,6 +279,7 @@ mod daemon_tests {
     }
 
     #[test]
+    #[serial]
     fn test_run_daemon_json_success() {
         let endpoint = test_endpoint();
         cleanup_endpoint(&endpoint);
@@ -331,6 +340,7 @@ mod daemon_tests {
     }
 
     #[test]
+    #[serial]
     fn test_run_daemon_no_daemon_exit_1() {
         let endpoint = test_endpoint();
         cleanup_endpoint(&endpoint);
@@ -373,6 +383,7 @@ mod daemon_tests {
     }
 
     #[test]
+    #[serial]
     fn test_run_daemon_missing_entry() {
         let endpoint = test_endpoint();
         cleanup_endpoint(&endpoint);

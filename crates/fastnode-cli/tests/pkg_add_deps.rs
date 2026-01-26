@@ -12,6 +12,7 @@ use axum::{
 };
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use serial_test::serial;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
@@ -305,6 +306,7 @@ fn wait_for_daemon(endpoint: &str, registry_url: &str) -> bool {
 }
 
 #[test]
+#[serial]
 fn test_deps_installs_only_dependencies() {
     let registry_url = start_mock_registry();
     let endpoint = test_endpoint();
@@ -375,6 +377,7 @@ fn test_deps_installs_only_dependencies() {
 }
 
 #[test]
+#[serial]
 fn test_deps_with_dev_includes_dev_dependencies() {
     let registry_url = start_mock_registry();
     let endpoint = test_endpoint();
@@ -452,6 +455,7 @@ fn test_deps_with_dev_includes_dev_dependencies() {
 }
 
 #[test]
+#[serial]
 fn test_deps_invalid_range_produces_exit_2_but_installs_others() {
     let registry_url = start_mock_registry();
     let endpoint = test_endpoint();
@@ -520,6 +524,7 @@ fn test_deps_invalid_range_produces_exit_2_but_installs_others() {
 }
 
 #[test]
+#[serial]
 fn test_deps_deterministic_ordering() {
     let registry_url = start_mock_registry();
     let endpoint = test_endpoint();
@@ -585,6 +590,7 @@ fn test_deps_deterministic_ordering() {
 }
 
 #[test]
+#[serial]
 fn test_deps_package_json_not_found_exit_2() {
     let registry_url = start_mock_registry();
     let endpoint = test_endpoint();
@@ -643,6 +649,7 @@ fn test_deps_package_json_not_found_exit_2() {
 }
 
 #[test]
+#[serial]
 fn test_deps_no_dependencies_succeeds_with_empty_result() {
     let registry_url = start_mock_registry();
     let endpoint = test_endpoint();
@@ -697,6 +704,7 @@ fn test_deps_no_dependencies_succeeds_with_empty_result() {
 }
 
 #[test]
+#[serial]
 fn test_deps_human_output_exit_code_2_on_error() {
     let registry_url = start_mock_registry();
     let endpoint = test_endpoint();
