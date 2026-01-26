@@ -53,6 +53,9 @@ extension!(
         op_howth_env_get,
         op_howth_exit,
         op_howth_args,
+        op_howth_fetch,
+        op_howth_encode_utf8,
+        op_howth_decode_utf8,
     ],
 );
 
@@ -113,6 +116,115 @@ fn op_howth_args() -> Vec<String> {
     std::env::args().collect()
 }
 
+/// Fetch response from a URL.
+#[derive(serde::Serialize)]
+pub struct FetchResponse {
+    pub ok: bool,
+    pub status: u16,
+    pub status_text: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub body: String,
+    pub url: String,
+}
+
+/// Fetch request options.
+#[derive(serde::Deserialize, Default)]
+pub struct FetchOptions {
+    pub method: Option<String>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub body: Option<String>,
+}
+
+/// Fetch a URL (synchronous via blocking client, exposed as async op).
+/// Uses reqwest::blocking to make HTTP requests.
+#[op2(async)]
+#[serde]
+async fn op_howth_fetch(
+    #[string] url: String,
+    #[serde] options: Option<FetchOptions>,
+) -> Result<FetchResponse, deno_core::error::AnyError> {
+    // Use std::thread::spawn since tokio spawn_blocking doesn't work well with current_thread
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    std::thread::spawn(move || {
+        let result = (|| {
+            let client = reqwest::blocking::Client::new();
+            let opts = options.unwrap_or_default();
+
+            let method = opts
+                .method
+                .as_deref()
+                .unwrap_or("GET")
+                .to_uppercase();
+
+            let mut request = match method.as_str() {
+                "GET" => client.get(&url),
+                "POST" => client.post(&url),
+                "PUT" => client.put(&url),
+                "DELETE" => client.delete(&url),
+                "PATCH" => client.patch(&url),
+                "HEAD" => client.head(&url),
+                _ => return Err(deno_core::error::AnyError::msg(format!("Unsupported method: {}", method))),
+            };
+
+            // Add headers
+            if let Some(headers) = opts.headers {
+                for (key, value) in headers {
+                    request = request.header(&key, &value);
+                }
+            }
+
+            // Add body
+            if let Some(body) = opts.body {
+                request = request.body(body);
+            }
+
+            let response = request.send()?;
+
+            let status = response.status();
+            let response_url = response.url().to_string();
+
+            let mut headers = std::collections::HashMap::new();
+            for (key, value) in response.headers().iter() {
+                headers.insert(
+                    key.to_string(),
+                    value.to_str().unwrap_or("").to_string(),
+                );
+            }
+
+            let body = response.text()?;
+
+            Ok(FetchResponse {
+                ok: status.is_success(),
+                status: status.as_u16(),
+                status_text: status.canonical_reason().unwrap_or("").to_string(),
+                headers,
+                body,
+                url: response_url,
+            })
+        })();
+
+        let _ = tx.send(result);
+    });
+
+    rx.await
+        .map_err(|_| deno_core::error::AnyError::msg("Fetch cancelled"))?
+}
+
+/// Encode string to UTF-8 bytes.
+#[op2]
+#[serde]
+fn op_howth_encode_utf8(#[string] text: &str) -> Vec<u8> {
+    text.as_bytes().to_vec()
+}
+
+/// Decode UTF-8 bytes to string.
+#[op2]
+#[string]
+fn op_howth_decode_utf8(#[buffer] bytes: &[u8]) -> Result<String, deno_core::error::AnyError> {
+    String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
+}
+
 impl Runtime {
     /// Create a new runtime.
     pub fn new(options: RuntimeOptions) -> Result<Self, RuntimeError> {
@@ -163,10 +275,30 @@ impl Runtime {
             .await
             .map_err(|e| RuntimeError::JavaScript(format!("Failed to load module: {}", e)))?;
 
-        self.js_runtime
-            .mod_evaluate(module_id)
-            .await
-            .map_err(|e| RuntimeError::JavaScript(format!("Module evaluation failed: {}", e)))?;
+        // mod_evaluate returns a receiver - we need to run the event loop
+        // while waiting for the module to complete
+        let mut receiver = self.js_runtime.mod_evaluate(module_id);
+
+        // Poll both the event loop and the module evaluation receiver
+        loop {
+            tokio::select! {
+                biased;
+
+                // Check if module evaluation completed
+                maybe_result = &mut receiver => {
+                    match maybe_result {
+                        Ok(()) => break,
+                        Err(e) => return Err(RuntimeError::JavaScript(format!("Module evaluation failed: {}", e))),
+                    }
+                }
+
+                // Drive the event loop
+                event_loop_result = self.js_runtime.run_event_loop(Default::default()) => {
+                    event_loop_result
+                        .map_err(|e| RuntimeError::JavaScript(format!("Event loop error: {}", e)))?;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -249,5 +381,154 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_text_encoder_decoder() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const encoder = new TextEncoder();
+                const decoder = new TextDecoder();
+                const encoded = encoder.encode('Hello');
+                if (encoded.length !== 5) throw new Error('encode failed');
+                if (encoded[0] !== 72) throw new Error('wrong byte');
+                const decoded = decoder.decode(encoded);
+                if (decoded !== 'Hello') throw new Error('decode failed');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_url() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const url = new URL('https://example.com:8080/path?foo=bar#hash');
+                if (url.hostname !== 'example.com') throw new Error('hostname');
+                if (url.port !== '8080') throw new Error('port');
+                if (url.pathname !== '/path') throw new Error('pathname');
+                if (url.search !== '?foo=bar') throw new Error('search');
+                if (url.hash !== '#hash') throw new Error('hash');
+                if (url.searchParams.get('foo') !== 'bar') throw new Error('searchParams');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_url_search_params() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const params = new URLSearchParams('a=1&b=2&a=3');
+                if (params.get('a') !== '1') throw new Error('get first');
+                if (params.get('b') !== '2') throw new Error('get b');
+                const all = params.getAll('a');
+                if (all.length !== 2) throw new Error('getAll length');
+                if (all[0] !== '1' || all[1] !== '3') throw new Error('getAll values');
+                params.set('c', '4');
+                if (!params.has('c')) throw new Error('has');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_headers() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const headers = new Headers({'Content-Type': 'application/json'});
+                if (headers.get('content-type') !== 'application/json') throw new Error('get');
+                headers.set('X-Custom', 'value');
+                if (!headers.has('x-custom')) throw new Error('has');
+                headers.append('X-Custom', 'value2');
+                if (headers.get('x-custom') !== 'value, value2') throw new Error('append');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_atob_btoa() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const original = 'Hello, World!';
+                const encoded = btoa(original);
+                if (encoded !== 'SGVsbG8sIFdvcmxkIQ==') throw new Error('btoa');
+                const decoded = atob(encoded);
+                if (decoded !== original) throw new Error('atob');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_request_response() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                const req = new Request('https://example.com', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: '{"test": true}'
+                });
+                if (req.method !== 'POST') throw new Error('request method');
+                if (req.url !== 'https://example.com') throw new Error('request url');
+
+                const res = new Response('body', { status: 201, statusText: 'Created' });
+                if (res.status !== 201) throw new Error('response status');
+                if (!res.ok) throw new Error('response ok');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_fetch_mock() {
+        // This test verifies fetch is callable but doesn't make real network requests
+        // A full integration test would require a mock server
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                if (typeof fetch !== 'function') throw new Error('fetch not defined');
+                if (typeof Request !== 'function') throw new Error('Request not defined');
+                if (typeof Response !== 'function') throw new Error('Response not defined');
+                if (typeof Headers !== 'function') throw new Error('Headers not defined');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_set_timeout() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                let called = false;
+                setTimeout(() => { called = true; }, 10);
+                "#,
+            )
+            .await
+            .unwrap();
+        runtime.run_event_loop().await.unwrap();
     }
 }

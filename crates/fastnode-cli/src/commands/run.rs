@@ -83,7 +83,11 @@ fn run_native(cwd: &Path, entry: &Path, _args: &[String], json: bool) -> Result<
     })?;
 
     // Create runtime and execute as module (supports imports)
-    let rt = tokio::runtime::Runtime::new().into_diagnostic()?;
+    // deno_core requires a current_thread runtime for async ops
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .into_diagnostic()?;
     let result = rt.block_on(async {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(cwd.to_path_buf()),
