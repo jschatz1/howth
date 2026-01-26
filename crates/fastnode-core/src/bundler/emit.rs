@@ -621,4 +621,73 @@ mod tests {
         // No tree shaking - all kept
         assert!(filter_swc_export("exports.bar = bar;", None).is_some());
     }
+
+    #[test]
+    fn test_tree_shaking_integration() {
+        use crate::bundler::graph::Module;
+        use crate::bundler::{Import, ImportedName};
+
+        // Create a module graph with:
+        // - entry.ts: imports only `add` from utils
+        // - utils.ts: exports `add`, `subtract`, `multiply`
+        let mut graph = ModuleGraph::new();
+
+        // utils.ts - has three exports but only one is used
+        let utils_module = Module {
+            path: "/test/utils.ts".to_string(),
+            source: r#"
+export function add(a, b) { return a + b; }
+export function subtract(a, b) { return a - b; }
+export function multiply(a, b) { return a * b; }
+"#
+            .to_string(),
+            imports: Vec::new(),
+            dependencies: Vec::new(),
+            dynamic_dependencies: Vec::new(),
+        };
+        let utils_id = graph.add(utils_module);
+
+        // entry.ts - only imports `add`
+        let entry_module = Module {
+            path: "/test/entry.ts".to_string(),
+            source: r#"
+import { add } from './utils';
+console.log(add(1, 2));
+"#
+            .to_string(),
+            imports: vec![Import {
+                specifier: "./utils".to_string(),
+                dynamic: false,
+                names: vec![ImportedName {
+                    imported: "add".to_string(),
+                    local: "add".to_string(),
+                }],
+            }],
+            dependencies: vec![utils_id],
+            dynamic_dependencies: Vec::new(),
+        };
+        let entry_id = graph.add(entry_module);
+
+        // Set up specifier resolution
+        let mut dep_info = std::collections::HashMap::new();
+        dep_info.insert(
+            "/test/entry.ts".to_string(),
+            vec![("./utils".to_string(), "/test/utils.ts".to_string(), false)],
+        );
+        graph.set_dependencies(&dep_info);
+
+        // Analyze tree shaking
+        let used_exports = UsedExports::analyze(&graph, entry_id);
+
+        // Entry should have all exports used (it's the entry point)
+        assert!(used_exports.all_used(entry_id));
+
+        // Utils should only have `add` marked as used
+        let utils_used = used_exports.get_used(utils_id);
+        assert!(utils_used.is_some());
+        let utils_set = utils_used.unwrap();
+        assert!(utils_set.contains("add"));
+        assert!(!utils_set.contains("subtract"));
+        assert!(!utils_set.contains("multiply"));
+    }
 }

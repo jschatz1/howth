@@ -4,7 +4,6 @@ pub mod bundle;
 pub mod daemon;
 pub mod dev;
 pub mod doctor;
-pub mod install;
 pub mod ping;
 pub mod pkg;
 pub mod run;
