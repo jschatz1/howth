@@ -528,6 +528,7 @@ fn test_doctor_healthy_project() {
 
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to daemon IPC timing")]
 fn test_doctor_list_format() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);

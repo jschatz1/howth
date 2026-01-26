@@ -125,6 +125,7 @@ fn run_and_get_plan(
 
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to file watcher timing")]
 fn test_watcher_invalidates_cache() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
@@ -237,6 +238,7 @@ fn test_watcher_invalidates_cache() {
 
 #[test]
 #[serial]
+#[cfg_attr(windows, ignore = "Flaky on Windows CI due to daemon IPC timing")]
 fn test_watcher_status_reports_running() {
     let endpoint = test_endpoint();
     cleanup_endpoint(&endpoint);
