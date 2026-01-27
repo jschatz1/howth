@@ -24,6 +24,9 @@ const TESTS = [
   // Events tests
   'test-events-basic.js',
 
+  // Util tests
+  'test-util-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',

@@ -4118,6 +4118,349 @@
   globalThis.__howth_modules["events"] = eventsModule;
 
   // ============================================================================
+  // util module
+  // ============================================================================
+
+  /**
+   * Inspect a value and return a string representation.
+   */
+  function inspect(obj, options = {}) {
+    const {
+      depth = 2,
+      colors = false,
+      showHidden = false,
+      maxArrayLength = 100,
+      maxStringLength = 10000,
+      sorted = false,
+      getters = false,
+    } = typeof options === "boolean" ? { showHidden: options } : options;
+
+    const seen = new WeakSet();
+
+    function inspectValue(value, currentDepth) {
+      if (value === null) return colors ? "\x1b[1mnull\x1b[22m" : "null";
+      if (value === undefined) return colors ? "\x1b[90mundefined\x1b[39m" : "undefined";
+
+      const type = typeof value;
+
+      if (type === "string") {
+        const truncated = value.length > maxStringLength ? value.slice(0, maxStringLength) + "..." : value;
+        const escaped = JSON.stringify(truncated);
+        return colors ? `\x1b[32m${escaped}\x1b[39m` : escaped;
+      }
+      if (type === "number") {
+        const str = Object.is(value, -0) ? "-0" : String(value);
+        return colors ? `\x1b[33m${str}\x1b[39m` : str;
+      }
+      if (type === "bigint") {
+        const str = `${value}n`;
+        return colors ? `\x1b[33m${str}\x1b[39m` : str;
+      }
+      if (type === "boolean") {
+        return colors ? `\x1b[33m${value}\x1b[39m` : String(value);
+      }
+      if (type === "symbol") {
+        const str = value.toString();
+        return colors ? `\x1b[32m${str}\x1b[39m` : str;
+      }
+      if (type === "function") {
+        const name = value.name || "(anonymous)";
+        const str = `[Function: ${name}]`;
+        return colors ? `\x1b[36m${str}\x1b[39m` : str;
+      }
+
+      if (type === "object") {
+        if (seen.has(value)) return colors ? "\x1b[36m[Circular]\x1b[39m" : "[Circular]";
+        if (currentDepth > depth) return Array.isArray(value) ? "[Array]" : "[Object]";
+        seen.add(value);
+
+        if (value instanceof Date) return colors ? `\x1b[35m${value.toISOString()}\x1b[39m` : value.toISOString();
+        if (value instanceof RegExp) return colors ? `\x1b[31m${value}\x1b[39m` : value.toString();
+        if (value instanceof Error) return value.stack || value.toString();
+        if (value instanceof Map) {
+          if (value.size === 0) return "Map(0) {}";
+          const entries = [...value.entries()].slice(0, maxArrayLength)
+            .map(([k, v]) => `${inspectValue(k, currentDepth + 1)} => ${inspectValue(v, currentDepth + 1)}`).join(", ");
+          return `Map(${value.size}) { ${entries} }`;
+        }
+        if (value instanceof Set) {
+          if (value.size === 0) return "Set(0) {}";
+          const entries = [...value.values()].slice(0, maxArrayLength).map((v) => inspectValue(v, currentDepth + 1)).join(", ");
+          return `Set(${value.size}) { ${entries} }`;
+        }
+        if (value instanceof WeakMap) return "WeakMap { <items unknown> }";
+        if (value instanceof WeakSet) return "WeakSet { <items unknown> }";
+        if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+          const name = value.constructor.name;
+          const len = value.length;
+          if (len === 0) return `${name}(0) []`;
+          const items = [...value].slice(0, maxArrayLength).map(String).join(", ");
+          const suffix = len > maxArrayLength ? `, ... ${len - maxArrayLength} more items` : "";
+          return `${name}(${len}) [ ${items}${suffix} ]`;
+        }
+        if (value instanceof ArrayBuffer) return `ArrayBuffer { byteLength: ${value.byteLength} }`;
+        if (value instanceof Promise) return "Promise { <pending> }";
+
+        if (Array.isArray(value)) {
+          if (value.length === 0) return "[]";
+          const items = value.slice(0, maxArrayLength).map((v) => inspectValue(v, currentDepth + 1));
+          const suffix = value.length > maxArrayLength ? `, ... ${value.length - maxArrayLength} more items` : "";
+          return `[ ${items.join(", ")}${suffix} ]`;
+        }
+
+        let keys = Object.keys(value);
+        if (sorted) keys = keys.sort();
+        if (showHidden) keys = keys.concat(Object.getOwnPropertySymbols(value));
+        if (keys.length === 0) return "{}";
+
+        const entries = keys.map((key) => {
+          const desc = Object.getOwnPropertyDescriptor(value, key);
+          let val;
+          if (desc.get && !getters) val = "[Getter]";
+          else if (desc.set && !desc.get) val = "[Setter]";
+          else val = inspectValue(value[key], currentDepth + 1);
+          return `${typeof key === "symbol" ? key.toString() : key}: ${val}`;
+        });
+        return `{ ${entries.join(", ")} }`;
+      }
+      return String(value);
+    }
+    return inspectValue(obj, 0);
+  }
+
+  inspect.custom = Symbol.for("nodejs.util.inspect.custom");
+  inspect.defaultOptions = { showHidden: false, depth: 2, colors: false, maxArrayLength: 100 };
+
+  /**
+   * Format a string with printf-style formatting.
+   */
+  function format(fmt, ...args) {
+    if (typeof fmt !== "string") return [fmt, ...args].map((v) => inspect(v)).join(" ");
+    let i = 0;
+    let str = fmt.replace(/%([sdifjoOc%])/g, (match, spec) => {
+      if (spec === "%") return "%";
+      if (i >= args.length) return match;
+      const arg = args[i++];
+      switch (spec) {
+        case "s": return String(arg);
+        case "d": case "i": return Number.parseInt(arg, 10).toString();
+        case "f": return Number.parseFloat(arg).toString();
+        case "j": try { return JSON.stringify(arg); } catch { return "[Circular]"; }
+        case "o": case "O": return inspect(arg);
+        case "c": return "";
+        default: return match;
+      }
+    });
+    while (i < args.length) str += " " + inspect(args[i++]);
+    return str;
+  }
+
+  function formatWithOptions(inspectOptions, fmt, ...args) {
+    if (typeof fmt !== "string") return [fmt, ...args].map((v) => inspect(v, inspectOptions)).join(" ");
+    let i = 0;
+    let str = fmt.replace(/%([sdifjoOc%])/g, (match, spec) => {
+      if (spec === "%") return "%";
+      if (i >= args.length) return match;
+      const arg = args[i++];
+      switch (spec) {
+        case "s": return String(arg);
+        case "d": case "i": return Number.parseInt(arg, 10).toString();
+        case "f": return Number.parseFloat(arg).toString();
+        case "j": try { return JSON.stringify(arg); } catch { return "[Circular]"; }
+        case "o": case "O": return inspect(arg, inspectOptions);
+        case "c": return "";
+        default: return match;
+      }
+    });
+    while (i < args.length) str += " " + inspect(args[i++], inspectOptions);
+    return str;
+  }
+
+  /**
+   * Convert a callback-style function to a Promise-returning function.
+   */
+  function promisify(original) {
+    if (typeof original !== "function") throw new TypeError('The "original" argument must be of type Function');
+    if (original[promisify.custom]) {
+      const fn = original[promisify.custom];
+      if (typeof fn !== "function") throw new TypeError('The "util.promisify.custom" property must be of type Function');
+      return fn;
+    }
+    function fn(...args) {
+      return new Promise((resolve, reject) => {
+        original.call(this, ...args, (err, ...values) => {
+          if (err) reject(err);
+          else if (values.length === 1) resolve(values[0]);
+          else resolve(values);
+        });
+      });
+    }
+    Object.setPrototypeOf(fn, Object.getPrototypeOf(original));
+    return Object.defineProperties(fn, Object.getOwnPropertyDescriptors(original));
+  }
+  promisify.custom = Symbol.for("nodejs.util.promisify.custom");
+
+  /**
+   * Convert a Promise-returning function to a callback-style function.
+   */
+  function callbackify(original) {
+    if (typeof original !== "function") throw new TypeError('The "original" argument must be of type Function');
+    function callbackified(...args) {
+      const callback = args.pop();
+      if (typeof callback !== "function") throw new TypeError("The last argument must be of type Function");
+      Promise.resolve(original.apply(this, args)).then(
+        (value) => process.nextTick(callback, null, value),
+        (err) => { if (!err) { err = new Error("Promise rejected with falsy value"); err.reason = err; } process.nextTick(callback, err); }
+      );
+    }
+    Object.setPrototypeOf(callbackified, Object.getPrototypeOf(original));
+    return Object.defineProperties(callbackified, Object.getOwnPropertyDescriptors(original));
+  }
+
+  /**
+   * Mark a function as deprecated.
+   */
+  function deprecate(fn, msg, code) {
+    if (typeof fn !== "function") throw new TypeError('The "fn" argument must be of type Function');
+    let warned = false;
+    function deprecated(...args) {
+      if (!warned) { warned = true; console.warn(`DeprecationWarning: ${code ? `[${code}] ` : ""}${msg}`); }
+      return fn.apply(this, args);
+    }
+    Object.setPrototypeOf(deprecated, fn);
+    return Object.defineProperties(deprecated, Object.getOwnPropertyDescriptors(fn));
+  }
+
+  /**
+   * Inherit prototype methods from a constructor.
+   */
+  function inherits(ctor, superCtor) {
+    if (ctor === undefined || ctor === null) throw new TypeError("The constructor must not be null or undefined");
+    if (superCtor === undefined || superCtor === null) throw new TypeError("The super constructor must not be null or undefined");
+    if (superCtor.prototype === undefined) throw new TypeError("The super constructor must have a prototype");
+    Object.defineProperty(ctor, "super_", { value: superCtor, writable: true, configurable: true });
+    Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
+  }
+
+  /**
+   * Create a debug logger for a specific section.
+   */
+  function debuglog(section, callback) {
+    const envDebug = process.env.NODE_DEBUG || "";
+    const enabled = new RegExp(`\\b${section}\\b`, "i").test(envDebug);
+    const fn = enabled
+      ? function (...args) { console.error("%s %d: %s", section.toUpperCase(), process.pid, format(...args)); }
+      : function () {};
+    fn.enabled = enabled;
+    if (typeof callback === "function") callback(fn);
+    return fn;
+  }
+
+  // Type checking utilities
+  const types = {
+    isAnyArrayBuffer: (v) => v instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
+    isArrayBuffer: (v) => v instanceof ArrayBuffer,
+    isArrayBufferView: (v) => ArrayBuffer.isView(v),
+    isAsyncFunction: (v) => v?.constructor?.name === "AsyncFunction",
+    isBigInt64Array: (v) => v instanceof BigInt64Array,
+    isBigUint64Array: (v) => v instanceof BigUint64Array,
+    isBooleanObject: (v) => v instanceof Boolean,
+    isBoxedPrimitive: (v) => v instanceof Boolean || v instanceof Number || v instanceof String,
+    isDataView: (v) => v instanceof DataView,
+    isDate: (v) => v instanceof Date,
+    isFloat32Array: (v) => v instanceof Float32Array,
+    isFloat64Array: (v) => v instanceof Float64Array,
+    isGeneratorFunction: (v) => v?.constructor?.name === "GeneratorFunction",
+    isGeneratorObject: (v) => v?.[Symbol.toStringTag] === "Generator",
+    isInt8Array: (v) => v instanceof Int8Array,
+    isInt16Array: (v) => v instanceof Int16Array,
+    isInt32Array: (v) => v instanceof Int32Array,
+    isMap: (v) => v instanceof Map,
+    isMapIterator: (v) => v?.[Symbol.toStringTag] === "Map Iterator",
+    isNativeError: (v) => v instanceof Error,
+    isNumberObject: (v) => v instanceof Number,
+    isPromise: (v) => v instanceof Promise,
+    isProxy: () => false,
+    isRegExp: (v) => v instanceof RegExp,
+    isSet: (v) => v instanceof Set,
+    isSetIterator: (v) => v?.[Symbol.toStringTag] === "Set Iterator",
+    isSharedArrayBuffer: (v) => typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer,
+    isStringObject: (v) => v instanceof String,
+    isSymbolObject: (v) => typeof v === "object" && Object.prototype.toString.call(v) === "[object Symbol]",
+    isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
+    isUint8Array: (v) => v instanceof Uint8Array,
+    isUint8ClampedArray: (v) => v instanceof Uint8ClampedArray,
+    isUint16Array: (v) => v instanceof Uint16Array,
+    isUint32Array: (v) => v instanceof Uint32Array,
+    isWeakMap: (v) => v instanceof WeakMap,
+    isWeakSet: (v) => v instanceof WeakSet,
+  };
+
+  /**
+   * Deep strict equality check.
+   */
+  function isDeepStrictEqual(a, b, seen = new Map()) {
+    if (Object.is(a, b)) return true;
+    if (typeof a !== typeof b) return false;
+    if (typeof a !== "object" || a === null || b === null) return false;
+    if (seen.has(a)) return seen.get(a) === b;
+    seen.set(a, b);
+    if (Array.isArray(a)) {
+      if (!Array.isArray(b) || a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (!isDeepStrictEqual(a[i], b[i], seen)) return false;
+      return true;
+    }
+    if (a instanceof Date) return b instanceof Date && a.getTime() === b.getTime();
+    if (a instanceof RegExp) return b instanceof RegExp && a.toString() === b.toString();
+    if (a instanceof Map) {
+      if (!(b instanceof Map) || a.size !== b.size) return false;
+      for (const [key, val] of a) if (!b.has(key) || !isDeepStrictEqual(val, b.get(key), seen)) return false;
+      return true;
+    }
+    if (a instanceof Set) {
+      if (!(b instanceof Set) || a.size !== b.size) return false;
+      for (const val of a) if (!b.has(val)) return false;
+      return true;
+    }
+    const keysA = Object.keys(a), keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (const key of keysA) {
+      if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+      if (!isDeepStrictEqual(a[key], b[key], seen)) return false;
+    }
+    return true;
+  }
+
+  const utilModule = {
+    format, formatWithOptions, inspect, promisify, callbackify, deprecate, inherits, debuglog,
+    debug: debuglog, isDeepStrictEqual, types,
+    // Legacy type checking
+    isArray: Array.isArray,
+    isBoolean: (v) => typeof v === "boolean",
+    isNull: (v) => v === null,
+    isNullOrUndefined: (v) => v == null,
+    isNumber: (v) => typeof v === "number",
+    isString: (v) => typeof v === "string",
+    isSymbol: (v) => typeof v === "symbol",
+    isUndefined: (v) => v === undefined,
+    isRegExp: (v) => v instanceof RegExp,
+    isObject: (v) => typeof v === "object" && v !== null,
+    isDate: (v) => v instanceof Date,
+    isError: (v) => v instanceof Error,
+    isFunction: (v) => typeof v === "function",
+    isPrimitive: (v) => v === null || (typeof v !== "object" && typeof v !== "function"),
+    isBuffer: Buffer.isBuffer,
+    TextDecoder: globalThis.TextDecoder,
+    TextEncoder: globalThis.TextEncoder,
+  };
+  utilModule.promisify.custom = promisify.custom;
+
+  globalThis.__howth_modules["node:util"] = utilModule;
+  globalThis.__howth_modules["util"] = utilModule;
+  globalThis.__howth_modules["node:util/types"] = types;
+  globalThis.__howth_modules["util/types"] = types;
+
+  // ============================================================================
   // child_process module
   // ============================================================================
 
