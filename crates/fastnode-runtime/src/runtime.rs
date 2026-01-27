@@ -2,9 +2,65 @@
 
 use crate::module_loader::HowthModuleLoader;
 use deno_core::{extension, op2, JsRuntime, ModuleSpecifier, RuntimeOptions as DenoRuntimeOptions};
+use std::cell::RefCell;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::cell::RefCell;
+
+/// Format an IO error in Node.js style.
+/// Node.js format: `CODE: message, syscall 'path'`
+fn format_fs_error(err: std::io::Error, syscall: &str, path: &str) -> deno_core::error::AnyError {
+    // Map ErrorKind to error code, then check raw OS error for more specific codes
+    let (code, message) = match err.kind() {
+        ErrorKind::NotFound => ("ENOENT", "no such file or directory"),
+        ErrorKind::PermissionDenied => ("EACCES", "permission denied"),
+        ErrorKind::AlreadyExists => ("EEXIST", "file already exists"),
+        ErrorKind::InvalidInput => ("EINVAL", "invalid argument"),
+        _ => {
+            // Check raw OS error for codes not covered by stable ErrorKind
+            #[cfg(unix)]
+            if let Some(os_err) = err.raw_os_error() {
+                match os_err {
+                    libc::ENOTDIR => return deno_core::error::AnyError::msg(format!(
+                        "ENOTDIR: not a directory, {syscall} '{path}'"
+                    )),
+                    libc::EISDIR => return deno_core::error::AnyError::msg(format!(
+                        "EISDIR: illegal operation on a directory, {syscall} '{path}'"
+                    )),
+                    libc::ENOTEMPTY => return deno_core::error::AnyError::msg(format!(
+                        "ENOTEMPTY: directory not empty, {syscall} '{path}'"
+                    )),
+                    libc::EROFS => return deno_core::error::AnyError::msg(format!(
+                        "EROFS: read-only file system, {syscall} '{path}'"
+                    )),
+                    libc::EFBIG => return deno_core::error::AnyError::msg(format!(
+                        "EFBIG: file too large, {syscall} '{path}'"
+                    )),
+                    libc::EXDEV => return deno_core::error::AnyError::msg(format!(
+                        "EXDEV: cross-device link not permitted, {syscall} '{path}'"
+                    )),
+                    libc::EMLINK => return deno_core::error::AnyError::msg(format!(
+                        "EMLINK: too many links, {syscall} '{path}'"
+                    )),
+                    libc::ENAMETOOLONG => return deno_core::error::AnyError::msg(format!(
+                        "ENAMETOOLONG: name too long, {syscall} '{path}'"
+                    )),
+                    libc::ELOOP => return deno_core::error::AnyError::msg(format!(
+                        "ELOOP: too many levels of symbolic links, {syscall} '{path}'"
+                    )),
+                    _ => {}
+                }
+            }
+            // Fallback to generic error
+            return deno_core::error::AnyError::msg(format!(
+                "{}, {syscall} '{path}'",
+                err
+            ));
+        }
+    };
+
+    deno_core::error::AnyError::msg(format!("{code}: {message}, {syscall} '{path}'"))
+}
 
 /// Runtime error.
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +124,7 @@ extension!(
         op_howth_fs_readdir,
         op_howth_fs_stat,
         op_howth_fs_unlink,
+        op_howth_fs_truncate,
         op_howth_fs_rmdir,
         op_howth_fs_rename,
         op_howth_fs_copy,
@@ -99,13 +156,16 @@ fn op_howth_print_error(#[string] msg: &str) {
 #[op2]
 #[string]
 fn op_howth_read_file(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
-    std::fs::read_to_string(path).map_err(|e| e.into())
+    std::fs::read_to_string(path).map_err(|e| format_fs_error(e, "open", path))
 }
 
 /// Write string to a file.
 #[op2(fast)]
-fn op_howth_write_file(#[string] path: &str, #[string] contents: &str) -> Result<(), deno_core::error::AnyError> {
-    std::fs::write(path, contents).map_err(|e| e.into())
+fn op_howth_write_file(
+    #[string] path: &str,
+    #[string] contents: &str,
+) -> Result<(), deno_core::error::AnyError> {
+    std::fs::write(path, contents).map_err(|e| format_fs_error(e, "open", path))
 }
 
 /// Check if a file or directory exists.
@@ -116,11 +176,14 @@ fn op_howth_fs_exists(#[string] path: &str) -> bool {
 
 /// Create a directory.
 #[op2(fast)]
-fn op_howth_fs_mkdir(#[string] path: &str, recursive: bool) -> Result<(), deno_core::error::AnyError> {
+fn op_howth_fs_mkdir(
+    #[string] path: &str,
+    recursive: bool,
+) -> Result<(), deno_core::error::AnyError> {
     if recursive {
-        std::fs::create_dir_all(path).map_err(|e| e.into())
+        std::fs::create_dir_all(path).map_err(|e| format_fs_error(e, "mkdir", path))
     } else {
-        std::fs::create_dir(path).map_err(|e| e.into())
+        std::fs::create_dir(path).map_err(|e| format_fs_error(e, "mkdir", path))
     }
 }
 
@@ -137,7 +200,8 @@ pub struct DirEntry {
 #[op2]
 #[serde]
 fn op_howth_fs_readdir(#[string] path: &str) -> Result<Vec<DirEntry>, deno_core::error::AnyError> {
-    let entries = std::fs::read_dir(path)?
+    let entries = std::fs::read_dir(path)
+        .map_err(|e| format_fs_error(e, "scandir", path))?
         .filter_map(|entry| entry.ok())
         .map(|entry| {
             let file_type = entry.file_type().ok();
@@ -174,25 +238,35 @@ pub struct FileStat {
 /// Get file statistics.
 #[op2]
 #[serde]
-fn op_howth_fs_stat(#[string] path: &str, follow_symlinks: bool) -> Result<FileStat, deno_core::error::AnyError> {
+fn op_howth_fs_stat(
+    #[string] path: &str,
+    follow_symlinks: bool,
+) -> Result<FileStat, deno_core::error::AnyError> {
+    let syscall = if follow_symlinks { "stat" } else { "lstat" };
     let metadata = if follow_symlinks {
-        std::fs::metadata(path)?
+        std::fs::metadata(path).map_err(|e| format_fs_error(e, syscall, path))?
     } else {
-        std::fs::symlink_metadata(path)?
+        std::fs::symlink_metadata(path).map_err(|e| format_fs_error(e, syscall, path))?
     };
 
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
 
-    let mtime = metadata.modified().ok()
+    let mtime = metadata
+        .modified()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
-    let atime = metadata.accessed().ok()
+    let atime = metadata
+        .accessed()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
-    let ctime = metadata.created().ok()
+    let ctime = metadata
+        .created()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs_f64() * 1000.0)
         .unwrap_or(0.0);
@@ -236,35 +310,61 @@ fn op_howth_fs_stat(#[string] path: &str, follow_symlinks: bool) -> Result<FileS
 /// Delete a file.
 #[op2(fast)]
 fn op_howth_fs_unlink(#[string] path: &str) -> Result<(), deno_core::error::AnyError> {
-    std::fs::remove_file(path).map_err(|e| e.into())
+    std::fs::remove_file(path).map_err(|e| format_fs_error(e, "unlink", path))
+}
+
+/// Truncate a file to a specific length.
+#[op2(fast)]
+fn op_howth_fs_truncate(
+    #[string] path: &str,
+    #[bigint] len: u64,
+) -> Result<(), deno_core::error::AnyError> {
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format_fs_error(e, "open", path))?;
+    file.set_len(len)
+        .map_err(|e| format_fs_error(e, "ftruncate", path))
 }
 
 /// Remove a directory.
 #[op2(fast)]
-fn op_howth_fs_rmdir(#[string] path: &str, recursive: bool) -> Result<(), deno_core::error::AnyError> {
+fn op_howth_fs_rmdir(
+    #[string] path: &str,
+    recursive: bool,
+) -> Result<(), deno_core::error::AnyError> {
     if recursive {
-        std::fs::remove_dir_all(path).map_err(|e| e.into())
+        std::fs::remove_dir_all(path).map_err(|e| format_fs_error(e, "rmdir", path))
     } else {
-        std::fs::remove_dir(path).map_err(|e| e.into())
+        std::fs::remove_dir(path).map_err(|e| format_fs_error(e, "rmdir", path))
     }
 }
 
 /// Rename/move a file or directory.
 #[op2(fast)]
-fn op_howth_fs_rename(#[string] old_path: &str, #[string] new_path: &str) -> Result<(), deno_core::error::AnyError> {
-    std::fs::rename(old_path, new_path).map_err(|e| e.into())
+fn op_howth_fs_rename(
+    #[string] old_path: &str,
+    #[string] new_path: &str,
+) -> Result<(), deno_core::error::AnyError> {
+    std::fs::rename(old_path, new_path).map_err(|e| format_fs_error(e, "rename", old_path))
 }
 
 /// Copy a file.
 #[op2(fast)]
-fn op_howth_fs_copy(#[string] src: &str, #[string] dest: &str) -> Result<(), deno_core::error::AnyError> {
+fn op_howth_fs_copy(
+    #[string] src: &str,
+    #[string] dest: &str,
+) -> Result<(), deno_core::error::AnyError> {
     std::fs::copy(src, dest)?;
     Ok(())
 }
 
 /// Append to a file.
 #[op2(fast)]
-fn op_howth_fs_append(#[string] path: &str, #[string] contents: &str) -> Result<(), deno_core::error::AnyError> {
+fn op_howth_fs_append(
+    #[string] path: &str,
+    #[string] contents: &str,
+) -> Result<(), deno_core::error::AnyError> {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -286,7 +386,10 @@ fn op_howth_fs_read_bytes(#[string] path: &str) -> Result<String, deno_core::err
 
 /// Write bytes to file (accepts base64).
 #[op2(fast)]
-fn op_howth_fs_write_bytes(#[string] path: &str, #[string] base64_data: &str) -> Result<(), deno_core::error::AnyError> {
+fn op_howth_fs_write_bytes(
+    #[string] path: &str,
+    #[string] base64_data: &str,
+) -> Result<(), deno_core::error::AnyError> {
     let bytes = base64_decode(base64_data)?;
     std::fs::write(path, bytes)?;
     Ok(())
@@ -327,7 +430,9 @@ fn op_howth_fs_access(#[string] path: &str, mode: u32) -> Result<(), deno_core::
 
     // Mode flags: 0=exists, 1=execute, 2=write, 4=read
     if !path.exists() {
-        return Err(deno_core::error::AnyError::msg("ENOENT: no such file or directory"));
+        return Err(deno_core::error::AnyError::msg(
+            "ENOENT: no such file or directory",
+        ));
     }
 
     let metadata = std::fs::metadata(path)?;
@@ -401,10 +506,14 @@ fn base64_decode(data: &str) -> Result<Vec<u8>, deno_core::error::AnyError> {
             return Err(deno_core::error::AnyError::msg("Invalid base64"));
         }
 
-        let b0 = decode_char(chunk[0] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
-        let b1 = decode_char(chunk[1] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
-        let b2 = decode_char(chunk[2] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
-        let b3 = decode_char(chunk[3] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+        let b0 = decode_char(chunk[0] as char)
+            .ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+        let b1 = decode_char(chunk[1] as char)
+            .ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+        let b2 = decode_char(chunk[2] as char)
+            .ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+        let b3 = decode_char(chunk[3] as char)
+            .ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
 
         result.push((b0 << 2) | (b1 >> 4));
         if chunk[2] != b'=' {
@@ -488,11 +597,7 @@ async fn op_howth_fetch(
             let client = reqwest::blocking::Client::new();
             let opts = options.unwrap_or_default();
 
-            let method = opts
-                .method
-                .as_deref()
-                .unwrap_or("GET")
-                .to_uppercase();
+            let method = opts.method.as_deref().unwrap_or("GET").to_uppercase();
 
             let mut request = match method.as_str() {
                 "GET" => client.get(&url),
@@ -501,7 +606,12 @@ async fn op_howth_fetch(
                 "DELETE" => client.delete(&url),
                 "PATCH" => client.patch(&url),
                 "HEAD" => client.head(&url),
-                _ => return Err(deno_core::error::AnyError::msg(format!("Unsupported method: {}", method))),
+                _ => {
+                    return Err(deno_core::error::AnyError::msg(format!(
+                        "Unsupported method: {}",
+                        method
+                    )))
+                }
             };
 
             // Add headers
@@ -523,10 +633,7 @@ async fn op_howth_fetch(
 
             let mut headers = std::collections::HashMap::new();
             for (key, value) in response.headers().iter() {
-                headers.insert(
-                    key.to_string(),
-                    value.to_str().unwrap_or("").to_string(),
-                );
+                headers.insert(key.to_string(), value.to_str().unwrap_or("").to_string());
             }
 
             let body = response.text()?;
@@ -576,10 +683,12 @@ fn op_howth_random_bytes(len: u32) -> Vec<u8> {
     let mut hasher = state.build_hasher();
 
     for chunk in bytes.chunks_mut(8) {
-        hasher.write_usize(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as usize);
+        hasher.write_usize(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as usize,
+        );
         let random = hasher.finish();
         let random_bytes = random.to_le_bytes();
         for (i, byte) in chunk.iter_mut().enumerate() {
@@ -602,10 +711,12 @@ fn op_howth_random_uuid() -> String {
 
     let state = RandomState::new();
     let mut hasher = state.build_hasher();
-    hasher.write_usize(std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as usize);
+    hasher.write_usize(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as usize,
+    );
 
     let mut bytes = [0u8; 16];
     let hash1 = hasher.finish();
@@ -632,7 +743,10 @@ fn op_howth_random_uuid() -> String {
 /// Hash data using various algorithms.
 #[op2]
 #[serde]
-fn op_howth_hash(#[string] algorithm: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, deno_core::error::AnyError> {
+fn op_howth_hash(
+    #[string] algorithm: &str,
+    #[buffer] data: &[u8],
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -704,7 +818,10 @@ fn op_howth_hash(#[string] algorithm: &str, #[buffer] data: &[u8]) -> Result<Vec
             result.extend_from_slice(&h2.to_be_bytes());
             Ok(result)
         }
-        _ => Err(deno_core::error::AnyError::msg(format!("Unsupported algorithm: {}", algorithm))),
+        _ => Err(deno_core::error::AnyError::msg(format!(
+            "Unsupported algorithm: {}",
+            algorithm
+        ))),
     }
 }
 
@@ -731,9 +848,10 @@ impl Runtime {
     pub fn new(options: RuntimeOptions) -> Result<Self, RuntimeError> {
         let state = Rc::new(RefCell::new(RuntimeState::default()));
 
-        let cwd = options.cwd.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
+        let cwd = options
+            .cwd
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         let module_loader = Rc::new(HowthModuleLoader::new(cwd.clone()));
 
@@ -771,10 +889,10 @@ impl Runtime {
             .map_err(|_| RuntimeError::Io(format!("Invalid path: {}", path.display())))?;
 
         // Set up the main module context for require
-        let abs_path = std::fs::canonicalize(path)
-            .unwrap_or_else(|_| path.to_path_buf());
+        let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let main_module_path = abs_path.to_string_lossy().to_string();
-        let main_module_dir = abs_path.parent()
+        let main_module_dir = abs_path
+            .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
 
@@ -861,7 +979,10 @@ mod tests {
     #[tokio::test]
     async fn test_console_log() {
         let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
-        runtime.execute_script("console.log('hello')").await.unwrap();
+        runtime
+            .execute_script("console.log('hello')")
+            .await
+            .unwrap();
         runtime.run_event_loop().await.unwrap();
     }
 
@@ -887,7 +1008,8 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: None,
-        }).unwrap();
+        })
+        .unwrap();
         runtime
             .execute_script(
                 r#"
@@ -1364,22 +1486,31 @@ mod tests {
         // Create a simple package in node_modules
         let pkg_dir = temp.path().join("node_modules/test-pkg");
         fs::create_dir_all(&pkg_dir).unwrap();
-        fs::write(pkg_dir.join("package.json"), r#"{"name": "test-pkg", "main": "index.js"}"#).unwrap();
+        fs::write(
+            pkg_dir.join("package.json"),
+            r#"{"name": "test-pkg", "main": "index.js"}"#,
+        )
+        .unwrap();
         fs::write(pkg_dir.join("index.js"), "export const value = 42;").unwrap();
 
         // Create main entry file that imports from the package
         let main_file = temp.path().join("main.js");
-        fs::write(&main_file, r#"
+        fs::write(
+            &main_file,
+            r#"
             import { value } from 'test-pkg';
             if (value !== 42) throw new Error('import failed: ' + value);
             console.log('Bare specifier import works! value =', value);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         // Run with the temp directory as cwd
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1393,20 +1524,29 @@ mod tests {
         let pkg_dir = temp.path().join("node_modules/@myorg/utils");
         fs::create_dir_all(&pkg_dir).unwrap();
         fs::write(pkg_dir.join("package.json"), r#"{"name": "@myorg/utils"}"#).unwrap();
-        fs::write(pkg_dir.join("index.js"), "export function add(a, b) { return a + b; }").unwrap();
+        fs::write(
+            pkg_dir.join("index.js"),
+            "export function add(a, b) { return a + b; }",
+        )
+        .unwrap();
 
         // Create main file
         let main_file = temp.path().join("main.js");
-        fs::write(&main_file, r#"
+        fs::write(
+            &main_file,
+            r#"
             import { add } from '@myorg/utils';
             if (add(2, 3) !== 5) throw new Error('scoped import failed');
             console.log('Scoped package import works!');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1425,16 +1565,21 @@ mod tests {
 
         // Create main file
         let main_file = temp.path().join("main.js");
-        fs::write(&main_file, r#"
+        fs::write(
+            &main_file,
+            r#"
             import { PI } from 'mylib/utils/math';
             if (Math.abs(PI - 3.14159) > 0.0001) throw new Error('subpath import failed');
             console.log('Subpath import works! PI =', PI);
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1500,7 +1645,8 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1531,7 +1677,8 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1542,7 +1689,9 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
 
         let main_file = temp.path().join("main.js");
-        fs::write(&main_file, r#"
+        fs::write(
+            &main_file,
+            r#"
             import { relative } from 'node:path';
 
             // Test relative path calculation
@@ -1553,12 +1702,15 @@ mod tests {
             if (rel2 !== '../../qux') throw new Error('relative up failed: ' + rel2);
 
             console.log('✓ path.relative works!');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1596,7 +1748,8 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1645,7 +1798,8 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1686,7 +1840,8 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1700,7 +1855,10 @@ mod tests {
         let test_file = temp.path().join("async-test.txt");
         let test_path = test_file.to_string_lossy();
 
-        fs::write(&main_file, format!(r#"
+        fs::write(
+            &main_file,
+            format!(
+                r#"
             import {{ promises as fsp }} from 'node:fs';
 
             // Test promises API
@@ -1714,12 +1872,17 @@ mod tests {
             await fsp.unlink('{}');
 
             console.log('✓ fs/promises works!');
-        "#, test_path, test_path, test_path, test_path)).unwrap();
+        "#,
+                test_path, test_path, test_path, test_path
+            ),
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1739,7 +1902,10 @@ mod tests {
 
         fs::write(&src_file, "Copy me!").unwrap();
 
-        fs::write(&main_file, format!(r#"
+        fs::write(
+            &main_file,
+            format!(
+                r#"
             import fs from 'node:fs';
 
             // Test copyFileSync
@@ -1756,12 +1922,25 @@ mod tests {
             if (renamed !== 'Copy me!') throw new Error('renamed content mismatch');
 
             console.log('✓ fs copy/rename works!');
-        "#, src_path, dst_path, dst_path, dst_path, dst_path, renamed_path, dst_path, renamed_path, renamed_path)).unwrap();
+        "#,
+                src_path,
+                dst_path,
+                dst_path,
+                dst_path,
+                dst_path,
+                renamed_path,
+                dst_path,
+                renamed_path,
+                renamed_path
+            ),
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1773,17 +1952,24 @@ mod tests {
 
         // Create a CommonJS module
         let lib_file = temp.path().join("lib.js");
-        fs::write(&lib_file, r#"
+        fs::write(
+            &lib_file,
+            r#"
             module.exports = {
                 add: function(a, b) { return a + b; },
                 PI: 3.14159
             };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         // Create main file that uses require
         let main_file = temp.path().join("main.js");
         let lib_path = lib_file.to_string_lossy();
-        fs::write(&main_file, format!(r#"
+        fs::write(
+            &main_file,
+            format!(
+                r#"
             const lib = require('{}');
 
             if (typeof lib.add !== 'function') throw new Error('add should be function');
@@ -1791,12 +1977,17 @@ mod tests {
             if (lib.PI !== 3.14159) throw new Error('PI failed');
 
             console.log('✓ CommonJS basic require works!');
-        "#, lib_path)).unwrap();
+        "#,
+                lib_path
+            ),
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1808,26 +1999,38 @@ mod tests {
 
         // Create a module using exports shorthand
         let lib_file = temp.path().join("utils.js");
-        fs::write(&lib_file, r#"
+        fs::write(
+            &lib_file,
+            r#"
             exports.multiply = function(a, b) { return a * b; };
             exports.VERSION = "1.0.0";
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let main_file = temp.path().join("main.js");
         let lib_path = lib_file.to_string_lossy();
-        fs::write(&main_file, format!(r#"
+        fs::write(
+            &main_file,
+            format!(
+                r#"
             const utils = require('{}');
 
             if (utils.multiply(3, 4) !== 12) throw new Error('multiply failed');
             if (utils.VERSION !== "1.0.0") throw new Error('VERSION failed');
 
             console.log('✓ CommonJS exports shorthand works!');
-        "#, lib_path)).unwrap();
+        "#,
+                lib_path
+            ),
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1839,16 +2042,23 @@ mod tests {
 
         let lib_file = temp.path().join("mymodule.js");
         let temp_path = temp.path().to_string_lossy().to_string();
-        fs::write(&lib_file, r#"
+        fs::write(
+            &lib_file,
+            r#"
             module.exports = {
                 dirname: __dirname,
                 filename: __filename
             };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let main_file = temp.path().join("main.js");
         let lib_path = lib_file.to_string_lossy();
-        fs::write(&main_file, format!(r#"
+        fs::write(
+            &main_file,
+            format!(
+                r#"
             const mod = require('{}');
 
             // __dirname should be the directory containing the module
@@ -1862,12 +2072,17 @@ mod tests {
             }}
 
             console.log('✓ __dirname and __filename work!');
-        "#, lib_path, temp_path, temp_path)).unwrap();
+        "#,
+                lib_path, temp_path, temp_path
+            ),
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1879,11 +2094,18 @@ mod tests {
 
         // Create a JSON file
         let json_file = temp.path().join("config.json");
-        fs::write(&json_file, r#"{"name": "test", "version": "1.0.0", "count": 42}"#).unwrap();
+        fs::write(
+            &json_file,
+            r#"{"name": "test", "version": "1.0.0", "count": 42}"#,
+        )
+        .unwrap();
 
         let main_file = temp.path().join("main.js");
         let json_path = json_file.to_string_lossy();
-        fs::write(&main_file, format!(r#"
+        fs::write(
+            &main_file,
+            format!(
+                r#"
             const config = require('{}');
 
             if (config.name !== 'test') throw new Error('name failed');
@@ -1891,12 +2113,17 @@ mod tests {
             if (config.count !== 42) throw new Error('count failed');
 
             console.log('✓ JSON require works!');
-        "#, json_path)).unwrap();
+        "#,
+                json_path
+            ),
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1909,27 +2136,40 @@ mod tests {
         // Create a package in node_modules
         let pkg_dir = temp.path().join("node_modules/my-cjs-pkg");
         fs::create_dir_all(&pkg_dir).unwrap();
-        fs::write(pkg_dir.join("package.json"), r#"{"name": "my-cjs-pkg", "main": "index.js"}"#).unwrap();
-        fs::write(pkg_dir.join("index.js"), r#"
+        fs::write(
+            pkg_dir.join("package.json"),
+            r#"{"name": "my-cjs-pkg", "main": "index.js"}"#,
+        )
+        .unwrap();
+        fs::write(
+            pkg_dir.join("index.js"),
+            r#"
             module.exports = function greet(name) {
                 return 'Hello, ' + name + '!';
             };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let main_file = temp.path().join("main.js");
-        fs::write(&main_file, r#"
+        fs::write(
+            &main_file,
+            r#"
             const greet = require('my-cjs-pkg');
 
             const result = greet('World');
             if (result !== 'Hello, World!') throw new Error('greet failed: ' + result);
 
             console.log('✓ node_modules require works!');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1943,31 +2183,44 @@ mod tests {
         let lib_dir = temp.path().join("lib");
         fs::create_dir_all(&lib_dir).unwrap();
 
-        fs::write(lib_dir.join("math.js"), r#"
+        fs::write(
+            lib_dir.join("math.js"),
+            r#"
             exports.square = function(x) { return x * x; };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
-        fs::write(lib_dir.join("utils.js"), r#"
+        fs::write(
+            lib_dir.join("utils.js"),
+            r#"
             const math = require('./math');
             exports.squareSum = function(a, b) {
                 return math.square(a) + math.square(b);
             };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let main_file = temp.path().join("main.js");
-        fs::write(&main_file, r#"
+        fs::write(
+            &main_file,
+            r#"
             const utils = require('./lib/utils');
 
             const result = utils.squareSum(3, 4);
             if (result !== 25) throw new Error('squareSum failed: ' + result);
 
             console.log('✓ Relative require works!');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -1978,7 +2231,9 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
 
         let main_file = temp.path().join("main.js");
-        fs::write(&main_file, r#"
+        fs::write(
+            &main_file,
+            r#"
             const path = require('node:path');
             const fs = require('node:fs');
 
@@ -1991,12 +2246,15 @@ mod tests {
             if (typeof fs.existsSync !== 'function') throw new Error('fs.existsSync missing');
 
             console.log('✓ Built-in modules via require work!');
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }
@@ -2008,13 +2266,17 @@ mod tests {
 
         // Create a module with a counter to verify caching
         let counter_file = temp.path().join("counter.js");
-        fs::write(&counter_file, r#"
+        fs::write(
+            &counter_file,
+            r#"
             let count = 0;
             module.exports = {
                 increment: function() { return ++count; },
                 getCount: function() { return count; }
             };
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let main_file = temp.path().join("main.js");
         let counter_path = counter_file.to_string_lossy();
@@ -2037,7 +2299,8 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
-        }).unwrap();
+        })
+        .unwrap();
 
         runtime.execute_module(&main_file).await.unwrap();
     }

@@ -15,5 +15,8 @@ serde.workspace = true
 serde_json.workspace = true
 fastnode-core = { workspace = true, features = ["swc"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile.workspace = true

@@ -3,8 +3,9 @@ const common = require('../common');
 const assert = require('assert');
 const path = require('path');
 
-assert.strictEqual(path.dirname(__filename).slice(-13),
-                   common.isWindows ? 'test\\parallel' : 'test/parallel');
+// Modified for howth test structure - just verify it ends with 'parallel'
+assert.ok(path.dirname(__filename).endsWith('parallel'),
+          `Expected dirname to end with 'parallel', got: ${path.dirname(__filename)}`);
 
 assert.strictEqual(path.posix.dirname('/a/b/'), '/a');
 assert.strictEqual(path.posix.dirname('/a/b'), '/a');

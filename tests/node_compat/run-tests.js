@@ -59,8 +59,8 @@ const SKIP_TESTS = new Set([
   'test-path-normalize.js',  // CVE-2024-36139 Windows path traversal
   'test-path-join.js',       // CVE-2024-36139 Windows path traversal
 
-  // Tests with directory structure assumptions
-  'test-path-dirname.js',    // expects 'test/parallel' directory structure
+  // Tests with directory structure assumptions (patched for howth)
+  // 'test-path-dirname.js',    // patched to work with tests/node_compat/parallel
 ]);
 
 // Download a test file from Node.js repo
