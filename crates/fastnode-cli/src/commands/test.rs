@@ -1,15 +1,18 @@
 //! `howth test` command implementation.
 //!
-//! Phase 1: Node wrapper - discovers test files, transpiles TS, runs via Node's --test.
+//! If package.json has a "test" script, runs that.
+//! Otherwise, discovers test files and runs via Node's --test.
 
 use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
 use fastnode_core::Config;
 use miette::Result;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use walkdir::WalkDir;
 
 /// Exit code for validation errors.
+#[allow(dead_code)]
 const EXIT_VALIDATION_ERROR: i32 = 2;
 
 /// Exit code for internal errors.
@@ -19,10 +22,18 @@ const EXIT_INTERNAL_ERROR: i32 = 1;
 const EXCLUDE_DIRS: &[&str] = &["node_modules", ".git", "dist", "build", "target", "coverage"];
 
 /// Run the test command.
+///
+/// First checks for a "test" script in package.json and runs it.
+/// If no script exists, falls back to built-in test discovery.
 pub fn run(config: &Config) -> Result<()> {
     let cwd = &config.cwd;
 
-    // Discover test files
+    // Check for package.json test script first
+    if let Some(script) = get_test_script(cwd) {
+        return run_test_script(cwd, &script);
+    }
+
+    // Fall back to built-in test discovery
     let test_files = discover_test_files(cwd);
 
     if test_files.is_empty() {
@@ -202,6 +213,60 @@ fn cleanup_temp_files(files: &[PathBuf]) {
     for file in files {
         let _ = std::fs::remove_file(file);
     }
+}
+
+/// Check for a "test" script in package.json.
+fn get_test_script(cwd: &Path) -> Option<String> {
+    let package_json_path = cwd.join("package.json");
+    let content = std::fs::read_to_string(&package_json_path).ok()?;
+    let package: Value = serde_json::from_str(&content).ok()?;
+
+    package
+        .get("scripts")?
+        .get("test")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Run the test script from package.json.
+fn run_test_script(cwd: &Path, script: &str) -> Result<()> {
+    use std::io::Write;
+
+    println!("$ {}", script);
+    let _ = std::io::stdout().flush();
+
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(script);
+        c
+    };
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(script);
+        c
+    };
+
+    cmd.current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    // Add node_modules/.bin to PATH
+    let node_modules_bin = cwd.join("node_modules").join(".bin");
+    if node_modules_bin.exists() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", node_modules_bin.display(), path);
+        cmd.env("PATH", new_path);
+    }
+
+    let status = cmd.status().map_err(|e| {
+        miette::miette!("Failed to execute test script: {}", e)
+    })?;
+
+    std::process::exit(status.code().unwrap_or(EXIT_INTERNAL_ERROR));
 }
 
 #[cfg(test)]

@@ -54,6 +54,33 @@ enum Commands {
     /// Check system health and capabilities
     Doctor,
 
+    /// Initialize a new project
+    Init {
+        /// Accept all defaults without prompting
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Register or link a local package
+    Link {
+        /// Package name to link (omit to register current package)
+        package: Option<String>,
+
+        /// Add to package.json dependencies with link: specifier
+        #[arg(long)]
+        save: bool,
+
+        /// List all registered packages
+        #[arg(long)]
+        list: bool,
+    },
+
+    /// Unregister or unlink a local package
+    Unlink {
+        /// Package name to unlink (omit to unregister current package)
+        package: Option<String>,
+    },
+
     /// Run micro-benchmarks
     Bench {
         #[command(subcommand)]
@@ -66,10 +93,10 @@ enum Commands {
     /// Ping the daemon to check if it's running
     Ping,
 
-    /// Run a JavaScript/TypeScript file
+    /// Run a JavaScript/TypeScript file or package.json script
     Run {
-        /// The file to run
-        entry: PathBuf,
+        /// The file or package.json script to run
+        entry: String,
 
         /// Route through the daemon instead of local execution
         #[arg(long)]
@@ -238,6 +265,10 @@ enum Commands {
         #[command(subcommand)]
         pkg_cmd: PkgCommands,
     },
+
+    /// Run a package.json script directly (e.g., `howth test` instead of `howth run test`)
+    #[command(external_subcommand)]
+    Script(Vec<String>),
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -445,6 +476,40 @@ fn main() -> Result<()> {
     // Commands that handle their own output (JSON to stdout, no logging)
     if matches!(cli.command, Some(Commands::Doctor)) {
         return commands::doctor::run(&cwd, Channel::Stable, cli.json);
+    }
+
+    if let Some(Commands::Init { yes }) = &cli.command {
+        return commands::init::run(&cwd, *yes, cli.json);
+    }
+
+    if let Some(Commands::Link { package, save, list }) = &cli.command {
+        if *list {
+            return commands::link::list(Channel::Stable, cli.json);
+        }
+        return commands::link::link(&cwd, package.as_deref(), *save, Channel::Stable, cli.json);
+    }
+
+    if let Some(Commands::Unlink { package }) = &cli.command {
+        return commands::link::unlink(&cwd, package.as_deref(), Channel::Stable, cli.json);
+    }
+
+    // Handle script shortcuts (e.g., `howth test` instead of `howth run test`)
+    if let Some(Commands::Script(args)) = &cli.command {
+        if let Some(script_name) = args.first() {
+            // Pass remaining args to the script
+            let script_args: Vec<String> = args.iter().skip(1).cloned().collect();
+            return commands::run::run(
+                &cwd,
+                script_name,
+                &script_args,
+                false, // daemon
+                false, // dry_run
+                false, // native
+                false, // node
+                Channel::Stable,
+                cli.json,
+            );
+        }
     }
 
     if let Some(Commands::Bench { bench_cmd }) = &cli.command {
@@ -771,8 +836,12 @@ fn main() -> Result<()> {
             | Commands::Bundle { .. }
             | Commands::Daemon
             | Commands::Dev { .. }
+            | Commands::Init { .. }
+            | Commands::Link { .. }
+            | Commands::Unlink { .. }
             | Commands::Ping
             | Commands::Run { .. }
+            | Commands::Script(_)
             | Commands::Watch { .. }
             | Commands::Pkg { .. }
             | Commands::Install { .. }

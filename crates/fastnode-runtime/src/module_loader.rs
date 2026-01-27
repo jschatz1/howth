@@ -5,7 +5,22 @@
 use deno_core::error::AnyError;
 use deno_core::futures::FutureExt;
 use deno_core::{ModuleLoadResponse, ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, RequestedModuleType, ResolutionKind};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
+
+/// Minimal package.json structure for module resolution.
+#[derive(Debug, Deserialize, Default)]
+struct PackageJson {
+    /// Main entry point (CommonJS or fallback)
+    main: Option<String>,
+    /// ES module entry point
+    module: Option<String>,
+    /// Modern exports field
+    exports: Option<serde_json::Value>,
+    /// Package type (module or commonjs)
+    #[serde(rename = "type")]
+    pkg_type: Option<String>,
+}
 
 /// Howth's custom module loader.
 pub struct HowthModuleLoader {
@@ -46,11 +61,8 @@ impl HowthModuleLoader {
             return self.resolve_with_extensions(&path);
         }
 
-        // Bare specifiers (node_modules) - not yet supported
-        Err(AnyError::msg(format!(
-            "Bare specifiers not yet supported: '{}'. Use relative paths (./module) instead.",
-            specifier
-        )))
+        // Bare specifiers - resolve from node_modules
+        self.resolve_bare_specifier(specifier, referrer)
     }
 
     /// Try to resolve a path with various extensions.
@@ -93,6 +105,196 @@ impl HowthModuleLoader {
         )))
     }
 
+    /// Resolve a bare specifier (e.g., 'lodash' or 'lodash/fp') from node_modules.
+    fn resolve_bare_specifier(&self, specifier: &str, referrer: &ModuleSpecifier) -> Result<PathBuf, AnyError> {
+        // Parse the specifier into package name and subpath
+        let (package_name, subpath) = self.parse_bare_specifier(specifier);
+
+        // Find the package in node_modules
+        let package_dir = self.find_package(&package_name, referrer)?;
+
+        // If there's a subpath, resolve it directly
+        if let Some(subpath) = subpath {
+            let subpath_resolved = package_dir.join(&subpath);
+            return self.resolve_with_extensions(&subpath_resolved);
+        }
+
+        // Otherwise, resolve the package entry point
+        self.resolve_package_entry(&package_dir, &package_name)
+    }
+
+    /// Parse a bare specifier into package name and optional subpath.
+    /// - 'lodash' -> ('lodash', None)
+    /// - 'lodash/fp' -> ('lodash', Some('fp'))
+    /// - '@scope/pkg' -> ('@scope/pkg', None)
+    /// - '@scope/pkg/sub' -> ('@scope/pkg', Some('sub'))
+    fn parse_bare_specifier<'a>(&self, specifier: &'a str) -> (String, Option<String>) {
+        if specifier.starts_with('@') {
+            // Scoped package: @scope/package or @scope/package/subpath
+            let parts: Vec<&str> = specifier.splitn(3, '/').collect();
+            if parts.len() >= 2 {
+                let package_name = format!("{}/{}", parts[0], parts[1]);
+                let subpath = if parts.len() > 2 {
+                    Some(parts[2].to_string())
+                } else {
+                    None
+                };
+                return (package_name, subpath);
+            }
+        }
+
+        // Regular package: package or package/subpath
+        if let Some(slash_pos) = specifier.find('/') {
+            let package_name = specifier[..slash_pos].to_string();
+            let subpath = specifier[slash_pos + 1..].to_string();
+            (package_name, Some(subpath))
+        } else {
+            (specifier.to_string(), None)
+        }
+    }
+
+    /// Find a package in node_modules, walking up from the referrer.
+    fn find_package(&self, package_name: &str, referrer: &ModuleSpecifier) -> Result<PathBuf, AnyError> {
+        // Start from the referrer's directory
+        let start_dir = if let Ok(path) = referrer.to_file_path() {
+            path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.cwd.clone())
+        } else {
+            self.cwd.clone()
+        };
+
+        // Walk up the directory tree looking for node_modules
+        let mut current = start_dir.as_path();
+        loop {
+            let node_modules = current.join("node_modules");
+            let package_dir = node_modules.join(package_name);
+
+            if package_dir.is_dir() {
+                return Ok(package_dir);
+            }
+
+            // Move up to parent directory
+            match current.parent() {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+
+        Err(AnyError::msg(format!(
+            "Cannot find package '{}' in node_modules",
+            package_name
+        )))
+    }
+
+    /// Resolve the entry point of a package using package.json.
+    fn resolve_package_entry(&self, package_dir: &Path, package_name: &str) -> Result<PathBuf, AnyError> {
+        let package_json_path = package_dir.join("package.json");
+
+        // Read and parse package.json
+        let pkg: PackageJson = if package_json_path.exists() {
+            let content = std::fs::read_to_string(&package_json_path)?;
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            PackageJson::default()
+        };
+
+        // Try exports field first (modern resolution)
+        if let Some(exports) = &pkg.exports {
+            if let Some(entry) = self.resolve_exports(exports, ".") {
+                let resolved = package_dir.join(&entry);
+                if resolved.exists() {
+                    return Ok(resolved);
+                }
+                // Try with extensions
+                if let Ok(path) = self.resolve_with_extensions(&resolved) {
+                    return Ok(path);
+                }
+            }
+        }
+
+        // Try module field (ES modules)
+        if let Some(module) = &pkg.module {
+            let resolved = package_dir.join(module);
+            if resolved.exists() {
+                return Ok(resolved);
+            }
+            if let Ok(path) = self.resolve_with_extensions(&resolved) {
+                return Ok(path);
+            }
+        }
+
+        // Try main field (CommonJS or fallback)
+        if let Some(main) = &pkg.main {
+            let resolved = package_dir.join(main);
+            if resolved.exists() {
+                return Ok(resolved);
+            }
+            if let Ok(path) = self.resolve_with_extensions(&resolved) {
+                return Ok(path);
+            }
+        }
+
+        // Default to index.js
+        self.resolve_with_extensions(&package_dir.join("index"))
+            .map_err(|_| AnyError::msg(format!(
+                "Cannot find entry point for package '{}'",
+                package_name
+            )))
+    }
+
+    /// Resolve the exports field of package.json.
+    /// Handles both string exports and conditional exports.
+    fn resolve_exports(&self, exports: &serde_json::Value, subpath: &str) -> Option<String> {
+        match exports {
+            // Simple string export: "exports": "./dist/index.js"
+            serde_json::Value::String(s) if subpath == "." => Some(s.clone()),
+
+            // Object exports
+            serde_json::Value::Object(map) => {
+                // Check for subpath match first
+                if let Some(value) = map.get(subpath) {
+                    return self.resolve_export_value(value);
+                }
+
+                // Check for "." entry (main export)
+                if subpath == "." {
+                    if let Some(value) = map.get(".") {
+                        return self.resolve_export_value(value);
+                    }
+
+                    // If no "." entry, this might be conditional exports at the top level
+                    // Try import/default/node conditions
+                    return self.resolve_export_value(exports);
+                }
+
+                None
+            }
+
+            _ => None,
+        }
+    }
+
+    /// Resolve a single export value, handling conditional exports.
+    fn resolve_export_value(&self, value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(s) => Some(s.clone()),
+
+            serde_json::Value::Object(conditions) => {
+                // Priority: import > module > default > node > require
+                let priority = ["import", "module", "default", "node", "require"];
+                for condition in priority {
+                    if let Some(v) = conditions.get(condition) {
+                        if let Some(resolved) = self.resolve_export_value(v) {
+                            return Some(resolved);
+                        }
+                    }
+                }
+                None
+            }
+
+            _ => None,
+        }
+    }
+
     /// Load and optionally transpile a module.
     fn load_module(&self, path: &Path) -> Result<(String, ModuleType), AnyError> {
         let source = std::fs::read_to_string(path)?;
@@ -132,6 +334,12 @@ impl ModuleLoader for HowthModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, AnyError> {
+        // Handle node: built-in modules
+        if specifier.starts_with("node:") {
+            return ModuleSpecifier::parse(&format!("howth-builtin:///{}", specifier))
+                .map_err(|e| AnyError::msg(format!("Invalid builtin module: {}", e)));
+        }
+
         // Parse referrer as URL
         let referrer_url = if referrer == "." || referrer.is_empty() {
             // Entry point - use cwd
@@ -161,6 +369,18 @@ impl ModuleLoader for HowthModuleLoader {
 
         ModuleLoadResponse::Async(
             async move {
+                // Handle built-in modules
+                if specifier.scheme() == "howth-builtin" {
+                    let module_name = specifier.path().trim_start_matches('/');
+                    let code = Self::generate_builtin_module(module_name)?;
+                    return Ok(ModuleSource::new(
+                        ModuleType::JavaScript,
+                        ModuleSourceCode::String(code.into()),
+                        &specifier,
+                        None,
+                    ));
+                }
+
                 let loader = HowthModuleLoader::new(cwd);
 
                 let path = specifier.to_file_path().map_err(|_| {
@@ -178,5 +398,186 @@ impl ModuleLoader for HowthModuleLoader {
             }
             .boxed_local(),
         )
+    }
+}
+
+impl HowthModuleLoader {
+    /// Generate synthetic module code for built-in modules.
+    fn generate_builtin_module(module_name: &str) -> Result<String, AnyError> {
+        // Check if the module exists in __howth_modules
+        let code = format!(
+            r#"
+            const mod = globalThis.__howth_modules?.["{}"];
+            if (!mod) {{
+                throw new Error("Built-in module '{}' is not implemented");
+            }}
+            export default mod;
+            export const {{ {} }} = mod;
+            "#,
+            module_name,
+            module_name,
+            Self::get_builtin_exports(module_name)
+        );
+        Ok(code)
+    }
+
+    /// Get the named exports for a built-in module.
+    fn get_builtin_exports(module_name: &str) -> &'static str {
+        match module_name {
+            "node:path" | "path" => {
+                "join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, parse, format, sep, delimiter, posix, win32, toNamespacedPath"
+            }
+            "node:fs" | "fs" => {
+                "readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, rmdirSync, rmSync, unlinkSync, renameSync, copyFileSync, readdirSync, statSync, lstatSync, realpathSync, chmodSync, accessSync, promises, constants, Stats, Dirent, readFile, writeFile, appendFile, mkdir, rmdir, rm, unlink, rename, copyFile, readdir, stat, lstat, realpath, chmod, access, exists, F_OK, R_OK, W_OK, X_OK"
+            }
+            "node:fs/promises" | "fs/promises" => {
+                "readFile, writeFile, appendFile, mkdir, rmdir, rm, unlink, rename, copyFile, readdir, stat, lstat, realpath, chmod, access"
+            }
+            _ => "",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn setup_node_modules(temp: &TempDir) {
+        // Create node_modules/simple-pkg/index.js
+        let simple_pkg = temp.path().join("node_modules/simple-pkg");
+        fs::create_dir_all(&simple_pkg).unwrap();
+        fs::write(simple_pkg.join("index.js"), "export const x = 1;").unwrap();
+        fs::write(simple_pkg.join("package.json"), r#"{"name": "simple-pkg"}"#).unwrap();
+
+        // Create node_modules/with-main with main field
+        let with_main = temp.path().join("node_modules/with-main");
+        fs::create_dir_all(&with_main).unwrap();
+        fs::write(with_main.join("lib.js"), "export const y = 2;").unwrap();
+        fs::write(with_main.join("package.json"), r#"{"name": "with-main", "main": "lib.js"}"#).unwrap();
+
+        // Create node_modules/with-exports with exports field
+        let with_exports = temp.path().join("node_modules/with-exports");
+        fs::create_dir_all(with_exports.join("dist")).unwrap();
+        fs::write(with_exports.join("dist/index.mjs"), "export const z = 3;").unwrap();
+        fs::write(with_exports.join("package.json"), r#"{
+            "name": "with-exports",
+            "exports": {
+                ".": {
+                    "import": "./dist/index.mjs",
+                    "require": "./dist/index.cjs"
+                }
+            }
+        }"#).unwrap();
+
+        // Create node_modules/with-subpath with subpath exports
+        let with_subpath = temp.path().join("node_modules/with-subpath");
+        fs::create_dir_all(with_subpath.join("utils")).unwrap();
+        fs::write(with_subpath.join("index.js"), "export const a = 1;").unwrap();
+        fs::write(with_subpath.join("utils/helper.js"), "export const b = 2;").unwrap();
+        fs::write(with_subpath.join("package.json"), r#"{"name": "with-subpath"}"#).unwrap();
+
+        // Create node_modules/@scope/pkg (scoped package)
+        let scoped = temp.path().join("node_modules/@scope/pkg");
+        fs::create_dir_all(&scoped).unwrap();
+        fs::write(scoped.join("index.js"), "export const scoped = true;").unwrap();
+        fs::write(scoped.join("package.json"), r#"{"name": "@scope/pkg"}"#).unwrap();
+    }
+
+    #[test]
+    fn test_parse_bare_specifier() {
+        let loader = HowthModuleLoader::new(PathBuf::from("/tmp"));
+
+        // Simple package
+        let (name, subpath) = loader.parse_bare_specifier("lodash");
+        assert_eq!(name, "lodash");
+        assert_eq!(subpath, None);
+
+        // Package with subpath
+        let (name, subpath) = loader.parse_bare_specifier("lodash/fp");
+        assert_eq!(name, "lodash");
+        assert_eq!(subpath, Some("fp".to_string()));
+
+        // Scoped package
+        let (name, subpath) = loader.parse_bare_specifier("@scope/pkg");
+        assert_eq!(name, "@scope/pkg");
+        assert_eq!(subpath, None);
+
+        // Scoped package with subpath
+        let (name, subpath) = loader.parse_bare_specifier("@scope/pkg/utils");
+        assert_eq!(name, "@scope/pkg");
+        assert_eq!(subpath, Some("utils".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_simple_package() {
+        let temp = TempDir::new().unwrap();
+        setup_node_modules(&temp);
+
+        let loader = HowthModuleLoader::new(temp.path().to_path_buf());
+        let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
+
+        let resolved = loader.resolve_bare_specifier("simple-pkg", &referrer).unwrap();
+        assert!(resolved.ends_with("simple-pkg/index.js"));
+    }
+
+    #[test]
+    fn test_resolve_package_with_main() {
+        let temp = TempDir::new().unwrap();
+        setup_node_modules(&temp);
+
+        let loader = HowthModuleLoader::new(temp.path().to_path_buf());
+        let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
+
+        let resolved = loader.resolve_bare_specifier("with-main", &referrer).unwrap();
+        assert!(resolved.ends_with("with-main/lib.js"));
+    }
+
+    #[test]
+    fn test_resolve_package_with_exports() {
+        let temp = TempDir::new().unwrap();
+        setup_node_modules(&temp);
+
+        let loader = HowthModuleLoader::new(temp.path().to_path_buf());
+        let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
+
+        let resolved = loader.resolve_bare_specifier("with-exports", &referrer).unwrap();
+        assert!(resolved.ends_with("with-exports/dist/index.mjs"));
+    }
+
+    #[test]
+    fn test_resolve_subpath_import() {
+        let temp = TempDir::new().unwrap();
+        setup_node_modules(&temp);
+
+        let loader = HowthModuleLoader::new(temp.path().to_path_buf());
+        let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
+
+        let resolved = loader.resolve_bare_specifier("with-subpath/utils/helper", &referrer).unwrap();
+        assert!(resolved.ends_with("with-subpath/utils/helper.js"));
+    }
+
+    #[test]
+    fn test_resolve_scoped_package() {
+        let temp = TempDir::new().unwrap();
+        setup_node_modules(&temp);
+
+        let loader = HowthModuleLoader::new(temp.path().to_path_buf());
+        let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
+
+        let resolved = loader.resolve_bare_specifier("@scope/pkg", &referrer).unwrap();
+        assert!(resolved.ends_with("@scope/pkg/index.js"));
+    }
+
+    #[test]
+    fn test_package_not_found() {
+        let temp = TempDir::new().unwrap();
+        let loader = HowthModuleLoader::new(temp.path().to_path_buf());
+        let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
+
+        let result = loader.resolve_bare_specifier("nonexistent-pkg", &referrer);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cannot find package"));
     }
 }

@@ -141,6 +141,7 @@ impl UsedExports {
     }
 
     /// Mark an export as used, following re-exports to the source.
+    #[allow(clippy::only_used_in_recursion)]
     fn mark_export_used(&mut self, graph: &ModuleGraph, module_id: ModuleId, export_name: &str) {
         // Check if this is a re-export
         if let Some((source_id, source_name)) = self

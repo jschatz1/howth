@@ -62,6 +62,21 @@ extension!(
         op_howth_hash,
         op_howth_hrtime,
         op_howth_sleep,
+        // File system ops
+        op_howth_fs_exists,
+        op_howth_fs_mkdir,
+        op_howth_fs_readdir,
+        op_howth_fs_stat,
+        op_howth_fs_unlink,
+        op_howth_fs_rmdir,
+        op_howth_fs_rename,
+        op_howth_fs_copy,
+        op_howth_fs_append,
+        op_howth_fs_read_bytes,
+        op_howth_fs_write_bytes,
+        op_howth_fs_realpath,
+        op_howth_fs_chmod,
+        op_howth_fs_access,
     ],
 );
 
@@ -91,6 +106,316 @@ fn op_howth_read_file(#[string] path: &str) -> Result<String, deno_core::error::
 #[op2(fast)]
 fn op_howth_write_file(#[string] path: &str, #[string] contents: &str) -> Result<(), deno_core::error::AnyError> {
     std::fs::write(path, contents).map_err(|e| e.into())
+}
+
+/// Check if a file or directory exists.
+#[op2(fast)]
+fn op_howth_fs_exists(#[string] path: &str) -> bool {
+    std::path::Path::new(path).exists()
+}
+
+/// Create a directory.
+#[op2(fast)]
+fn op_howth_fs_mkdir(#[string] path: &str, recursive: bool) -> Result<(), deno_core::error::AnyError> {
+    if recursive {
+        std::fs::create_dir_all(path).map_err(|e| e.into())
+    } else {
+        std::fs::create_dir(path).map_err(|e| e.into())
+    }
+}
+
+/// File/directory entry from readdir.
+#[derive(serde::Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_file: bool,
+    pub is_directory: bool,
+    pub is_symlink: bool,
+}
+
+/// Read directory contents.
+#[op2]
+#[serde]
+fn op_howth_fs_readdir(#[string] path: &str) -> Result<Vec<DirEntry>, deno_core::error::AnyError> {
+    let entries = std::fs::read_dir(path)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| {
+            let file_type = entry.file_type().ok();
+            DirEntry {
+                name: entry.file_name().to_string_lossy().to_string(),
+                is_file: file_type.map(|ft| ft.is_file()).unwrap_or(false),
+                is_directory: file_type.map(|ft| ft.is_dir()).unwrap_or(false),
+                is_symlink: file_type.map(|ft| ft.is_symlink()).unwrap_or(false),
+            }
+        })
+        .collect();
+    Ok(entries)
+}
+
+/// File statistics.
+#[derive(serde::Serialize)]
+pub struct FileStat {
+    pub is_file: bool,
+    pub is_directory: bool,
+    pub is_symlink: bool,
+    pub size: u64,
+    pub mode: u32,
+    pub mtime_ms: f64,
+    pub atime_ms: f64,
+    pub ctime_ms: f64,
+    pub birthtime_ms: f64,
+    pub dev: u64,
+    pub ino: u64,
+    pub nlink: u64,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+/// Get file statistics.
+#[op2]
+#[serde]
+fn op_howth_fs_stat(#[string] path: &str, follow_symlinks: bool) -> Result<FileStat, deno_core::error::AnyError> {
+    let metadata = if follow_symlinks {
+        std::fs::metadata(path)?
+    } else {
+        std::fs::symlink_metadata(path)?
+    };
+
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+
+    let mtime = metadata.modified().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    let atime = metadata.accessed().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    let ctime = metadata.created().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+
+    Ok(FileStat {
+        is_file: metadata.is_file(),
+        is_directory: metadata.is_dir(),
+        is_symlink: metadata.file_type().is_symlink(),
+        size: metadata.len(),
+        #[cfg(unix)]
+        mode: metadata.mode(),
+        #[cfg(not(unix))]
+        mode: if metadata.is_dir() { 0o755 } else { 0o644 },
+        mtime_ms: mtime,
+        atime_ms: atime,
+        ctime_ms: ctime,
+        birthtime_ms: ctime, // Use ctime as birthtime fallback
+        #[cfg(unix)]
+        dev: metadata.dev(),
+        #[cfg(not(unix))]
+        dev: 0,
+        #[cfg(unix)]
+        ino: metadata.ino(),
+        #[cfg(not(unix))]
+        ino: 0,
+        #[cfg(unix)]
+        nlink: metadata.nlink(),
+        #[cfg(not(unix))]
+        nlink: 1,
+        #[cfg(unix)]
+        uid: metadata.uid(),
+        #[cfg(not(unix))]
+        uid: 0,
+        #[cfg(unix)]
+        gid: metadata.gid(),
+        #[cfg(not(unix))]
+        gid: 0,
+    })
+}
+
+/// Delete a file.
+#[op2(fast)]
+fn op_howth_fs_unlink(#[string] path: &str) -> Result<(), deno_core::error::AnyError> {
+    std::fs::remove_file(path).map_err(|e| e.into())
+}
+
+/// Remove a directory.
+#[op2(fast)]
+fn op_howth_fs_rmdir(#[string] path: &str, recursive: bool) -> Result<(), deno_core::error::AnyError> {
+    if recursive {
+        std::fs::remove_dir_all(path).map_err(|e| e.into())
+    } else {
+        std::fs::remove_dir(path).map_err(|e| e.into())
+    }
+}
+
+/// Rename/move a file or directory.
+#[op2(fast)]
+fn op_howth_fs_rename(#[string] old_path: &str, #[string] new_path: &str) -> Result<(), deno_core::error::AnyError> {
+    std::fs::rename(old_path, new_path).map_err(|e| e.into())
+}
+
+/// Copy a file.
+#[op2(fast)]
+fn op_howth_fs_copy(#[string] src: &str, #[string] dest: &str) -> Result<(), deno_core::error::AnyError> {
+    std::fs::copy(src, dest)?;
+    Ok(())
+}
+
+/// Append to a file.
+#[op2(fast)]
+fn op_howth_fs_append(#[string] path: &str, #[string] contents: &str) -> Result<(), deno_core::error::AnyError> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
+/// Read file as bytes (returns base64).
+#[op2]
+#[string]
+fn op_howth_fs_read_bytes(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
+    use deno_core::serde_json::json;
+    let bytes = std::fs::read(path)?;
+    // Return as base64 for efficient transfer
+    Ok(base64_encode(&bytes))
+}
+
+/// Write bytes to file (accepts base64).
+#[op2(fast)]
+fn op_howth_fs_write_bytes(#[string] path: &str, #[string] base64_data: &str) -> Result<(), deno_core::error::AnyError> {
+    let bytes = base64_decode(base64_data)?;
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// Get the real path (resolving symlinks).
+#[op2]
+#[string]
+fn op_howth_fs_realpath(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
+    std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.into())
+}
+
+/// Change file permissions (Unix only).
+#[op2(fast)]
+fn op_howth_fs_chmod(#[string] path: &str, mode: u32) -> Result<(), deno_core::error::AnyError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(path, perms)?;
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows, we can only set read-only
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_readonly(mode & 0o222 == 0);
+        std::fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+/// Check file access permissions.
+#[op2(fast)]
+fn op_howth_fs_access(#[string] path: &str, mode: u32) -> Result<(), deno_core::error::AnyError> {
+    let path = std::path::Path::new(path);
+
+    // Mode flags: 0=exists, 1=execute, 2=write, 4=read
+    if !path.exists() {
+        return Err(deno_core::error::AnyError::msg("ENOENT: no such file or directory"));
+    }
+
+    let metadata = std::fs::metadata(path)?;
+
+    // Check read access (mode & 4)
+    if mode & 4 != 0 {
+        // We can check by trying to open
+        if std::fs::File::open(path).is_err() {
+            return Err(deno_core::error::AnyError::msg("EACCES: permission denied"));
+        }
+    }
+
+    // Check write access (mode & 2)
+    if mode & 2 != 0 {
+        if metadata.permissions().readonly() {
+            return Err(deno_core::error::AnyError::msg("EACCES: permission denied"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Base64 encode helper.
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+
+        result.push(ALPHABET[b0 >> 2] as char);
+        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+
+        if chunk.len() > 1 {
+            result.push(ALPHABET[((b1 & 0x0F) << 2) | (b2 >> 6)] as char);
+        } else {
+            result.push('=');
+        }
+
+        if chunk.len() > 2 {
+            result.push(ALPHABET[b2 & 0x3F] as char);
+        } else {
+            result.push('=');
+        }
+    }
+
+    result
+}
+
+/// Base64 decode helper.
+fn base64_decode(data: &str) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    fn decode_char(c: char) -> Option<u8> {
+        match c {
+            'A'..='Z' => Some(c as u8 - b'A'),
+            'a'..='z' => Some(c as u8 - b'a' + 26),
+            '0'..='9' => Some(c as u8 - b'0' + 52),
+            '+' => Some(62),
+            '/' => Some(63),
+            '=' => Some(0),
+            _ => None,
+        }
+    }
+
+    let data: String = data.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut result = Vec::new();
+
+    for chunk in data.as_bytes().chunks(4) {
+        if chunk.len() != 4 {
+            return Err(deno_core::error::AnyError::msg("Invalid base64"));
+        }
+
+        let b0 = decode_char(chunk[0] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+        let b1 = decode_char(chunk[1] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+        let b2 = decode_char(chunk[2] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+        let b3 = decode_char(chunk[3] as char).ok_or_else(|| deno_core::error::AnyError::msg("Invalid base64"))?;
+
+        result.push((b0 << 2) | (b1 >> 4));
+        if chunk[2] != b'=' {
+            result.push((b1 << 4) | (b2 >> 2));
+        }
+        if chunk[3] != b'=' {
+            result.push((b2 << 6) | b3);
+        }
+    }
+
+    Ok(result)
 }
 
 /// Get current working directory.
@@ -445,6 +770,29 @@ impl Runtime {
         let specifier = ModuleSpecifier::from_file_path(path)
             .map_err(|_| RuntimeError::Io(format!("Invalid path: {}", path.display())))?;
 
+        // Set up the main module context for require
+        let abs_path = std::fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf());
+        let main_module_path = abs_path.to_string_lossy().to_string();
+        let main_module_dir = abs_path.parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+
+        // Set up globals for both ESM and CommonJS compatibility
+        let setup_code = format!(
+            r#"
+            globalThis.__howth_main_module_path = '{}';
+            globalThis.__filename = '{}';
+            globalThis.__dirname = '{}';
+            "#,
+            main_module_path.replace('\\', "\\\\").replace('\'', "\\'"),
+            main_module_path.replace('\\', "\\\\").replace('\'', "\\'"),
+            main_module_dir.replace('\\', "\\\\").replace('\'', "\\'")
+        );
+        self.js_runtime
+            .execute_script("<howth:setup>", setup_code)
+            .map_err(|e| RuntimeError::JavaScript(format!("Setup failed: {}", e)))?;
+
         let module_id = self
             .js_runtime
             .load_main_es_module(&specifier)
@@ -475,6 +823,12 @@ impl Runtime {
                 }
             }
         }
+
+        // Emit the exit event before returning
+        let _ = self.js_runtime.execute_script(
+            "<howth:exit>",
+            "globalThis.process?.emit?.('exit', globalThis.process?.exitCode || 0);".to_string(),
+        );
 
         Ok(())
     }
@@ -529,7 +883,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_cwd() {
-        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: None,
+        }).unwrap();
         runtime
             .execute_script(
                 r#"
@@ -891,5 +1249,796 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_writable_stream() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                if (typeof WritableStream !== 'function') throw new Error('no WritableStream');
+                const chunks = [];
+                const writable = new WritableStream({
+                    write(chunk) { chunks.push(chunk); }
+                });
+                if (!writable.getWriter) throw new Error('no getWriter');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_transform_stream() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                if (typeof TransformStream !== 'function') throw new Error('no TransformStream');
+                const transform = new TransformStream({
+                    transform(chunk, controller) {
+                        controller.enqueue(chunk.toUpperCase());
+                    }
+                });
+                if (!transform.readable) throw new Error('no readable');
+                if (!transform.writable) throw new Error('no writable');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_buffer() {
+        let mut runtime = Runtime::new(RuntimeOptions::default()).unwrap();
+        runtime
+            .execute_script(
+                r#"
+                if (typeof Buffer !== 'function') throw new Error('no Buffer');
+
+                // Buffer.from string
+                const buf1 = Buffer.from("Hello");
+                if (buf1.toString() !== "Hello") throw new Error('from string failed');
+                if (buf1.length !== 5) throw new Error('wrong length');
+
+                // Buffer.from array
+                const buf2 = Buffer.from([72, 105]);
+                if (buf2.toString() !== "Hi") throw new Error('from array failed');
+
+                // Buffer.alloc
+                const buf3 = Buffer.alloc(3, 0x41);
+                if (buf3.toString() !== "AAA") throw new Error('alloc failed');
+
+                // Buffer.concat
+                const buf4 = Buffer.concat([Buffer.from("He"), Buffer.from("llo")]);
+                if (buf4.toString() !== "Hello") throw new Error('concat failed');
+
+                // Base64
+                const buf5 = Buffer.from("Hello");
+                if (buf5.toString("base64") !== "SGVsbG8=") throw new Error('base64 encode failed');
+                const buf6 = Buffer.from("SGVsbG8=", "base64");
+                if (buf6.toString() !== "Hello") throw new Error('base64 decode failed');
+
+                // Hex
+                if (buf5.toString("hex") !== "48656c6c6f") throw new Error('hex encode failed');
+                const buf7 = Buffer.from("48656c6c6f", "hex");
+                if (buf7.toString() !== "Hello") throw new Error('hex decode failed');
+
+                // Buffer.isBuffer
+                if (!Buffer.isBuffer(buf1)) throw new Error('isBuffer failed');
+                if (Buffer.isBuffer(new Uint8Array(5))) throw new Error('isBuffer should be false for Uint8Array');
+
+                // Read/write integers
+                const buf8 = Buffer.alloc(4);
+                buf8.writeUInt32LE(0x12345678, 0);
+                if (buf8.readUInt32LE(0) !== 0x12345678) throw new Error('UInt32LE failed');
+
+                // indexOf/includes
+                const buf9 = Buffer.from("Hello World");
+                if (buf9.indexOf("World") !== 6) throw new Error('indexOf failed');
+                if (!buf9.includes("World")) throw new Error('includes failed');
+
+                // equals
+                if (!Buffer.from("test").equals(Buffer.from("test"))) throw new Error('equals failed');
+                if (Buffer.from("test").equals(Buffer.from("other"))) throw new Error('equals should be false');
+
+                // compare
+                if (Buffer.from("a").compare(Buffer.from("b")) !== -1) throw new Error('compare less failed');
+                if (Buffer.from("b").compare(Buffer.from("a")) !== 1) throw new Error('compare greater failed');
+                if (Buffer.from("a").compare(Buffer.from("a")) !== 0) throw new Error('compare equal failed');
+
+                // slice
+                if (buf9.slice(0, 5).toString() !== "Hello") throw new Error('slice failed');
+                "#,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_bare_specifier_import() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a simple package in node_modules
+        let pkg_dir = temp.path().join("node_modules/test-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("package.json"), r#"{"name": "test-pkg", "main": "index.js"}"#).unwrap();
+        fs::write(pkg_dir.join("index.js"), "export const value = 42;").unwrap();
+
+        // Create main entry file that imports from the package
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            import { value } from 'test-pkg';
+            if (value !== 42) throw new Error('import failed: ' + value);
+            console.log('Bare specifier import works! value =', value);
+        "#).unwrap();
+
+        // Run with the temp directory as cwd
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_scoped_package_import() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a scoped package
+        let pkg_dir = temp.path().join("node_modules/@myorg/utils");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("package.json"), r#"{"name": "@myorg/utils"}"#).unwrap();
+        fs::write(pkg_dir.join("index.js"), "export function add(a, b) { return a + b; }").unwrap();
+
+        // Create main file
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            import { add } from '@myorg/utils';
+            if (add(2, 3) !== 5) throw new Error('scoped import failed');
+            console.log('Scoped package import works!');
+        "#).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_subpath_import() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a package with subpath
+        let pkg_dir = temp.path().join("node_modules/mylib");
+        fs::create_dir_all(pkg_dir.join("utils")).unwrap();
+        fs::write(pkg_dir.join("package.json"), r#"{"name": "mylib"}"#).unwrap();
+        fs::write(pkg_dir.join("index.js"), "export const main = true;").unwrap();
+        fs::write(pkg_dir.join("utils/math.js"), "export const PI = 3.14159;").unwrap();
+
+        // Create main file
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            import { PI } from 'mylib/utils/math';
+            if (Math.abs(PI - 3.14159) > 0.0001) throw new Error('subpath import failed');
+            console.log('Subpath import works! PI =', PI);
+        "#).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_path_module() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            import path from 'node:path';
+
+            // Test join
+            const joined = path.join('foo', 'bar', 'baz');
+            if (joined !== 'foo/bar/baz') throw new Error('join failed: ' + joined);
+
+            // Test dirname
+            const dir = path.dirname('/foo/bar/baz.txt');
+            if (dir !== '/foo/bar') throw new Error('dirname failed: ' + dir);
+
+            // Test basename
+            const base = path.basename('/foo/bar/baz.txt');
+            if (base !== 'baz.txt') throw new Error('basename failed: ' + base);
+
+            const baseNoExt = path.basename('/foo/bar/baz.txt', '.txt');
+            if (baseNoExt !== 'baz') throw new Error('basename with ext failed: ' + baseNoExt);
+
+            // Test extname
+            const ext = path.extname('/foo/bar/baz.txt');
+            if (ext !== '.txt') throw new Error('extname failed: ' + ext);
+
+            // Test isAbsolute
+            if (!path.isAbsolute('/foo/bar')) throw new Error('isAbsolute should be true for /foo/bar');
+            if (path.isAbsolute('foo/bar')) throw new Error('isAbsolute should be false for foo/bar');
+
+            // Test normalize
+            const normalized = path.normalize('/foo/bar/../baz');
+            if (normalized !== '/foo/baz') throw new Error('normalize failed: ' + normalized);
+
+            // Test parse
+            const parsed = path.parse('/foo/bar/baz.txt');
+            if (parsed.root !== '/') throw new Error('parse root failed');
+            if (parsed.base !== 'baz.txt') throw new Error('parse base failed');
+            if (parsed.ext !== '.txt') throw new Error('parse ext failed');
+            if (parsed.name !== 'baz') throw new Error('parse name failed');
+
+            // Test format
+            const formatted = path.format({ dir: '/foo/bar', base: 'baz.txt' });
+            if (formatted !== '/foo/bar/baz.txt') throw new Error('format failed: ' + formatted);
+
+            // Test sep and delimiter
+            if (path.sep !== '/') throw new Error('sep failed: ' + path.sep);
+            if (path.delimiter !== ':') throw new Error('delimiter failed: ' + path.delimiter);
+
+            // Test posix/win32 variants exist
+            if (!path.posix) throw new Error('posix not found');
+            if (!path.win32) throw new Error('win32 not found');
+
+            console.log('✓ node:path module works!');
+        "#).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_path_resolve() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let temp_path = temp.path().to_string_lossy();
+
+        fs::write(&main_file, format!(r#"
+            import path from 'node:path';
+
+            // Test resolve with absolute path
+            const abs = path.resolve('/foo', 'bar', 'baz');
+            if (abs !== '/foo/bar/baz') throw new Error('resolve absolute failed: ' + abs);
+
+            // Test resolve includes cwd for relative paths
+            const rel = path.resolve('foo', 'bar');
+            // Should start with cwd
+            if (!rel.startsWith('/')) throw new Error('resolve relative should be absolute: ' + rel);
+
+            console.log('✓ path.resolve works!');
+        "#)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_path_relative() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            import { relative } from 'node:path';
+
+            // Test relative path calculation
+            const rel = relative('/foo/bar', '/foo/bar/baz/qux');
+            if (rel !== 'baz/qux') throw new Error('relative failed: ' + rel);
+
+            const rel2 = relative('/foo/bar/baz', '/foo/qux');
+            if (rel2 !== '../../qux') throw new Error('relative up failed: ' + rel2);
+
+            console.log('✓ path.relative works!');
+        "#).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_fs_read_write() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let test_file = temp.path().join("test.txt");
+        let test_path = test_file.to_string_lossy();
+
+        fs::write(&main_file, format!(r#"
+            import fs from 'node:fs';
+
+            // Test writeFileSync
+            fs.writeFileSync('{}', 'Hello, World!');
+
+            // Test existsSync
+            if (!fs.existsSync('{}')) throw new Error('file should exist');
+
+            // Test readFileSync
+            const content = fs.readFileSync('{}', 'utf8');
+            if (content !== 'Hello, World!') throw new Error('content mismatch: ' + content);
+
+            // Test appendFileSync
+            fs.appendFileSync('{}', ' More text.');
+            const updated = fs.readFileSync('{}', 'utf8');
+            if (updated !== 'Hello, World! More text.') throw new Error('append failed: ' + updated);
+
+            console.log('✓ fs read/write works!');
+        "#, test_path, test_path, test_path, test_path, test_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_fs_directory_ops() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let test_dir = temp.path().join("testdir");
+        let test_path = test_dir.to_string_lossy();
+
+        fs::write(&main_file, format!(r#"
+            import fs from 'node:fs';
+
+            // Test mkdirSync
+            fs.mkdirSync('{}');
+            if (!fs.existsSync('{}')) throw new Error('dir should exist');
+
+            // Test mkdirSync recursive
+            fs.mkdirSync('{}/sub/deep', {{ recursive: true }});
+
+            // Write a file in the directory
+            fs.writeFileSync('{}/file.txt', 'test');
+
+            // Test readdirSync
+            const entries = fs.readdirSync('{}');
+            if (!entries.includes('file.txt')) throw new Error('readdirSync failed');
+            if (!entries.includes('sub')) throw new Error('readdirSync should include sub');
+
+            // Test readdirSync with withFileTypes
+            const dirents = fs.readdirSync('{}', {{ withFileTypes: true }});
+            const fileDirent = dirents.find(d => d.name === 'file.txt');
+            if (!fileDirent || !fileDirent.isFile()) throw new Error('Dirent.isFile failed');
+            const subDirent = dirents.find(d => d.name === 'sub');
+            if (!subDirent || !subDirent.isDirectory()) throw new Error('Dirent.isDirectory failed');
+
+            // Test rmdirSync recursive
+            fs.rmdirSync('{}', {{ recursive: true }});
+            if (fs.existsSync('{}')) throw new Error('dir should be removed');
+
+            console.log('✓ fs directory ops work!');
+        "#, test_path, test_path, test_path, test_path, test_path, test_path, test_path, test_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_fs_stat() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let test_file = temp.path().join("test.txt");
+        let test_path = test_file.to_string_lossy();
+
+        // Create the test file
+        fs::write(&test_file, "Hello").unwrap();
+
+        fs::write(&main_file, format!(r#"
+            import fs from 'node:fs';
+
+            // Test statSync
+            const stat = fs.statSync('{}');
+
+            if (!stat.isFile()) throw new Error('should be a file');
+            if (stat.isDirectory()) throw new Error('should not be a directory');
+            if (stat.size !== 5) throw new Error('size should be 5: ' + stat.size);
+            if (typeof stat.mtimeMs !== 'number') throw new Error('mtimeMs should be number');
+            if (!(stat.mtime instanceof Date)) throw new Error('mtime should be Date');
+
+            // Test that Stats has all expected properties
+            const props = ['dev', 'ino', 'mode', 'nlink', 'uid', 'gid', 'size', 'atime', 'mtime', 'ctime'];
+            for (const prop of props) {{
+                if (!(prop in stat)) throw new Error('missing property: ' + prop);
+            }}
+
+            console.log('✓ fs.statSync works!');
+        "#, test_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_fs_promises() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let test_file = temp.path().join("async-test.txt");
+        let test_path = test_file.to_string_lossy();
+
+        fs::write(&main_file, format!(r#"
+            import {{ promises as fsp }} from 'node:fs';
+
+            // Test promises API
+            await fsp.writeFile('{}', 'Async content');
+            const content = await fsp.readFile('{}', 'utf8');
+            if (content !== 'Async content') throw new Error('async content mismatch');
+
+            const stat = await fsp.stat('{}');
+            if (!stat.isFile()) throw new Error('should be file');
+
+            await fsp.unlink('{}');
+
+            console.log('✓ fs/promises works!');
+        "#, test_path, test_path, test_path, test_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_fs_copy_rename() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let src_file = temp.path().join("src.txt");
+        let dst_file = temp.path().join("dst.txt");
+        let renamed_file = temp.path().join("renamed.txt");
+        let src_path = src_file.to_string_lossy();
+        let dst_path = dst_file.to_string_lossy();
+        let renamed_path = renamed_file.to_string_lossy();
+
+        fs::write(&src_file, "Copy me!").unwrap();
+
+        fs::write(&main_file, format!(r#"
+            import fs from 'node:fs';
+
+            // Test copyFileSync
+            fs.copyFileSync('{}', '{}');
+            if (!fs.existsSync('{}')) throw new Error('copy should exist');
+            const copied = fs.readFileSync('{}', 'utf8');
+            if (copied !== 'Copy me!') throw new Error('copy content mismatch');
+
+            // Test renameSync
+            fs.renameSync('{}', '{}');
+            if (fs.existsSync('{}')) throw new Error('original should not exist');
+            if (!fs.existsSync('{}')) throw new Error('renamed should exist');
+            const renamed = fs.readFileSync('{}', 'utf8');
+            if (renamed !== 'Copy me!') throw new Error('renamed content mismatch');
+
+            console.log('✓ fs copy/rename works!');
+        "#, src_path, dst_path, dst_path, dst_path, dst_path, renamed_path, dst_path, renamed_path, renamed_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_basic() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a CommonJS module
+        let lib_file = temp.path().join("lib.js");
+        fs::write(&lib_file, r#"
+            module.exports = {
+                add: function(a, b) { return a + b; },
+                PI: 3.14159
+            };
+        "#).unwrap();
+
+        // Create main file that uses require
+        let main_file = temp.path().join("main.js");
+        let lib_path = lib_file.to_string_lossy();
+        fs::write(&main_file, format!(r#"
+            const lib = require('{}');
+
+            if (typeof lib.add !== 'function') throw new Error('add should be function');
+            if (lib.add(2, 3) !== 5) throw new Error('add failed');
+            if (lib.PI !== 3.14159) throw new Error('PI failed');
+
+            console.log('✓ CommonJS basic require works!');
+        "#, lib_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_exports_shorthand() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a module using exports shorthand
+        let lib_file = temp.path().join("utils.js");
+        fs::write(&lib_file, r#"
+            exports.multiply = function(a, b) { return a * b; };
+            exports.VERSION = "1.0.0";
+        "#).unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let lib_path = lib_file.to_string_lossy();
+        fs::write(&main_file, format!(r#"
+            const utils = require('{}');
+
+            if (utils.multiply(3, 4) !== 12) throw new Error('multiply failed');
+            if (utils.VERSION !== "1.0.0") throw new Error('VERSION failed');
+
+            console.log('✓ CommonJS exports shorthand works!');
+        "#, lib_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_dirname_filename() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let lib_file = temp.path().join("mymodule.js");
+        let temp_path = temp.path().to_string_lossy().to_string();
+        fs::write(&lib_file, r#"
+            module.exports = {
+                dirname: __dirname,
+                filename: __filename
+            };
+        "#).unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let lib_path = lib_file.to_string_lossy();
+        fs::write(&main_file, format!(r#"
+            const mod = require('{}');
+
+            // __dirname should be the directory containing the module
+            if (!mod.dirname.includes('{}') && !mod.dirname.includes('/private{}')) {{
+                throw new Error('__dirname wrong: ' + mod.dirname);
+            }}
+
+            // __filename should be the full path to the module
+            if (!mod.filename.endsWith('mymodule.js')) {{
+                throw new Error('__filename wrong: ' + mod.filename);
+            }}
+
+            console.log('✓ __dirname and __filename work!');
+        "#, lib_path, temp_path, temp_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_json() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a JSON file
+        let json_file = temp.path().join("config.json");
+        fs::write(&json_file, r#"{"name": "test", "version": "1.0.0", "count": 42}"#).unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let json_path = json_file.to_string_lossy();
+        fs::write(&main_file, format!(r#"
+            const config = require('{}');
+
+            if (config.name !== 'test') throw new Error('name failed');
+            if (config.version !== '1.0.0') throw new Error('version failed');
+            if (config.count !== 42) throw new Error('count failed');
+
+            console.log('✓ JSON require works!');
+        "#, json_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_node_modules() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a package in node_modules
+        let pkg_dir = temp.path().join("node_modules/my-cjs-pkg");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("package.json"), r#"{"name": "my-cjs-pkg", "main": "index.js"}"#).unwrap();
+        fs::write(pkg_dir.join("index.js"), r#"
+            module.exports = function greet(name) {
+                return 'Hello, ' + name + '!';
+            };
+        "#).unwrap();
+
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            const greet = require('my-cjs-pkg');
+
+            const result = greet('World');
+            if (result !== 'Hello, World!') throw new Error('greet failed: ' + result);
+
+            console.log('✓ node_modules require works!');
+        "#).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_relative_require() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a nested structure
+        let lib_dir = temp.path().join("lib");
+        fs::create_dir_all(&lib_dir).unwrap();
+
+        fs::write(lib_dir.join("math.js"), r#"
+            exports.square = function(x) { return x * x; };
+        "#).unwrap();
+
+        fs::write(lib_dir.join("utils.js"), r#"
+            const math = require('./math');
+            exports.squareSum = function(a, b) {
+                return math.square(a) + math.square(b);
+            };
+        "#).unwrap();
+
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            const utils = require('./lib/utils');
+
+            const result = utils.squareSum(3, 4);
+            if (result !== 25) throw new Error('squareSum failed: ' + result);
+
+            console.log('✓ Relative require works!');
+        "#).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_builtin_modules() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        let main_file = temp.path().join("main.js");
+        fs::write(&main_file, r#"
+            const path = require('node:path');
+            const fs = require('node:fs');
+
+            // Test path
+            const joined = path.join('foo', 'bar');
+            if (joined !== 'foo/bar') throw new Error('path.join failed');
+
+            // Test fs
+            if (typeof fs.readFileSync !== 'function') throw new Error('fs.readFileSync missing');
+            if (typeof fs.existsSync !== 'function') throw new Error('fs.existsSync missing');
+
+            console.log('✓ Built-in modules via require work!');
+        "#).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_commonjs_module_caching() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // Create a module with a counter to verify caching
+        let counter_file = temp.path().join("counter.js");
+        fs::write(&counter_file, r#"
+            let count = 0;
+            module.exports = {
+                increment: function() { return ++count; },
+                getCount: function() { return count; }
+            };
+        "#).unwrap();
+
+        let main_file = temp.path().join("main.js");
+        let counter_path = counter_file.to_string_lossy();
+        fs::write(&main_file, format!(r#"
+            const counter1 = require('{}');
+            const counter2 = require('{}');
+
+            counter1.increment();
+            counter1.increment();
+            counter2.increment();
+
+            // Both should reference the same module instance
+            if (counter1.getCount() !== 3) throw new Error('caching failed: ' + counter1.getCount());
+            if (counter2.getCount() !== 3) throw new Error('caching failed for counter2');
+            if (counter1 !== counter2) throw new Error('modules should be identical');
+
+            console.log('✓ Module caching works!');
+        "#, counter_path, counter_path)).unwrap();
+
+        let mut runtime = Runtime::new(RuntimeOptions {
+            cwd: Some(temp.path().to_path_buf()),
+            main_module: Some(main_file.clone()),
+        }).unwrap();
+
+        runtime.execute_module(&main_file).await.unwrap();
     }
 }

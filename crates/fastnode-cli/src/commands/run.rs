@@ -1,4 +1,5 @@
 //! `fastnode run` command implementation.
+#![allow(clippy::too_many_arguments)]
 
 use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
 use fastnode_core::config::Channel;
@@ -8,6 +9,7 @@ use fastnode_daemon::ipc::{IpcStream, MAX_FRAME_SIZE};
 use fastnode_proto::{encode_frame, Frame, FrameResponse, Request, Response, RunPlan};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
+use serde_json::Value;
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -20,6 +22,13 @@ const EXIT_INTERNAL_ERROR: i32 = 1;
 
 /// Run the run command.
 ///
+/// The entry can be either:
+/// - A file path (e.g., "src/index.ts", "./script.js")
+/// - A package.json script name (e.g., "test", "build", "dev")
+///
+/// Like bun, we first check if entry matches a script in package.json.
+/// If it does, we run that script. Otherwise, we treat it as a file path.
+///
 /// If dry_run is true, just outputs the execution plan.
 /// Otherwise, transpiles (if needed) and executes the file via Node (or native V8 if enabled).
 ///
@@ -29,7 +38,7 @@ const EXIT_INTERNAL_ERROR: i32 = 1;
 /// - Use `--native` to explicitly request native (no-op when it's already the default)
 pub fn run(
     cwd: &Path,
-    entry: &Path,
+    entry: &str,
     args: &[String],
     daemon: bool,
     dry_run: bool,
@@ -38,13 +47,21 @@ pub fn run(
     channel: Channel,
     json: bool,
 ) -> Result<()> {
+    // First, check if entry is a package.json script
+    if let Some(script_cmd) = get_package_script(cwd, entry) {
+        return run_script(cwd, entry, &script_cmd, args, json);
+    }
+
+    // Not a script, treat as file path
+    let entry_path = Path::new(entry);
+
     // When native-runtime feature is enabled, use native by default unless --node is passed
     #[cfg(feature = "native-runtime")]
     {
         // --node forces Node.js subprocess
         // Otherwise use native (either explicitly via --native or by default)
         if !node {
-            return run_native(cwd, entry, args, json);
+            return run_native(cwd, entry_path, args, json);
         }
         // Fall through to Node.js execution
     }
@@ -60,10 +77,82 @@ pub fn run(
     let _ = (native, node);
 
     if daemon {
-        run_via_daemon(cwd, entry, args, dry_run, channel, json)
+        run_via_daemon(cwd, entry_path, args, dry_run, channel, json)
     } else {
-        run_local(cwd, entry, args, dry_run, channel, json)
+        run_local(cwd, entry_path, args, dry_run, channel, json)
     }
+}
+
+/// Check if entry matches a script in package.json and return the script command.
+fn get_package_script(cwd: &Path, entry: &str) -> Option<String> {
+    // Don't treat paths as script names
+    if entry.contains('/') || entry.contains('\\') || entry.contains('.') {
+        return None;
+    }
+
+    let package_json_path = cwd.join("package.json");
+    let content = std::fs::read_to_string(&package_json_path).ok()?;
+    let package: Value = serde_json::from_str(&content).ok()?;
+
+    package
+        .get("scripts")?
+        .get(entry)?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Run a package.json script.
+fn run_script(cwd: &Path, script_name: &str, script_cmd: &str, args: &[String], json: bool) -> Result<()> {
+    use std::io::Write;
+    if !json {
+        println!("$ {}", script_cmd);
+        let _ = std::io::stdout().flush();
+    }
+
+    // Use sh on Unix, cmd on Windows
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c");
+        // Append any extra args to the script command
+        if args.is_empty() {
+            c.arg(script_cmd);
+        } else {
+            c.arg(format!("{} {}", script_cmd, args.join(" ")));
+        }
+        c
+    };
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C");
+        if args.is_empty() {
+            c.arg(script_cmd);
+        } else {
+            c.arg(format!("{} {}", script_cmd, args.join(" ")));
+        }
+        c
+    };
+
+    cmd.current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    // Add node_modules/.bin to PATH so scripts can find local binaries
+    let node_modules_bin = cwd.join("node_modules").join(".bin");
+    if node_modules_bin.exists() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", node_modules_bin.display(), path);
+        cmd.env("PATH", new_path);
+    }
+
+    let status = cmd.status().map_err(|e| {
+        miette::miette!("Failed to execute script '{}': {}", script_name, e)
+    })?;
+
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 /// Run using native V8 runtime (no Node.js subprocess).
