@@ -12,6 +12,18 @@ const PARALLEL_DIR = path.join(TESTS_DIR, 'parallel');
 
 // List of tests to run (relative to test/parallel/)
 const TESTS = [
+  // Buffer tests
+  'test-buffer-basic.js',
+
+  // URL tests
+  'test-url-basic.js',
+
+  // Process tests
+  'test-process-basic.js',
+
+  // Events tests
+  'test-events-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',

@@ -276,7 +276,7 @@
         }
       }
 
-      const match = fullUrl.match(/^([a-z]+):\/\/([^/:]+)(?::(\d+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+      const match = fullUrl.match(/^([a-z]+):\/\/([^\/:?#]+)(?::(\d+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
       if (!match) {
         throw new TypeError("Invalid URL: " + url);
       }
@@ -1169,6 +1169,12 @@
       return obj instanceof Buffer;
     }
 
+    static isEncoding(encoding) {
+      if (typeof encoding !== "string") return false;
+      const enc = encoding.toLowerCase();
+      return ["utf8", "utf-8", "hex", "base64", "ascii", "latin1", "binary", "ucs2", "ucs-2", "utf16le", "utf-16le"].includes(enc);
+    }
+
     static concat(list, totalLength) {
       if (totalLength === undefined) {
         totalLength = list.reduce((acc, buf) => acc + buf.length, 0);
@@ -1263,6 +1269,25 @@
 
     includes(value, byteOffset = 0) {
       return this.indexOf(value, byteOffset) !== -1;
+    }
+
+    fill(value, offset = 0, end = this.length, encoding = "utf8") {
+      if (typeof value === "string") {
+        if (value.length === 0) {
+          value = 0;
+        } else {
+          const fillBuf = Buffer.from(value, encoding);
+          for (let i = offset; i < end; i++) {
+            this[i] = fillBuf[i % fillBuf.length];
+          }
+          return this;
+        }
+      }
+      // Numeric fill
+      for (let i = offset; i < end; i++) {
+        this[i] = value & 0xff;
+      }
+      return this;
     }
 
     // Read methods
@@ -3971,6 +3996,126 @@
   globalThis.__howth_modules["assert"] = assert;
   globalThis.__howth_modules["node:assert/strict"] = assert.strict;
   globalThis.__howth_modules["assert/strict"] = assert.strict;
+
+  // ============================================================================
+  // events module (EventEmitter)
+  // ============================================================================
+
+  class EventEmitter {
+    #listeners = new Map();
+
+    on(event, listener) {
+      if (!this.#listeners.has(event)) {
+        this.#listeners.set(event, []);
+      }
+      this.#listeners.get(event).push(listener);
+      return this;
+    }
+
+    addListener(event, listener) {
+      return this.on(event, listener);
+    }
+
+    once(event, listener) {
+      const wrapper = (...args) => {
+        this.off(event, wrapper);
+        listener.apply(this, args);
+      };
+      wrapper.listener = listener;
+      return this.on(event, wrapper);
+    }
+
+    off(event, listener) {
+      const listeners = this.#listeners.get(event);
+      if (listeners) {
+        const index = listeners.findIndex(
+          (l) => l === listener || l.listener === listener
+        );
+        if (index !== -1) {
+          listeners.splice(index, 1);
+        }
+      }
+      return this;
+    }
+
+    removeListener(event, listener) {
+      return this.off(event, listener);
+    }
+
+    removeAllListeners(event) {
+      if (event !== undefined) {
+        this.#listeners.delete(event);
+      } else {
+        this.#listeners.clear();
+      }
+      return this;
+    }
+
+    emit(event, ...args) {
+      const listeners = this.#listeners.get(event);
+      if (!listeners || listeners.length === 0) return false;
+      for (const listener of [...listeners]) {
+        listener.apply(this, args);
+      }
+      return true;
+    }
+
+    listeners(event) {
+      const list = this.#listeners.get(event);
+      if (!list) return [];
+      return list.map((l) => l.listener || l);
+    }
+
+    listenerCount(event) {
+      const list = this.#listeners.get(event);
+      return list ? list.length : 0;
+    }
+
+    eventNames() {
+      return [...this.#listeners.keys()];
+    }
+
+    prependListener(event, listener) {
+      if (!this.#listeners.has(event)) {
+        this.#listeners.set(event, []);
+      }
+      this.#listeners.get(event).unshift(listener);
+      return this;
+    }
+
+    prependOnceListener(event, listener) {
+      const wrapper = (...args) => {
+        this.off(event, wrapper);
+        listener.apply(this, args);
+      };
+      wrapper.listener = listener;
+      return this.prependListener(event, wrapper);
+    }
+
+    setMaxListeners(n) {
+      // No-op for compatibility
+      return this;
+    }
+
+    getMaxListeners() {
+      return 10; // Default Node.js value
+    }
+
+    rawListeners(event) {
+      return this.#listeners.get(event) || [];
+    }
+  }
+
+  // Static methods
+  EventEmitter.listenerCount = function (emitter, event) {
+    return emitter.listenerCount(event);
+  };
+
+  const eventsModule = EventEmitter;
+  eventsModule.EventEmitter = EventEmitter;
+
+  globalThis.__howth_modules["node:events"] = eventsModule;
+  globalThis.__howth_modules["events"] = eventsModule;
 
   // ============================================================================
   // child_process module
