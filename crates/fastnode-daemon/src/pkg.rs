@@ -7,10 +7,11 @@ use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
     add_dependency_to_package_json, build_doctor_report, build_pkg_graph, detect_workspaces,
     download_tarball, extract_tgz_atomic, find_workspace_root, get_tarball_url,
-    link_into_node_modules, remove_dependency_from_package_json, resolve_dependencies,
-    resolve_version, why_from_graph, write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions,
-    Lockfile, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
-    RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
+    link_into_node_modules, read_package_deps, remove_dependency_from_package_json,
+    resolve_dependencies, resolve_version, why_from_graph, write_lockfile, DoctorOptions,
+    DoctorSeverity, GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError,
+    PkgWhyResult as CorePkgWhyResult, RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME,
+    MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
@@ -20,7 +21,7 @@ use fastnode_proto::{
     GraphPackageId, GraphPackageNode, InstallPackageError, InstallPackageInfo, InstallSummary,
     InstalledPackage, PackageGraph, PkgDoctorReport, PkgErrorInfo, PkgExplainResult,
     PkgExplainTraceStep, PkgExplainWarning, PkgInstallResult, PkgWhyChain, PkgWhyErrorInfo,
-    PkgWhyLink, PkgWhyResult, PkgWhyTarget, Response, PKG_DOCTOR_SCHEMA_VERSION,
+    PkgWhyLink, PkgWhyResult, PkgWhyTarget, Response, UpdatedPackage, PKG_DOCTOR_SCHEMA_VERSION,
     PKG_EXPLAIN_SCHEMA_VERSION, PKG_GRAPH_SCHEMA_VERSION, PKG_INSTALL_SCHEMA_VERSION,
     PKG_WHY_SCHEMA_VERSION,
 };
@@ -290,6 +291,175 @@ pub async fn handle_pkg_remove(packages: &[String], cwd: &str, channel: &str) ->
     let _ = channel;
 
     Response::PkgRemoveResult { removed, errors }
+}
+
+/// Handle a PkgUpdate request.
+pub async fn handle_pkg_update(
+    packages: &[String],
+    cwd: &str,
+    channel: &str,
+    latest: bool,
+) -> Response {
+    let project_root = Path::new(cwd);
+    let package_json_path = project_root.join("package.json");
+
+    // Create registry client
+    let registry = match RegistryClient::from_env() {
+        Ok(r) => r,
+        Err(e) => {
+            return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
+        }
+    };
+
+    // Read current lockfile to get installed versions
+    let lockfile_path = project_root.join(LOCKFILE_NAME);
+    let lockfile: Option<Lockfile> = if lockfile_path.exists() {
+        match Lockfile::read_from(&lockfile_path) {
+            Ok(lf) => Some(lf),
+            Err(e) => {
+                warn!(error = %e, "Failed to read lockfile, will resolve all");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Read dependencies from package.json
+    let deps_result = read_package_deps(&package_json_path, true, true);
+    let all_deps = match deps_result {
+        Ok(result) => result.deps,
+        Err(e) => {
+            return Response::error(e.code().to_string(), e.to_string());
+        }
+    };
+
+    // Filter to specific packages if provided
+    let deps_to_check: Vec<(String, String)> = if packages.is_empty() {
+        all_deps
+    } else {
+        all_deps
+            .into_iter()
+            .filter(|(name, _)| packages.contains(name))
+            .collect()
+    };
+
+    let mut updated = Vec::new();
+    let mut up_to_date = Vec::new();
+    let mut errors = Vec::new();
+
+    for (name, range) in deps_to_check {
+        // Get current installed version from lockfile
+        let current_version = lockfile
+            .as_ref()
+            .and_then(|lf| lf.dependencies.get(&name))
+            .and_then(|dep| {
+                // Parse version from resolved like "package@1.0.0"
+                dep.resolved.split('@').last().map(|s| s.to_string())
+            });
+
+        // Fetch packument to check for updates
+        match registry.fetch_packument(&name).await {
+            Ok(packument) => {
+                // Resolve the best version for the range
+                let target_range = if latest {
+                    // Use "latest" tag or "*" to get the newest version
+                    None
+                } else {
+                    Some(range.as_str())
+                };
+
+                match resolve_version(&packument, target_range) {
+                    Ok(new_version) => {
+                        let needs_update = current_version
+                            .as_ref()
+                            .map(|cv| cv != &new_version)
+                            .unwrap_or(true);
+
+                        if needs_update {
+                            debug!(
+                                name = %name,
+                                from = ?current_version,
+                                to = %new_version,
+                                "Package needs update"
+                            );
+
+                            // If --latest, update package.json with new range
+                            if latest {
+                                let new_range = format!("^{}", new_version);
+                                if let Err(e) = add_dependency_to_package_json(
+                                    &package_json_path,
+                                    &name,
+                                    &new_range,
+                                    false, // We don't know if it was dev, but add to deps
+                                ) {
+                                    warn!(error = %e, "Failed to update package.json");
+                                }
+                            }
+
+                            updated.push(UpdatedPackage {
+                                name: name.clone(),
+                                from_version: current_version.unwrap_or_else(|| "none".to_string()),
+                                to_version: new_version,
+                            });
+                        } else {
+                            up_to_date.push(name.clone());
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(PkgErrorInfo {
+                            spec: name.clone(),
+                            code: e.code().to_string(),
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                errors.push(PkgErrorInfo {
+                    spec: name.clone(),
+                    code: e.code().to_string(),
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
+
+    // Regenerate lockfile if any packages were updated
+    if !updated.is_empty() {
+        debug!("Regenerating lockfile after update");
+
+        let resolve_opts = ResolveOptions {
+            include_dev: true,
+            include_optional: false,
+        };
+
+        match resolve_dependencies(project_root, &registry, &resolve_opts).await {
+            Ok(result) => {
+                if let Err(e) = write_lockfile(project_root, &result.lockfile) {
+                    warn!(error = %e, "Failed to write lockfile");
+                } else {
+                    debug!(
+                        resolved = result.resolved_count,
+                        fetched = result.fetched_count,
+                        "Lockfile regenerated"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to resolve dependencies for lockfile");
+            }
+        }
+    }
+
+    // Suppress unused variable warning
+    let _ = channel;
+
+    Response::PkgUpdateResult {
+        updated,
+        up_to_date,
+        errors,
+    }
 }
 
 /// Handle a PkgCacheList request.

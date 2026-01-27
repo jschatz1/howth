@@ -234,6 +234,18 @@ pub enum Request {
         channel: String,
     },
 
+    /// Update packages to latest versions.
+    PkgUpdate {
+        /// Specific packages to update (empty = all).
+        packages: Vec<String>,
+        /// Working directory (project root).
+        cwd: String,
+        /// Channel for cache directory.
+        channel: String,
+        /// Update to latest version, ignoring semver ranges.
+        latest: bool,
+    },
+
     /// List cached packages.
     PkgCacheList {
         /// Channel for cache directory.
@@ -616,6 +628,17 @@ pub struct InstalledPackage {
     pub link_path: String,
     /// Path to cached package.
     pub cache_path: String,
+}
+
+/// Information about an updated package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdatedPackage {
+    /// Package name.
+    pub name: String,
+    /// Previous version.
+    pub from_version: String,
+    /// New version.
+    pub to_version: String,
 }
 
 /// Information about a cached package.
@@ -1225,6 +1248,16 @@ pub enum Response {
         /// Successfully removed packages.
         removed: Vec<String>,
         /// Packages that failed to remove or weren't found.
+        errors: Vec<PkgErrorInfo>,
+    },
+
+    /// Result of package update operation.
+    PkgUpdateResult {
+        /// Packages that were updated.
+        updated: Vec<UpdatedPackage>,
+        /// Packages that are already up to date.
+        up_to_date: Vec<String>,
+        /// Packages that failed to update.
         errors: Vec<PkgErrorInfo>,
     },
 

@@ -234,6 +234,7 @@ pub fn handle_request(
         // Pkg operations that need async - return error if called sync
         Request::PkgAdd { .. }
         | Request::PkgRemove { .. }
+        | Request::PkgUpdate { .. }
         | Request::PkgCacheList { .. }
         | Request::PkgCachePrune { .. }
         | Request::PkgInstall { .. } => (
@@ -280,6 +281,12 @@ pub async fn handle_request_async(
             cwd,
             channel,
         } => (pkg::handle_pkg_remove(packages, cwd, channel).await, false),
+        Request::PkgUpdate {
+            packages,
+            cwd,
+            channel,
+            latest,
+        } => (pkg::handle_pkg_update(packages, cwd, channel, *latest).await, false),
         Request::PkgCacheList { channel } => (pkg::handle_pkg_cache_list(channel), false),
         Request::PkgCachePrune { channel } => (pkg::handle_pkg_cache_prune(channel), false),
         Request::PkgInstall {

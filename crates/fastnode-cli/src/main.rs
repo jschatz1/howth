@@ -382,6 +382,16 @@ enum PkgCommands {
         packages: Vec<String>,
     },
 
+    /// Update packages to latest versions
+    Update {
+        /// Specific packages to update (empty = all dependencies)
+        packages: Vec<String>,
+
+        /// Update to latest version, ignoring semver ranges
+        #[arg(long)]
+        latest: bool,
+    },
+
     /// Show the dependency graph
     Graph {
         /// Include devDependencies from root package.json
@@ -664,6 +674,13 @@ fn main() -> Result<()> {
                 commands::pkg::PkgAction::Remove {
                     packages: packages.clone(),
                     cwd: cwd.clone(),
+                }
+            }
+            PkgCommands::Update { packages, latest } => {
+                commands::pkg::PkgAction::Update {
+                    packages: packages.clone(),
+                    cwd: cwd.clone(),
+                    latest: *latest,
                 }
             }
             PkgCommands::Graph {

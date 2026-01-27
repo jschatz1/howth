@@ -9,6 +9,7 @@ use fastnode_proto::{
     encode_frame, CachedPackage, DoctorFinding, Frame, FrameResponse, GraphDepEdge,
     GraphPackageNode, InstalledPackage, PackageGraph, PkgDoctorReport, PkgErrorInfo,
     PkgExplainResult, PkgInstallResult, PkgWhyChain, PkgWhyResult, Request, Response,
+    UpdatedPackage,
 };
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
@@ -31,6 +32,11 @@ pub enum PkgAction {
     Remove {
         packages: Vec<String>,
         cwd: PathBuf,
+    },
+    Update {
+        packages: Vec<String>,
+        cwd: PathBuf,
+        latest: bool,
     },
     Graph {
         cwd: PathBuf,
@@ -92,6 +98,17 @@ struct PkgAddResult {
 struct PkgRemoveResult {
     ok: bool,
     removed: Vec<String>,
+    errors: Vec<PkgErrorInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Update result for JSON output.
+#[derive(Serialize)]
+struct PkgUpdateResult {
+    ok: bool,
+    updated: Vec<UpdatedPackage>,
+    up_to_date: Vec<String>,
     errors: Vec<PkgErrorInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -295,6 +312,16 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
                     }
+                    PkgAction::Update { .. } => {
+                        let result = PkgUpdateResult {
+                            ok: false,
+                            updated: Vec::new(),
+                            up_to_date: Vec::new(),
+                            errors: Vec::new(),
+                            error: Some(format!("Failed to connect: {e}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
                     PkgAction::CacheList => {
                         let result = PkgCacheListResult {
                             ok: false,
@@ -434,6 +461,44 @@ fn handle_response(
                 }
                 for err in &errors {
                     eprintln!("! {}: {} {}", err.spec, err.code, err.message);
+                }
+            }
+
+            // Exit with code 2 if any errors
+            if has_errors {
+                std::process::exit(2);
+            }
+            Ok(())
+        }
+        Response::PkgUpdateResult {
+            updated,
+            up_to_date,
+            errors,
+        } => {
+            let has_errors = !errors.is_empty();
+
+            if json {
+                let result = PkgUpdateResult {
+                    ok: !has_errors,
+                    updated,
+                    up_to_date,
+                    errors,
+                    error: None,
+                };
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                if updated.is_empty() && up_to_date.is_empty() && errors.is_empty() {
+                    println!("No dependencies to update.");
+                } else {
+                    for pkg in &updated {
+                        println!("~ {} {} -> {}", pkg.name, pkg.from_version, pkg.to_version);
+                    }
+                    if !up_to_date.is_empty() {
+                        println!("({} packages already up to date)", up_to_date.len());
+                    }
+                    for err in &errors {
+                        eprintln!("! {}: {} {}", err.spec, err.code, err.message);
+                    }
                 }
             }
 
@@ -668,6 +733,16 @@ fn handle_response(
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
                     }
+                    PkgAction::Update { .. } => {
+                        let result = PkgUpdateResult {
+                            ok: false,
+                            updated: Vec::new(),
+                            up_to_date: Vec::new(),
+                            errors: Vec::new(),
+                            error: Some(format!("{code}: {message}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
                     PkgAction::CacheList => {
                         let result = PkgCacheListResult {
                             ok: false,
@@ -749,6 +824,16 @@ fn handle_response(
                         let result = PkgRemoveResult {
                             ok: false,
                             removed: Vec::new(),
+                            errors: Vec::new(),
+                            error: Some("Unexpected response type".to_string()),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Update { .. } => {
+                        let result = PkgUpdateResult {
+                            ok: false,
+                            updated: Vec::new(),
+                            up_to_date: Vec::new(),
                             errors: Vec::new(),
                             error: Some("Unexpected response type".to_string()),
                         };
@@ -1348,6 +1433,12 @@ async fn send_pkg_request(
             packages: packages.clone(),
             cwd: cwd.to_string_lossy().into_owned(),
             channel: channel.as_str().to_string(),
+        },
+        PkgAction::Update { packages, cwd, latest } => Request::PkgUpdate {
+            packages: packages.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            channel: channel.as_str().to_string(),
+            latest: *latest,
         },
         PkgAction::CacheList => Request::PkgCacheList {
             channel: channel.as_str().to_string(),
