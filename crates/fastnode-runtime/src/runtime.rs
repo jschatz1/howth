@@ -106,6 +106,8 @@ extension!(
         op_howth_read_file,
         op_howth_write_file,
         op_howth_cwd,
+        op_howth_platform,
+        op_howth_arch,
         op_howth_env_get,
         op_howth_env_set,
         op_howth_exit,
@@ -711,6 +713,40 @@ fn op_howth_cwd() -> Result<String, deno_core::error::AnyError> {
     std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| e.into())
+}
+
+/// Get the operating system platform (Node.js style).
+#[op2]
+#[string]
+fn op_howth_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "freebsd") {
+        "freebsd"
+    } else {
+        "unknown"
+    }
+}
+
+/// Get the CPU architecture (Node.js style).
+#[op2]
+#[string]
+fn op_howth_arch() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "x86") {
+        "ia32"
+    } else if cfg!(target_arch = "arm") {
+        "arm"
+    } else {
+        "unknown"
+    }
 }
 
 /// Get environment variable.

@@ -137,6 +137,9 @@ howth run --node script.ts
 | `node:https` | ❌ | Not yet implemented |
 | `node:util` | ✅ | format, inspect, promisify, types, deprecate |
 | `node:stream` | ✅ | Readable, Writable, Duplex, Transform, pipeline |
+| `node:os` | ✅ | platform, arch, cpus, homedir, tmpdir, EOL, constants |
+| `node:querystring` | ✅ | parse, stringify, escape, unescape |
+| `node:timers` | ✅ | setTimeout, setInterval, setImmediate, promises |
 | `node:worker_threads` | ❌ | Not yet implemented |
 | `require()` | ✅ | Full CommonJS support |
 
@@ -165,11 +168,14 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | Util | 1 | 0 | 1 |
 | Stream | 1 | 0 | 1 |
 | Crypto | 1 | 0 | 1 |
+| OS | 1 | 0 | 1 |
+| Querystring | 1 | 0 | 1 |
+| Timers | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
 | FS module | 9 | 4 | 13 |
-| **Total** | **24** | **6** | **30** |
+| **Total** | **27** | **6** | **33** |
 
-**Pass Rate: 80%**
+**Pass Rate: 82%**
 
 **Passing Tests:**
 - `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
@@ -196,6 +202,9 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-fs-unlink.js` - `fs.unlink()` and `fs.unlinkSync()`
 - `test-fs-mkdir-basic.js` - `fs.mkdir()` and `fs.mkdirSync()`
 - `test-fs-copyfile-basic.js` - `fs.copyFile()` and `fs.copyFileSync()`
+- `test-os-basic.js` - OS module (platform, arch, cpus, homedir, tmpdir)
+- `test-querystring-basic.js` - querystring module (parse, stringify)
+- `test-timers-basic.js` - timers module (setTimeout, clearTimeout, promises)
 
 **Skipped Tests (known limitations):**
 | Test | Reason |

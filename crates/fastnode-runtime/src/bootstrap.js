@@ -107,7 +107,7 @@
     },
     exitCode: 0,
     argv: ops.op_howth_args(),
-    platform: Deno.build?.os || "unknown",
+    platform: ops.op_howth_platform(),
     version: "v20.0.0", // Fake Node.js version for compatibility
     versions: {
       node: "20.0.0",
@@ -116,7 +116,7 @@
     },
     pid: 1,
     ppid: 0,
-    arch: "x64",
+    arch: ops.op_howth_arch(),
     title: "howth",
     hrtime: {
       bigint() {
@@ -190,8 +190,11 @@
       false,
       delay,
       () => {
-        timers.delete(id);
-        callback(...args);
+        // Only call callback if timer wasn't cleared
+        if (timers.has(id)) {
+          timers.delete(id);
+          callback(...args);
+        }
       }
     );
     timers.set(id, handle);
@@ -199,11 +202,8 @@
   };
 
   globalThis.clearTimeout = (id) => {
-    const handle = timers.get(id);
-    if (handle !== undefined) {
-      // Note: deno_core doesn't expose timer cancellation easily
-      timers.delete(id);
-    }
+    // Just delete from map - the callback will check if still present
+    timers.delete(id);
   };
 
   globalThis.setInterval = (callback, delay, ...args) => {
@@ -5935,6 +5935,490 @@
   // Register the child_process module
   globalThis.__howth_modules["node:child_process"] = childProcessModule;
   globalThis.__howth_modules["child_process"] = childProcessModule;
+
+  // ============================================================================
+  // os module
+  // ============================================================================
+
+  /**
+   * Get the operating system's CPU architecture.
+   */
+  function arch() {
+    return process.arch;
+  }
+
+  /**
+   * Get operating system constants.
+   */
+  const osConstants = {
+    UV_UDP_REUSEADDR: 4,
+    dlopen: {},
+    errno: {
+      E2BIG: 7,
+      EACCES: 13,
+      EADDRINUSE: 48,
+      EADDRNOTAVAIL: 49,
+      EAFNOSUPPORT: 47,
+      EAGAIN: 35,
+      EALREADY: 37,
+      EBADF: 9,
+      EBADMSG: 94,
+      EBUSY: 16,
+      ECANCELED: 89,
+      ECHILD: 10,
+      ECONNABORTED: 53,
+      ECONNREFUSED: 61,
+      ECONNRESET: 54,
+      EDEADLK: 11,
+      EDESTADDRREQ: 39,
+      EDOM: 33,
+      EDQUOT: 69,
+      EEXIST: 17,
+      EFAULT: 14,
+      EFBIG: 27,
+      EHOSTUNREACH: 65,
+      EIDRM: 90,
+      EILSEQ: 92,
+      EINPROGRESS: 36,
+      EINTR: 4,
+      EINVAL: 22,
+      EIO: 5,
+      EISCONN: 56,
+      EISDIR: 21,
+      ELOOP: 62,
+      EMFILE: 24,
+      EMLINK: 31,
+      EMSGSIZE: 40,
+      EMULTIHOP: 95,
+      ENAMETOOLONG: 63,
+      ENETDOWN: 50,
+      ENETRESET: 52,
+      ENETUNREACH: 51,
+      ENFILE: 23,
+      ENOBUFS: 55,
+      ENODATA: 96,
+      ENODEV: 19,
+      ENOENT: 2,
+      ENOEXEC: 8,
+      ENOLCK: 77,
+      ENOLINK: 97,
+      ENOMEM: 12,
+      ENOMSG: 91,
+      ENOPROTOOPT: 42,
+      ENOSPC: 28,
+      ENOSR: 98,
+      ENOSTR: 99,
+      ENOSYS: 78,
+      ENOTCONN: 57,
+      ENOTDIR: 20,
+      ENOTEMPTY: 66,
+      ENOTSOCK: 38,
+      ENOTSUP: 45,
+      ENOTTY: 25,
+      ENXIO: 6,
+      EOPNOTSUPP: 102,
+      EOVERFLOW: 84,
+      EPERM: 1,
+      EPIPE: 32,
+      EPROTO: 100,
+      EPROTONOSUPPORT: 43,
+      EPROTOTYPE: 41,
+      ERANGE: 34,
+      EROFS: 30,
+      ESPIPE: 29,
+      ESRCH: 3,
+      ESTALE: 70,
+      ETIME: 101,
+      ETIMEDOUT: 60,
+      ETXTBSY: 26,
+      EWOULDBLOCK: 35,
+      EXDEV: 18,
+    },
+    signals: {
+      SIGHUP: 1,
+      SIGINT: 2,
+      SIGQUIT: 3,
+      SIGILL: 4,
+      SIGTRAP: 5,
+      SIGABRT: 6,
+      SIGIOT: 6,
+      SIGBUS: 10,
+      SIGFPE: 8,
+      SIGKILL: 9,
+      SIGUSR1: 30,
+      SIGSEGV: 11,
+      SIGUSR2: 31,
+      SIGPIPE: 13,
+      SIGALRM: 14,
+      SIGTERM: 15,
+      SIGCHLD: 20,
+      SIGCONT: 19,
+      SIGSTOP: 17,
+      SIGTSTP: 18,
+      SIGTTIN: 21,
+      SIGTTOU: 22,
+      SIGURG: 16,
+      SIGXCPU: 24,
+      SIGXFSZ: 25,
+      SIGVTALRM: 26,
+      SIGPROF: 27,
+      SIGWINCH: 28,
+      SIGIO: 23,
+      SIGINFO: 29,
+      SIGSYS: 12,
+    },
+    priority: {
+      PRIORITY_LOW: 19,
+      PRIORITY_BELOW_NORMAL: 10,
+      PRIORITY_NORMAL: 0,
+      PRIORITY_ABOVE_NORMAL: -7,
+      PRIORITY_HIGH: -14,
+      PRIORITY_HIGHEST: -20,
+    },
+  };
+
+  /**
+   * Get CPU information.
+   */
+  function cpus() {
+    // Return a basic CPU info array
+    const numCpus = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+    const cpuInfo = [];
+    for (let i = 0; i < numCpus; i++) {
+      cpuInfo.push({
+        model: "Unknown CPU",
+        speed: 2400, // MHz (placeholder)
+        times: {
+          user: 0,
+          nice: 0,
+          sys: 0,
+          idle: 0,
+          irq: 0,
+        },
+      });
+    }
+    return cpuInfo;
+  }
+
+  /**
+   * Get the system endianness.
+   */
+  function endianness() {
+    const buffer = new ArrayBuffer(2);
+    new DataView(buffer).setInt16(0, 256, true);
+    return new Int16Array(buffer)[0] === 256 ? "LE" : "BE";
+  }
+
+  /**
+   * Get the amount of free system memory in bytes.
+   */
+  function freemem() {
+    // Placeholder - would need native op
+    return 4 * 1024 * 1024 * 1024; // 4GB placeholder
+  }
+
+  /**
+   * Get the home directory of the current user.
+   */
+  function homedir() {
+    return process.env.HOME || process.env.USERPROFILE || "/";
+  }
+
+  /**
+   * Get the hostname.
+   */
+  function hostname() {
+    return process.env.HOSTNAME || "localhost";
+  }
+
+  /**
+   * Get system load averages.
+   */
+  function loadavg() {
+    // Placeholder - would need native op
+    return [0.0, 0.0, 0.0];
+  }
+
+  /**
+   * Get network interfaces.
+   */
+  function networkInterfaces() {
+    // Placeholder - would need native op
+    return {};
+  }
+
+  /**
+   * Get the operating system platform.
+   */
+  function platform() {
+    return process.platform || "unknown";
+  }
+
+  /**
+   * Get the operating system release.
+   */
+  function release() {
+    // Placeholder - would need native op
+    return "0.0.0";
+  }
+
+  /**
+   * Get the operating system temporary directory.
+   */
+  function tmpdir() {
+    return (
+      process.env.TMPDIR ||
+      process.env.TMP ||
+      process.env.TEMP ||
+      (process.platform === "win32" ? "C:\\Windows\\Temp" : "/tmp")
+    );
+  }
+
+  /**
+   * Get the total amount of system memory in bytes.
+   */
+  function totalmem() {
+    // Placeholder - would need native op
+    return 8 * 1024 * 1024 * 1024; // 8GB placeholder
+  }
+
+  /**
+   * Get the operating system type.
+   */
+  function type() {
+    const p = process.platform;
+    if (p === "darwin") return "Darwin";
+    if (p === "win32") return "Windows_NT";
+    if (p === "linux") return "Linux";
+    if (p === "freebsd") return "FreeBSD";
+    return "Unknown";
+  }
+
+  /**
+   * Get system uptime in seconds.
+   */
+  function uptime() {
+    // Placeholder - would need native op
+    return 0;
+  }
+
+  /**
+   * Get user info.
+   */
+  function userInfo(options = {}) {
+    return {
+      uid: -1,
+      gid: -1,
+      username: process.env.USER || process.env.USERNAME || "unknown",
+      homedir: homedir(),
+      shell: process.env.SHELL || null,
+    };
+  }
+
+  /**
+   * Get OS version.
+   */
+  function version() {
+    // Placeholder - would need native op
+    return "";
+  }
+
+  /**
+   * Get machine type.
+   */
+  function machine() {
+    // Map to common machine names
+    const a = arch();
+    if (a === "x64") return "x86_64";
+    if (a === "arm64") return "arm64";
+    if (a === "ia32") return "i686";
+    return a;
+  }
+
+  // End-of-line character for the OS
+  const EOL = process.platform === "win32" ? "\r\n" : "\n";
+
+  // Dev null path
+  const devNull = process.platform === "win32" ? "\\\\.\\nul" : "/dev/null";
+
+  const osModule = {
+    arch,
+    constants: osConstants,
+    cpus,
+    devNull,
+    endianness,
+    EOL,
+    freemem,
+    getPriority: () => 0,
+    homedir,
+    hostname,
+    loadavg,
+    machine,
+    networkInterfaces,
+    platform,
+    release,
+    setPriority: () => {},
+    tmpdir,
+    totalmem,
+    type,
+    uptime,
+    userInfo,
+    version,
+  };
+
+  // Register the os module
+  globalThis.__howth_modules["node:os"] = osModule;
+  globalThis.__howth_modules["os"] = osModule;
+
+  // ============================================================================
+  // querystring module
+  // ============================================================================
+
+  /**
+   * Parse a query string into an object.
+   */
+  function qsParse(str, sep = "&", eq = "=", options = {}) {
+    const obj = {};
+    if (typeof str !== "string" || str.length === 0) {
+      return obj;
+    }
+
+    const maxKeys = options.maxKeys !== undefined ? options.maxKeys : 1000;
+    let count = 0;
+
+    const pairs = str.split(sep);
+    for (const pair of pairs) {
+      if (maxKeys > 0 && count >= maxKeys) break;
+
+      const idx = pair.indexOf(eq);
+      let key, value;
+      if (idx >= 0) {
+        key = decodeURIComponent(pair.slice(0, idx).replace(/\+/g, " "));
+        value = decodeURIComponent(pair.slice(idx + 1).replace(/\+/g, " "));
+      } else {
+        key = decodeURIComponent(pair.replace(/\+/g, " "));
+        value = "";
+      }
+
+      if (obj.hasOwnProperty(key)) {
+        if (Array.isArray(obj[key])) {
+          obj[key].push(value);
+        } else {
+          obj[key] = [obj[key], value];
+        }
+      } else {
+        obj[key] = value;
+      }
+      count++;
+    }
+
+    return obj;
+  }
+
+  /**
+   * Stringify an object into a query string.
+   */
+  function qsStringify(obj, sep = "&", eq = "=", options = {}) {
+    if (obj === null || typeof obj !== "object") {
+      return "";
+    }
+
+    const encode = options.encodeURIComponent || encodeURIComponent;
+    const pairs = [];
+
+    for (const key of Object.keys(obj)) {
+      const value = obj[key];
+      const encodedKey = encode(String(key));
+
+      if (Array.isArray(value)) {
+        for (const v of value) {
+          pairs.push(`${encodedKey}${eq}${encode(String(v))}`);
+        }
+      } else {
+        pairs.push(`${encodedKey}${eq}${encode(String(value))}`);
+      }
+    }
+
+    return pairs.join(sep);
+  }
+
+  /**
+   * Escape a string for use in a query string.
+   */
+  function qsEscape(str) {
+    return encodeURIComponent(str);
+  }
+
+  /**
+   * Unescape a query string component.
+   */
+  function qsUnescape(str) {
+    return decodeURIComponent(str.replace(/\+/g, " "));
+  }
+
+  const querystringModule = {
+    parse: qsParse,
+    stringify: qsStringify,
+    escape: qsEscape,
+    unescape: qsUnescape,
+    encode: qsStringify,
+    decode: qsParse,
+  };
+
+  // Register the querystring module
+  globalThis.__howth_modules["node:querystring"] = querystringModule;
+  globalThis.__howth_modules["querystring"] = querystringModule;
+
+  // ============================================================================
+  // timers module
+  // ============================================================================
+
+  const timersModule = {
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+    setInterval: globalThis.setInterval,
+    clearInterval: globalThis.clearInterval,
+    setImmediate: (callback, ...args) => setTimeout(callback, 0, ...args),
+    clearImmediate: clearTimeout,
+  };
+
+  // timers/promises
+  const timersPromises = {
+    setTimeout: (delay, value, options = {}) => {
+      return new Promise((resolve, reject) => {
+        if (options.signal?.aborted) {
+          reject(new DOMException("Aborted", "AbortError"));
+          return;
+        }
+        const id = setTimeout(() => resolve(value), delay);
+        if (options.signal) {
+          options.signal.addEventListener("abort", () => {
+            clearTimeout(id);
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }
+      });
+    },
+    setInterval: async function* (delay, value, options = {}) {
+      if (options.signal?.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      while (true) {
+        yield await timersPromises.setTimeout(delay, value, options);
+      }
+    },
+    setImmediate: (value, options = {}) => {
+      return timersPromises.setTimeout(0, value, options);
+    },
+  };
+
+  timersModule.promises = timersPromises;
+
+  // Register the timers module
+  globalThis.__howth_modules["node:timers"] = timersModule;
+  globalThis.__howth_modules["timers"] = timersModule;
+  globalThis.__howth_modules["node:timers/promises"] = timersPromises;
+  globalThis.__howth_modules["timers/promises"] = timersPromises;
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

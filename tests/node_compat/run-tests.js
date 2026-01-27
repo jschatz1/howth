@@ -33,6 +33,15 @@ const TESTS = [
   // Crypto tests
   'test-crypto-basic.js',
 
+  // OS tests
+  'test-os-basic.js',
+
+  // Querystring tests
+  'test-querystring-basic.js',
+
+  // Timers tests
+  'test-timers-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',
