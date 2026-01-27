@@ -27,6 +27,9 @@ const TESTS = [
   // Util tests
   'test-util-basic.js',
 
+  // Stream tests
+  'test-stream-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',

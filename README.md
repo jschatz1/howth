@@ -136,7 +136,7 @@ howth run --node script.ts
 | `node:https` | ❌ | Not yet implemented |
 | `node:crypto` | ❌ | Not yet implemented |
 | `node:util` | ✅ | format, inspect, promisify, types, deprecate |
-| `node:stream` | ❌ | Not yet implemented |
+| `node:stream` | ✅ | Readable, Writable, Duplex, Transform, pipeline |
 | `node:worker_threads` | ❌ | Not yet implemented |
 | `require()` | ✅ | Full CommonJS support |
 
@@ -163,11 +163,12 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | Process | 1 | 0 | 1 |
 | Events | 1 | 0 | 1 |
 | Util | 1 | 0 | 1 |
+| Stream | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
 | FS module | 3 | 5 | 8 |
-| **Total** | **16** | **7** | **23** |
+| **Total** | **17** | **7** | **24** |
 
-**Pass Rate: 70%**
+**Pass Rate: 71%**
 
 **Passing Tests:**
 - `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
@@ -175,6 +176,7 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-process-basic.js` - process object (env, cwd, argv, events)
 - `test-events-basic.js` - EventEmitter
 - `test-util-basic.js` - util module (format, inspect, promisify, types)
+- `test-stream-basic.js` - stream module (Readable, Writable, Transform, pipeline)
 - `test-path.js` - Main path module tests
 - `test-path-parse-format.js` - `path.parse()` and `path.format()`
 - `test-path-dirname.js` - `path.dirname()`
