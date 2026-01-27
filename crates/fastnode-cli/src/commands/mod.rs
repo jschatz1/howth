@@ -12,3 +12,4 @@ pub mod run;
 pub mod test;
 pub mod version;
 pub mod watch;
+pub mod workspaces;

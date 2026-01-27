@@ -266,6 +266,13 @@ enum Commands {
         pkg_cmd: PkgCommands,
     },
 
+    /// List and manage workspace packages
+    Workspaces {
+        /// Link all workspace packages into node_modules
+        #[arg(long)]
+        link: bool,
+    },
+
     /// Run a package.json script directly (e.g., `howth test` instead of `howth run test`)
     #[command(external_subcommand)]
     Script(Vec<String>),
@@ -491,6 +498,13 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Unlink { package }) = &cli.command {
         return commands::link::unlink(&cwd, package.as_deref(), Channel::Stable, cli.json);
+    }
+
+    if let Some(Commands::Workspaces { link }) = &cli.command {
+        if *link {
+            return commands::workspaces::link(&cwd, cli.json);
+        }
+        return commands::workspaces::run(&cwd, cli.json);
     }
 
     // Handle script shortcuts (e.g., `howth test` instead of `howth run test`)
@@ -843,6 +857,7 @@ fn main() -> Result<()> {
             | Commands::Run { .. }
             | Commands::Script(_)
             | Commands::Watch { .. }
+            | Commands::Workspaces { .. }
             | Commands::Pkg { .. }
             | Commands::Install { .. }
             | Commands::Build { .. },

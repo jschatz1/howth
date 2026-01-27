@@ -12,6 +12,7 @@
 //! - Explaining why packages are installed (v1.6)
 //! - Health diagnostics for installed packages (v1.7)
 //! - Deterministic lockfile generation and installation (v1.9)
+//! - Workspace support for monorepos (v2.0)
 
 pub mod cache;
 pub mod deps;
@@ -25,6 +26,7 @@ pub mod registry;
 pub mod spec;
 pub mod tarball;
 pub mod version;
+pub mod workspaces;
 
 pub use cache::PackageCache;
 pub use deps::{read_package_deps, PackageDeps, PkgDepError};
@@ -50,3 +52,7 @@ pub use registry::{get_tarball_url, RegistryClient, DEFAULT_REGISTRY, REGISTRY_E
 pub use spec::PackageSpec;
 pub use tarball::{download_tarball, extract_tgz_atomic, MAX_TARBALL_SIZE};
 pub use version::resolve_version;
+pub use workspaces::{
+    detect_workspaces, find_workspace_root, link_workspace_packages, WorkspaceConfig,
+    WorkspacePackage,
+};
