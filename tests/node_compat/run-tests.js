@@ -49,8 +49,8 @@ const SKIP_TESTS = new Set([
   'test-fs-mkdir.js',        // requires worker_threads
   'test-fs-realpath.js',     // requires worker_threads
 
-  // Tests that require child_process module (not available in native runtime)
-  'test-path-resolve.js',    // requires child_process
+  // Tests that require child_process module (now available)
+  // 'test-path-resolve.js',    // child_process now implemented
 
   // Tests that require fstat on stdin/stdout/stderr (not supported in Deno)
   'test-fs-stat.js',         // fstat on fd 0 (stdin)

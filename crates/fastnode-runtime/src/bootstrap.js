@@ -1550,7 +1550,9 @@
         path = args[i];
         validateString(path, 'path');
       } else {
-        path = ops.op_howth_cwd();
+        // Use process.cwd() to allow tests to override it
+        const cwd = globalThis.process?.cwd?.();
+        path = cwd !== undefined ? cwd : ops.op_howth_cwd();
       }
 
       if (path.length === 0) continue;
@@ -1978,7 +1980,9 @@
         validateString(path, 'path');
         if (path.length === 0) continue;
       } else if (resolvedDevice.length === 0) {
-        path = ops.op_howth_cwd();
+        // Use process.cwd() to allow tests to override it
+        const cwd = globalThis.process?.cwd?.();
+        path = cwd !== undefined ? cwd : ops.op_howth_cwd();
       } else {
         path = `${resolvedDevice}\\`;
       }
@@ -3967,6 +3971,338 @@
   globalThis.__howth_modules["assert"] = assert;
   globalThis.__howth_modules["node:assert/strict"] = assert.strict;
   globalThis.__howth_modules["assert/strict"] = assert.strict;
+
+  // ============================================================================
+  // child_process module
+  // ============================================================================
+
+  /**
+   * Execute a command synchronously in a shell.
+   * @param {string} command - The command to run
+   * @param {Object} options - Options object
+   * @returns {Buffer|string} - stdout output
+   */
+  function execSync(command, options = {}) {
+    const result = ops.op_howth_exec_sync(command, options);
+
+    if (result.error) {
+      const err = new Error(result.error);
+      err.status = result.status;
+      err.stdout = Buffer.from(result.stdout);
+      err.stderr = Buffer.from(result.stderr);
+      throw err;
+    }
+
+    if (result.status !== 0) {
+      const err = new Error(
+        `Command failed: ${command}\n${result.stderr}`
+      );
+      err.status = result.status;
+      err.stdout = Buffer.from(result.stdout);
+      err.stderr = Buffer.from(result.stderr);
+      throw err;
+    }
+
+    if (options.encoding === "buffer" || options.encoding === undefined) {
+      return Buffer.from(result.stdout);
+    }
+    return result.stdout;
+  }
+
+  /**
+   * Execute a file synchronously.
+   * @param {string} file - The file to execute
+   * @param {string[]} args - Arguments
+   * @param {Object} options - Options object
+   * @returns {Buffer|string} - stdout output
+   */
+  function execFileSync(file, args = [], options = {}) {
+    if (typeof args === "object" && !Array.isArray(args)) {
+      options = args;
+      args = [];
+    }
+
+    const result = ops.op_howth_spawn_sync(file, args, {
+      ...options,
+      shell: false,
+    });
+
+    if (result.error) {
+      const err = new Error(result.error);
+      err.status = result.status;
+      err.stdout = Buffer.from(result.stdout);
+      err.stderr = Buffer.from(result.stderr);
+      throw err;
+    }
+
+    if (result.status !== 0) {
+      const err = new Error(
+        `Command failed: ${file} ${args.join(" ")}\n${result.stderr}`
+      );
+      err.status = result.status;
+      err.stdout = Buffer.from(result.stdout);
+      err.stderr = Buffer.from(result.stderr);
+      throw err;
+    }
+
+    if (options.encoding === "buffer" || options.encoding === undefined) {
+      return Buffer.from(result.stdout);
+    }
+    return result.stdout;
+  }
+
+  /**
+   * Spawn a process synchronously.
+   * @param {string} command - The command to run
+   * @param {string[]} args - Arguments
+   * @param {Object} options - Options object
+   * @returns {Object} - Result object with status, stdout, stderr
+   */
+  function spawnSync(command, args = [], options = {}) {
+    if (typeof args === "object" && !Array.isArray(args)) {
+      options = args;
+      args = [];
+    }
+
+    const result = ops.op_howth_spawn_sync(command, args, options);
+
+    return {
+      pid: 0, // We don't have the real PID in sync mode
+      output: [null, Buffer.from(result.stdout), Buffer.from(result.stderr)],
+      stdout: Buffer.from(result.stdout),
+      stderr: Buffer.from(result.stderr),
+      status: result.status,
+      signal: null,
+      error: result.error ? new Error(result.error) : undefined,
+    };
+  }
+
+  /**
+   * Execute a command asynchronously in a shell (callback-based).
+   * @param {string} command - The command to run
+   * @param {Object} options - Options object
+   * @param {Function} callback - Callback function(error, stdout, stderr)
+   * @returns {ChildProcess} - ChildProcess instance
+   */
+  function exec(command, options, callback) {
+    if (typeof options === "function") {
+      callback = options;
+      options = {};
+    }
+
+    // Run synchronously but call callback asynchronously to match Node.js behavior
+    process.nextTick(() => {
+      try {
+        const result = ops.op_howth_exec_sync(command, options || {});
+
+        if (result.error) {
+          const err = new Error(result.error);
+          err.killed = false;
+          err.code = result.status;
+          err.signal = null;
+          err.cmd = command;
+          if (callback) callback(err, result.stdout, result.stderr);
+          return;
+        }
+
+        if (result.status !== 0) {
+          const err = new Error(`Command failed: ${command}\n${result.stderr}`);
+          err.killed = false;
+          err.code = result.status;
+          err.signal = null;
+          err.cmd = command;
+          if (callback) callback(err, result.stdout, result.stderr);
+          return;
+        }
+
+        if (callback) callback(null, result.stdout, result.stderr);
+      } catch (e) {
+        if (callback) callback(e, "", "");
+      }
+    });
+
+    // Return a minimal ChildProcess-like object
+    return {
+      pid: 0,
+      stdin: null,
+      stdout: null,
+      stderr: null,
+      kill() {},
+    };
+  }
+
+  /**
+   * Execute a file asynchronously (callback-based).
+   * @param {string} file - The file to execute
+   * @param {string[]} args - Arguments
+   * @param {Object} options - Options object
+   * @param {Function} callback - Callback function(error, stdout, stderr)
+   * @returns {ChildProcess} - ChildProcess instance
+   */
+  function execFile(file, args, options, callback) {
+    if (typeof args === "function") {
+      callback = args;
+      args = [];
+      options = {};
+    } else if (typeof options === "function") {
+      callback = options;
+      options = {};
+    }
+
+    if (typeof args === "object" && !Array.isArray(args)) {
+      options = args;
+      args = [];
+    }
+
+    process.nextTick(() => {
+      try {
+        const result = ops.op_howth_spawn_sync(file, args || [], {
+          ...(options || {}),
+          shell: false,
+        });
+
+        if (result.error) {
+          const err = new Error(result.error);
+          err.killed = false;
+          err.code = result.status;
+          err.signal = null;
+          err.cmd = file;
+          if (callback) callback(err, result.stdout, result.stderr);
+          return;
+        }
+
+        if (result.status !== 0) {
+          const err = new Error(
+            `Command failed: ${file} ${(args || []).join(" ")}\n${result.stderr}`
+          );
+          err.killed = false;
+          err.code = result.status;
+          err.signal = null;
+          err.cmd = file;
+          if (callback) callback(err, result.stdout, result.stderr);
+          return;
+        }
+
+        if (callback) callback(null, result.stdout, result.stderr);
+      } catch (e) {
+        if (callback) callback(e, "", "");
+      }
+    });
+
+    return {
+      pid: 0,
+      stdin: null,
+      stdout: null,
+      stderr: null,
+      kill() {},
+    };
+  }
+
+  /**
+   * Spawn a new process (simplified - runs synchronously internally).
+   * @param {string} command - The command to run
+   * @param {string[]} args - Arguments
+   * @param {Object} options - Options object
+   * @returns {ChildProcess} - ChildProcess instance
+   */
+  function spawn(command, args = [], options = {}) {
+    if (typeof args === "object" && !Array.isArray(args)) {
+      options = args;
+      args = [];
+    }
+
+    // Create a simple event-emitter-like ChildProcess
+    const listeners = new Map();
+    const child = {
+      pid: 0,
+      stdin: null,
+      stdout: null,
+      stderr: null,
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+
+      on(event, listener) {
+        if (!listeners.has(event)) {
+          listeners.set(event, []);
+        }
+        listeners.get(event).push(listener);
+        return this;
+      },
+
+      once(event, listener) {
+        const onceListener = (...args) => {
+          this.off(event, onceListener);
+          listener(...args);
+        };
+        return this.on(event, onceListener);
+      },
+
+      off(event, listener) {
+        const eventListeners = listeners.get(event);
+        if (eventListeners) {
+          const idx = eventListeners.indexOf(listener);
+          if (idx !== -1) eventListeners.splice(idx, 1);
+        }
+        return this;
+      },
+
+      emit(event, ...args) {
+        const eventListeners = listeners.get(event);
+        if (eventListeners) {
+          for (const listener of eventListeners) {
+            listener(...args);
+          }
+        }
+      },
+
+      kill(signal) {
+        this.killed = true;
+        return true;
+      },
+    };
+
+    // Run the command asynchronously
+    process.nextTick(() => {
+      try {
+        const result = ops.op_howth_spawn_sync(command, args, options);
+
+        child.exitCode = result.status;
+
+        if (result.error) {
+          const err = new Error(result.error);
+          child.emit("error", err);
+        }
+
+        child.emit("close", result.status, null);
+        child.emit("exit", result.status, null);
+      } catch (e) {
+        child.emit("error", e);
+        child.emit("close", 1, null);
+        child.emit("exit", 1, null);
+      }
+    });
+
+    return child;
+  }
+
+  // The child_process module
+  const childProcessModule = {
+    exec,
+    execSync,
+    execFile,
+    execFileSync,
+    spawn,
+    spawnSync,
+    // fork is not implemented (requires worker threads / IPC)
+    fork: () => {
+      throw new Error("fork() is not implemented in howth native runtime");
+    },
+  };
+
+  // Register the child_process module
+  globalThis.__howth_modules["node:child_process"] = childProcessModule;
+  globalThis.__howth_modules["child_process"] = childProcessModule;
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

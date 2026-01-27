@@ -134,6 +134,9 @@ extension!(
         op_howth_fs_realpath,
         op_howth_fs_chmod,
         op_howth_fs_access,
+        // Child process ops
+        op_howth_spawn_sync,
+        op_howth_exec_sync,
     ],
 );
 
@@ -453,6 +456,180 @@ fn op_howth_fs_access(#[string] path: &str, mode: u32) -> Result<(), deno_core::
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Child Process Operations
+// ============================================================================
+
+/// Result of a spawned process (for sync operations).
+#[derive(serde::Serialize)]
+pub struct SpawnSyncResult {
+    pub status: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub error: Option<String>,
+}
+
+/// Options for spawning a process.
+#[derive(serde::Deserialize, Default)]
+pub struct SpawnOptions {
+    pub cwd: Option<String>,
+    pub env: Option<std::collections::HashMap<String, String>>,
+    pub shell: Option<bool>,
+    pub encoding: Option<String>,
+    pub timeout: Option<u64>,
+    pub max_buffer: Option<usize>,
+}
+
+/// Spawn a process synchronously and wait for completion.
+#[op2]
+#[serde]
+fn op_howth_spawn_sync(
+    #[string] command: &str,
+    #[serde] args: Vec<String>,
+    #[serde] options: Option<SpawnOptions>,
+) -> SpawnSyncResult {
+    use std::process::{Command, Stdio};
+
+    let opts = options.unwrap_or_default();
+    let use_shell = opts.shell.unwrap_or(false);
+
+    let mut cmd = if use_shell {
+        #[cfg(windows)]
+        {
+            let mut c = Command::new("cmd");
+            c.arg("/C").arg(command);
+            for arg in &args {
+                c.arg(arg);
+            }
+            c
+        }
+        #[cfg(not(windows))]
+        {
+            let mut c = Command::new("/bin/sh");
+            let full_cmd = if args.is_empty() {
+                command.to_string()
+            } else {
+                format!("{} {}", command, args.join(" "))
+            };
+            c.arg("-c").arg(full_cmd);
+            c
+        }
+    } else {
+        let mut c = Command::new(command);
+        c.args(&args);
+        c
+    };
+
+    // Set working directory
+    if let Some(cwd) = opts.cwd {
+        cmd.current_dir(cwd);
+    }
+
+    // Set environment variables
+    if let Some(env) = opts.env {
+        cmd.envs(env);
+    }
+
+    // Capture stdout and stderr
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    match cmd.output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let status = output.status.code().unwrap_or(-1);
+
+            SpawnSyncResult {
+                status,
+                stdout,
+                stderr,
+                error: None,
+            }
+        }
+        Err(e) => SpawnSyncResult {
+            status: -1,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Execute a command in a shell synchronously (convenience wrapper).
+#[op2]
+#[serde]
+fn op_howth_exec_sync(
+    #[string] command: &str,
+    #[serde] options: Option<SpawnOptions>,
+) -> SpawnSyncResult {
+    use std::process::{Command, Stdio};
+
+    let opts = options.unwrap_or_default();
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    };
+
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(command);
+        c
+    };
+
+    // Set working directory
+    if let Some(cwd) = opts.cwd {
+        cmd.current_dir(cwd);
+    }
+
+    // Set environment variables
+    if let Some(env) = opts.env {
+        cmd.envs(env);
+    }
+
+    // Capture stdout and stderr
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    match cmd.output() {
+        Ok(output) => {
+            let max_buffer = opts.max_buffer.unwrap_or(1024 * 1024); // 1MB default
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Check buffer size
+            if stdout.len() > max_buffer || stderr.len() > max_buffer {
+                return SpawnSyncResult {
+                    status: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    error: Some("ENOBUFS: stdout/stderr maxBuffer exceeded".to_string()),
+                };
+            }
+
+            let status = output.status.code().unwrap_or(-1);
+
+            SpawnSyncResult {
+                status,
+                stdout: stdout.to_string(),
+                stderr: stderr.to_string(),
+                error: None,
+            }
+        }
+        Err(e) => SpawnSyncResult {
+            status: -1,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(format!("ENOENT: spawn error: {}", e)),
+        },
+    }
 }
 
 /// Base64 encode helper.
