@@ -224,6 +224,16 @@ pub enum Request {
         save_dev: bool,
     },
 
+    /// Remove packages from the project.
+    PkgRemove {
+        /// Package names to remove.
+        packages: Vec<String>,
+        /// Working directory (project root).
+        cwd: String,
+        /// Channel for cache directory.
+        channel: String,
+    },
+
     /// List cached packages.
     PkgCacheList {
         /// Channel for cache directory.
@@ -1208,6 +1218,14 @@ pub enum Response {
         errors: Vec<PkgErrorInfo>,
         /// Number of packages reused from cache.
         reused_cache: u32,
+    },
+
+    /// Result of package remove operation.
+    PkgRemoveResult {
+        /// Successfully removed packages.
+        removed: Vec<String>,
+        /// Packages that failed to remove or weren't found.
+        errors: Vec<PkgErrorInfo>,
     },
 
     /// Result of cache list operation.

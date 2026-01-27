@@ -7,10 +7,10 @@ use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
     add_dependency_to_package_json, build_doctor_report, build_pkg_graph, detect_workspaces,
     download_tarball, extract_tgz_atomic, find_workspace_root, get_tarball_url,
-    link_into_node_modules, resolve_dependencies, resolve_version, why_from_graph, write_lockfile,
-    DoctorOptions, DoctorSeverity, GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError,
-    PkgWhyResult as CorePkgWhyResult, RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME,
-    MAX_TARBALL_SIZE,
+    link_into_node_modules, remove_dependency_from_package_json, resolve_dependencies,
+    resolve_version, why_from_graph, write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions,
+    Lockfile, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
+    RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
@@ -201,6 +201,95 @@ async fn add_single_package(
         was_cached,
         version_range,
     ))
+}
+
+/// Handle a PkgRemove request.
+pub async fn handle_pkg_remove(packages: &[String], cwd: &str, channel: &str) -> Response {
+    let project_root = Path::new(cwd);
+    let package_json_path = project_root.join("package.json");
+    let node_modules = project_root.join("node_modules");
+
+    // Create registry client for lockfile regeneration
+    let registry = match RegistryClient::from_env() {
+        Ok(r) => r,
+        Err(e) => {
+            return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
+        }
+    };
+
+    let mut removed = Vec::new();
+    let mut errors = Vec::new();
+
+    for pkg_name in packages {
+        debug!(name = %pkg_name, "Removing package");
+
+        // Remove from package.json
+        match remove_dependency_from_package_json(&package_json_path, pkg_name) {
+            Ok(was_removed) => {
+                if was_removed {
+                    debug!(name = %pkg_name, "Removed from package.json");
+
+                    // Remove from node_modules
+                    let pkg_path = node_modules.join(pkg_name);
+                    if pkg_path.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&pkg_path) {
+                            warn!(name = %pkg_name, error = %e, "Failed to remove from node_modules");
+                            // Don't fail the whole operation, package.json was updated
+                        } else {
+                            debug!(name = %pkg_name, "Removed from node_modules");
+                        }
+                    }
+
+                    removed.push(pkg_name.clone());
+                } else {
+                    errors.push(PkgErrorInfo {
+                        spec: pkg_name.clone(),
+                        code: "PKG_NOT_FOUND".to_string(),
+                        message: format!("Package '{}' not found in package.json", pkg_name),
+                    });
+                }
+            }
+            Err(e) => {
+                errors.push(PkgErrorInfo {
+                    spec: pkg_name.clone(),
+                    code: e.code().to_string(),
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
+
+    // Regenerate lockfile if any packages were removed
+    if !removed.is_empty() {
+        debug!("Regenerating lockfile after removing packages");
+
+        let resolve_opts = ResolveOptions {
+            include_dev: true,
+            include_optional: false,
+        };
+
+        match resolve_dependencies(project_root, &registry, &resolve_opts).await {
+            Ok(result) => {
+                if let Err(e) = write_lockfile(project_root, &result.lockfile) {
+                    warn!(error = %e, "Failed to write lockfile");
+                } else {
+                    debug!(
+                        resolved = result.resolved_count,
+                        fetched = result.fetched_count,
+                        "Lockfile regenerated"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to resolve dependencies for lockfile");
+            }
+        }
+    }
+
+    // Suppress unused variable warning
+    let _ = channel;
+
+    Response::PkgRemoveResult { removed, errors }
 }
 
 /// Handle a PkgCacheList request.

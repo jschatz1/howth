@@ -30,7 +30,10 @@ pub mod version;
 pub mod workspaces;
 
 pub use cache::PackageCache;
-pub use deps::{add_dependency_to_package_json, read_package_deps, PackageDeps, PkgDepError};
+pub use deps::{
+    add_dependency_to_package_json, read_package_deps, remove_dependency_from_package_json,
+    PackageDeps, PkgDepError,
+};
 pub use doctor::{
     build_doctor_report, codes as doctor_codes, DoctorCounts, DoctorFinding, DoctorOptions,
     DoctorSeverity, DoctorSummary, PkgDoctorReport, PKG_DOCTOR_SCHEMA_VERSION,

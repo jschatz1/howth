@@ -376,6 +376,12 @@ enum PkgCommands {
         save_dev: bool,
     },
 
+    /// Remove packages from the project
+    Remove {
+        /// Package names to remove (e.g., "react", "lodash")
+        packages: Vec<String>,
+    },
+
     /// Show the dependency graph
     Graph {
         /// Include devDependencies from root package.json
@@ -648,6 +654,16 @@ fn main() -> Result<()> {
                         cwd: cwd.clone(),
                         save_dev: *save_dev,
                     }
+                }
+            }
+            PkgCommands::Remove { packages } => {
+                if packages.is_empty() {
+                    eprintln!("error: specify at least one package to remove");
+                    std::process::exit(2);
+                }
+                commands::pkg::PkgAction::Remove {
+                    packages: packages.clone(),
+                    cwd: cwd.clone(),
                 }
             }
             PkgCommands::Graph {

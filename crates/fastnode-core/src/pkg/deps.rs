@@ -244,6 +244,95 @@ pub fn add_dependency_to_package_json(
     Ok(())
 }
 
+/// Remove a dependency from package.json.
+///
+/// Searches in both `dependencies` and `devDependencies` sections.
+/// Returns true if the package was found and removed, false if not found.
+///
+/// # Arguments
+/// * `package_json_path` - Path to the package.json file
+/// * `name` - Package name to remove
+///
+/// # Errors
+/// Returns `PkgError` if the file cannot be read, parsed, or written.
+pub fn remove_dependency_from_package_json(
+    package_json_path: &Path,
+    name: &str,
+) -> Result<bool, PkgError> {
+    // Check file exists
+    if !package_json_path.exists() {
+        return Err(PkgError::package_json_not_found(package_json_path));
+    }
+
+    // Read file contents
+    let content = fs::read_to_string(package_json_path)
+        .map_err(|e| PkgError::package_json_invalid(format!("Failed to read: {e}")))?;
+
+    // Parse JSON
+    let mut pkg_json: Value = serde_json::from_str(&content)
+        .map_err(|e| PkgError::package_json_invalid(format!("Invalid JSON: {e}")))?;
+
+    // Ensure root is object
+    let root = pkg_json
+        .as_object_mut()
+        .ok_or_else(|| PkgError::package_json_invalid("package.json must be a JSON object"))?;
+
+    let mut removed = false;
+
+    // Try to remove from dependencies
+    if let Some(deps) = root.get_mut("dependencies").and_then(|v| v.as_object_mut()) {
+        if deps.remove(name).is_some() {
+            removed = true;
+        }
+        // Remove empty dependencies section
+        if deps.is_empty() {
+            root.remove("dependencies");
+        }
+    }
+
+    // Try to remove from devDependencies
+    if let Some(dev_deps) = root
+        .get_mut("devDependencies")
+        .and_then(|v| v.as_object_mut())
+    {
+        if dev_deps.remove(name).is_some() {
+            removed = true;
+        }
+        // Remove empty devDependencies section
+        if dev_deps.is_empty() {
+            root.remove("devDependencies");
+        }
+    }
+
+    // Try to remove from optionalDependencies
+    if let Some(opt_deps) = root
+        .get_mut("optionalDependencies")
+        .and_then(|v| v.as_object_mut())
+    {
+        if opt_deps.remove(name).is_some() {
+            removed = true;
+        }
+        // Remove empty optionalDependencies section
+        if opt_deps.is_empty() {
+            root.remove("optionalDependencies");
+        }
+    }
+
+    if removed {
+        // Write back with pretty formatting
+        let formatted = serde_json::to_string_pretty(&pkg_json)
+            .map_err(|e| PkgError::package_json_invalid(format!("Failed to serialize: {e}")))?;
+
+        // Add trailing newline
+        let output = format!("{formatted}\n");
+
+        fs::write(package_json_path, output)
+            .map_err(|e| PkgError::package_json_invalid(format!("Failed to write: {e}")))?;
+    }
+
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

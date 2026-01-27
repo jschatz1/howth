@@ -28,6 +28,10 @@ pub enum PkgAction {
         include_dev: bool,
         include_optional: bool,
     },
+    Remove {
+        packages: Vec<String>,
+        cwd: PathBuf,
+    },
     Graph {
         cwd: PathBuf,
         include_dev: bool,
@@ -79,6 +83,16 @@ struct PkgAddResult {
     installed: Vec<InstalledPackage>,
     errors: Vec<PkgErrorInfo>,
     reused_cache: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Remove result for JSON output.
+#[derive(Serialize)]
+struct PkgRemoveResult {
+    ok: bool,
+    removed: Vec<String>,
+    errors: Vec<PkgErrorInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -272,6 +286,15 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
                     }
+                    PkgAction::Remove { .. } => {
+                        let result = PkgRemoveResult {
+                            ok: false,
+                            removed: Vec::new(),
+                            errors: Vec::new(),
+                            error: Some(format!("Failed to connect: {e}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
                     PkgAction::CacheList => {
                         let result = PkgCacheListResult {
                             ok: false,
@@ -389,6 +412,32 @@ fn handle_response(
             }
 
             // Exit with code 2 if any errors (both JSON and human mode)
+            if has_errors {
+                std::process::exit(2);
+            }
+            Ok(())
+        }
+        Response::PkgRemoveResult { removed, errors } => {
+            let has_errors = !errors.is_empty();
+
+            if json {
+                let result = PkgRemoveResult {
+                    ok: !has_errors && !removed.is_empty(),
+                    removed,
+                    errors,
+                    error: None,
+                };
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else {
+                for pkg in &removed {
+                    println!("- {}", pkg);
+                }
+                for err in &errors {
+                    eprintln!("! {}: {} {}", err.spec, err.code, err.message);
+                }
+            }
+
+            // Exit with code 2 if any errors
             if has_errors {
                 std::process::exit(2);
             }
@@ -610,6 +659,15 @@ fn handle_response(
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
                     }
+                    PkgAction::Remove { .. } => {
+                        let result = PkgRemoveResult {
+                            ok: false,
+                            removed: Vec::new(),
+                            errors: Vec::new(),
+                            error: Some(format!("{code}: {message}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
                     PkgAction::CacheList => {
                         let result = PkgCacheListResult {
                             ok: false,
@@ -683,6 +741,15 @@ fn handle_response(
                             installed: Vec::new(),
                             errors: dep_errors,
                             reused_cache: 0,
+                            error: Some("Unexpected response type".to_string()),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Remove { .. } => {
+                        let result = PkgRemoveResult {
+                            ok: false,
+                            removed: Vec::new(),
+                            errors: Vec::new(),
                             error: Some("Unexpected response type".to_string()),
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -1277,6 +1344,11 @@ async fn send_pkg_request(
             // AddDeps is converted to Add before reaching this function
             unreachable!("AddDeps should be converted to Add before sending request")
         }
+        PkgAction::Remove { packages, cwd } => Request::PkgRemove {
+            packages: packages.clone(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            channel: channel.as_str().to_string(),
+        },
         PkgAction::CacheList => Request::PkgCacheList {
             channel: channel.as_str().to_string(),
         },

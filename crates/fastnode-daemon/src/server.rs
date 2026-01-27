@@ -94,6 +94,7 @@ fn is_pkg_request(request: &Request) -> bool {
     matches!(
         request,
         Request::PkgAdd { .. }
+            | Request::PkgRemove { .. }
             | Request::PkgCacheList { .. }
             | Request::PkgCachePrune { .. }
             | Request::PkgInstall { .. }
