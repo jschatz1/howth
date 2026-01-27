@@ -51,13 +51,16 @@ const TESTS = [
   'test-fs-mkdir.js',
   'test-fs-readdir.js',
   'test-fs-readfile.js',
-  'test-fs-writefile.js',
   'test-fs-access.js',
-  'test-fs-appendfile.js',
-  'test-fs-copyfile.js',
-  'test-fs-rename.js',
-  'test-fs-unlink.js',
   'test-fs-realpath.js',
+
+  // FS tests (custom - don't exist in Node.js repo)
+  'test-fs-writefile.js',     // custom
+  'test-fs-appendfile.js',    // custom
+  'test-fs-rename.js',        // custom
+  'test-fs-unlink.js',        // custom
+  'test-fs-mkdir-basic.js',   // custom (simpler than Node's test-fs-mkdir.js)
+  'test-fs-copyfile-basic.js', // custom (simpler than Node's test-fs-copyfile.js)
 ];
 
 // Tests that require external dependencies (skip these)

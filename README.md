@@ -166,10 +166,10 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | Stream | 1 | 0 | 1 |
 | Crypto | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
-| FS module | 3 | 5 | 8 |
-| **Total** | **18** | **7** | **25** |
+| FS module | 9 | 4 | 13 |
+| **Total** | **24** | **6** | **30** |
 
-**Pass Rate: 72%**
+**Pass Rate: 80%**
 
 **Passing Tests:**
 - `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
@@ -190,6 +190,12 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-fs-exists.js` - `fs.exists()` and `fs.existsSync()`
 - `test-fs-readdir.js` - `fs.readdir()` and `fs.readdirSync()`
 - `test-fs-readfile.js` - `fs.readFile()` and `fs.readFileSync()`
+- `test-fs-writefile.js` - `fs.writeFile()` and `fs.writeFileSync()`
+- `test-fs-appendfile.js` - `fs.appendFile()` and `fs.appendFileSync()`
+- `test-fs-rename.js` - `fs.rename()` and `fs.renameSync()`
+- `test-fs-unlink.js` - `fs.unlink()` and `fs.unlinkSync()`
+- `test-fs-mkdir-basic.js` - `fs.mkdir()` and `fs.mkdirSync()`
+- `test-fs-copyfile-basic.js` - `fs.copyFile()` and `fs.copyFileSync()`
 
 **Skipped Tests (known limitations):**
 | Test | Reason |
@@ -200,7 +206,6 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | `test-fs-mkdir.js` | Requires `worker_threads` module |
 | `test-fs-realpath.js` | Requires `worker_threads` module |
 | `test-fs-access.js` | Requires `internal/test/binding` |
-| `test-fs-copyfile.js` | Requires `internal/test/binding` |
 
 ### ES Module Support
 
