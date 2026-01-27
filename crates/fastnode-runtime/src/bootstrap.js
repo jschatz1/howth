@@ -5177,6 +5177,434 @@
   globalThis.__howth_modules["stream/promises"] = streamPromises;
 
   // ============================================================================
+  // crypto module
+  // ============================================================================
+
+  // Map Node.js algorithm names to Web Crypto names
+  const hashAlgorithms = {
+    md5: "MD5", // Note: MD5 not in Web Crypto, we'll implement it
+    sha1: "SHA-1",
+    "sha-1": "SHA-1",
+    sha256: "SHA-256",
+    "sha-256": "SHA-256",
+    sha384: "SHA-384",
+    "sha-384": "SHA-384",
+    sha512: "SHA-512",
+    "sha-512": "SHA-512",
+  };
+
+  /**
+   * Generate random bytes.
+   */
+  function randomBytes(size, callback) {
+    const bytes = new Uint8Array(size);
+    crypto.getRandomValues(bytes);
+    const buf = Buffer.from(bytes);
+    if (callback) {
+      process.nextTick(() => callback(null, buf));
+      return;
+    }
+    return buf;
+  }
+
+  /**
+   * Generate random bytes synchronously.
+   */
+  function randomBytesSync(size) {
+    const bytes = new Uint8Array(size);
+    crypto.getRandomValues(bytes);
+    return Buffer.from(bytes);
+  }
+
+  /**
+   * Generate a random UUID.
+   */
+  function randomUUID() {
+    return crypto.randomUUID();
+  }
+
+  /**
+   * Generate random integer in range.
+   */
+  function randomInt(min, max, callback) {
+    if (typeof min === "function") {
+      callback = min;
+      min = 0;
+      max = 2147483647;
+    } else if (typeof max === "function") {
+      callback = max;
+      max = min;
+      min = 0;
+    } else if (max === undefined) {
+      // randomInt(max) - single argument means 0 to max
+      max = min;
+      min = 0;
+    }
+    const range = max - min;
+    const bytes = new Uint8Array(4);
+    crypto.getRandomValues(bytes);
+    const value = (bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24)) >>> 0;
+    const result = min + (value % range);
+    if (callback) {
+      process.nextTick(() => callback(null, result));
+      return;
+    }
+    return result;
+  }
+
+  /**
+   * Fill buffer with random bytes.
+   */
+  function randomFill(buffer, offset, size, callback) {
+    if (typeof offset === "function") {
+      callback = offset;
+      offset = 0;
+      size = buffer.length;
+    } else if (typeof size === "function") {
+      callback = size;
+      size = buffer.length - offset;
+    }
+    const bytes = new Uint8Array(size);
+    crypto.getRandomValues(bytes);
+    for (let i = 0; i < size; i++) {
+      buffer[offset + i] = bytes[i];
+    }
+    if (callback) {
+      process.nextTick(() => callback(null, buffer));
+      return;
+    }
+    return buffer;
+  }
+
+  function randomFillSync(buffer, offset = 0, size = buffer.length - offset) {
+    const bytes = new Uint8Array(size);
+    crypto.getRandomValues(bytes);
+    for (let i = 0; i < size; i++) {
+      buffer[offset + i] = bytes[i];
+    }
+    return buffer;
+  }
+
+  /**
+   * Simple MD5 implementation (not in Web Crypto).
+   */
+  function md5(data) {
+    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
+
+    function rotateLeft(x, n) { return ((x << n) | (x >>> (32 - n))) >>> 0; }
+    function add32(a, b) { return (a + b) >>> 0; }
+
+    const K = new Uint32Array([
+      0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+      0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+      0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+      0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+      0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+      0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+      0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+      0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+    ]);
+    const S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+
+    // Padding
+    const bitLen = bytes.length * 8;
+    const padLen = (bytes.length % 64 < 56 ? 56 : 120) - (bytes.length % 64);
+    const padded = new Uint8Array(bytes.length + padLen + 8);
+    padded.set(bytes);
+    padded[bytes.length] = 0x80;
+    const view = new DataView(padded.buffer);
+    view.setUint32(padded.length - 8, bitLen >>> 0, true);
+    view.setUint32(padded.length - 4, Math.floor(bitLen / 0x100000000), true);
+
+    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+
+    for (let i = 0; i < padded.length; i += 64) {
+      const M = new Uint32Array(16);
+      for (let j = 0; j < 16; j++) {
+        M[j] = view.getUint32(i + j * 4, true);
+      }
+
+      let A = a0, B = b0, C = c0, D = d0;
+
+      for (let j = 0; j < 64; j++) {
+        let F, g;
+        if (j < 16) { F = (B & C) | (~B & D); g = j; }
+        else if (j < 32) { F = (D & B) | (~D & C); g = (5 * j + 1) % 16; }
+        else if (j < 48) { F = B ^ C ^ D; g = (3 * j + 5) % 16; }
+        else { F = C ^ (B | ~D); g = (7 * j) % 16; }
+
+        F = add32(add32(add32(F >>> 0, A), K[j]), M[g]);
+        A = D; D = C; C = B;
+        B = add32(B, rotateLeft(F, S[Math.floor(j / 16) * 4 + (j % 4)]));
+      }
+
+      a0 = add32(a0, A); b0 = add32(b0, B); c0 = add32(c0, C); d0 = add32(d0, D);
+    }
+
+    const result = new Uint8Array(16);
+    const resultView = new DataView(result.buffer);
+    resultView.setUint32(0, a0, true);
+    resultView.setUint32(4, b0, true);
+    resultView.setUint32(8, c0, true);
+    resultView.setUint32(12, d0, true);
+    return result;
+  }
+
+  /**
+   * Hash class for streaming hash computation.
+   */
+  class Hash {
+    #algorithm;
+    #data = [];
+
+    constructor(algorithm) {
+      this.#algorithm = algorithm.toLowerCase();
+      if (!hashAlgorithms[this.#algorithm] && this.#algorithm !== "md5") {
+        throw new Error(`Digest method not supported: ${algorithm}`);
+      }
+    }
+
+    update(data, encoding) {
+      if (typeof data === "string") {
+        data = Buffer.from(data, encoding || "utf8");
+      }
+      this.#data.push(data);
+      return this;
+    }
+
+    async digest(encoding) {
+      const combined = Buffer.concat(this.#data);
+      let hash;
+
+      if (this.#algorithm === "md5") {
+        hash = md5(combined);
+      } else {
+        const webAlgo = hashAlgorithms[this.#algorithm];
+        const arrayBuffer = await crypto.subtle.digest(webAlgo, combined);
+        hash = new Uint8Array(arrayBuffer);
+      }
+
+      const result = Buffer.from(hash);
+      if (encoding === "hex") return result.toString("hex");
+      if (encoding === "base64") return result.toString("base64");
+      return result;
+    }
+
+    // Synchronous digest (only works for MD5, others need async)
+    digestSync(encoding) {
+      if (this.#algorithm !== "md5") {
+        throw new Error("Synchronous digest only supported for MD5. Use async digest() for other algorithms.");
+      }
+      const combined = Buffer.concat(this.#data);
+      const hash = md5(combined);
+      const result = Buffer.from(hash);
+      if (encoding === "hex") return result.toString("hex");
+      if (encoding === "base64") return result.toString("base64");
+      return result;
+    }
+
+    copy() {
+      const copy = new Hash(this.#algorithm);
+      copy.#data = [...this.#data];
+      return copy;
+    }
+  }
+
+  /**
+   * Create a hash object.
+   */
+  function createHash(algorithm) {
+    return new Hash(algorithm);
+  }
+
+  /**
+   * Hmac class for streaming HMAC computation.
+   */
+  class Hmac {
+    #algorithm;
+    #key;
+    #data = [];
+
+    constructor(algorithm, key) {
+      this.#algorithm = algorithm.toLowerCase();
+      if (!hashAlgorithms[this.#algorithm]) {
+        throw new Error(`Digest method not supported: ${algorithm}`);
+      }
+      this.#key = typeof key === "string" ? Buffer.from(key) : key;
+    }
+
+    update(data, encoding) {
+      if (typeof data === "string") {
+        data = Buffer.from(data, encoding || "utf8");
+      }
+      this.#data.push(data);
+      return this;
+    }
+
+    async digest(encoding) {
+      const combined = Buffer.concat(this.#data);
+      const webAlgo = hashAlgorithms[this.#algorithm];
+      const keyData = await crypto.subtle.importKey(
+        "raw",
+        this.#key,
+        { name: "HMAC", hash: webAlgo },
+        false,
+        ["sign"]
+      );
+      const signature = await crypto.subtle.sign("HMAC", keyData, combined);
+      const result = Buffer.from(new Uint8Array(signature));
+      if (encoding === "hex") return result.toString("hex");
+      if (encoding === "base64") return result.toString("base64");
+      return result;
+    }
+  }
+
+  /**
+   * Create an HMAC object.
+   */
+  function createHmac(algorithm, key) {
+    return new Hmac(algorithm, key);
+  }
+
+  /**
+   * Constant-time comparison of two buffers.
+   */
+  function timingSafeEqual(a, b) {
+    if (a.length !== b.length) {
+      throw new RangeError("Input buffers must have the same byte length");
+    }
+    let result = 0;
+    for (let i = 0; i < a.length; i++) {
+      result |= a[i] ^ b[i];
+    }
+    return result === 0;
+  }
+
+  /**
+   * Get list of supported hash algorithms.
+   */
+  function getHashes() {
+    return ["md5", "sha1", "sha256", "sha384", "sha512"];
+  }
+
+  /**
+   * Get list of supported ciphers (stub).
+   */
+  function getCiphers() {
+    return ["aes-128-cbc", "aes-256-cbc", "aes-128-gcm", "aes-256-gcm"];
+  }
+
+  /**
+   * Create a cipher (stub for basic support).
+   */
+  function createCipheriv(algorithm, key, iv) {
+    // Basic stub - full implementation would use Web Crypto
+    throw new Error("createCipheriv not fully implemented yet");
+  }
+
+  function createDecipheriv(algorithm, key, iv) {
+    throw new Error("createDecipheriv not fully implemented yet");
+  }
+
+  /**
+   * PBKDF2 key derivation.
+   */
+  async function pbkdf2(password, salt, iterations, keylen, digest, callback) {
+    try {
+      const enc = new TextEncoder();
+      const pwKey = await crypto.subtle.importKey(
+        "raw",
+        typeof password === "string" ? enc.encode(password) : password,
+        "PBKDF2",
+        false,
+        ["deriveBits"]
+      );
+      const webDigest = hashAlgorithms[digest.toLowerCase()] || "SHA-256";
+      const bits = await crypto.subtle.deriveBits(
+        {
+          name: "PBKDF2",
+          salt: typeof salt === "string" ? enc.encode(salt) : salt,
+          iterations,
+          hash: webDigest,
+        },
+        pwKey,
+        keylen * 8
+      );
+      const result = Buffer.from(new Uint8Array(bits));
+      if (callback) callback(null, result);
+      return result;
+    } catch (err) {
+      if (callback) callback(err);
+      throw err;
+    }
+  }
+
+  function pbkdf2Sync(password, salt, iterations, keylen, digest) {
+    // Sync version - would need native implementation for true sync
+    throw new Error("pbkdf2Sync requires async. Use pbkdf2() instead.");
+  }
+
+  /**
+   * Scrypt key derivation (stub).
+   */
+  function scrypt(password, salt, keylen, options, callback) {
+    if (typeof options === "function") {
+      callback = options;
+      options = {};
+    }
+    callback(new Error("scrypt not implemented"));
+  }
+
+  function scryptSync() {
+    throw new Error("scryptSync not implemented");
+  }
+
+  const cryptoModule = {
+    // Random
+    randomBytes,
+    randomBytesSync,
+    randomUUID,
+    randomInt,
+    randomFill,
+    randomFillSync,
+    getRandomValues: (buffer) => crypto.getRandomValues(buffer),
+
+    // Hashing
+    createHash,
+    createHmac,
+    getHashes,
+    Hash,
+    Hmac,
+
+    // Utility
+    timingSafeEqual,
+
+    // Key derivation
+    pbkdf2,
+    pbkdf2Sync,
+    scrypt,
+    scryptSync,
+
+    // Ciphers (stubs)
+    getCiphers,
+    createCipheriv,
+    createDecipheriv,
+
+    // Web Crypto access
+    subtle: crypto.subtle,
+    webcrypto: crypto,
+
+    // Constants
+    constants: {
+      OPENSSL_VERSION_NUMBER: 0,
+      SSL_OP_ALL: 0,
+    },
+  };
+
+  globalThis.__howth_modules["node:crypto"] = cryptoModule;
+  globalThis.__howth_modules["crypto"] = cryptoModule;
+
+  // ============================================================================
   // child_process module
   // ============================================================================
 

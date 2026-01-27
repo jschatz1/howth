@@ -30,6 +30,9 @@ const TESTS = [
   // Stream tests
   'test-stream-basic.js',
 
+  // Crypto tests
+  'test-crypto-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',

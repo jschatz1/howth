@@ -132,9 +132,9 @@ howth run --node script.ts
 | `node:assert` | ✅ | Full assertion support |
 | `node:child_process` | ✅ | execSync, spawnSync, exec, spawn |
 | `node:module` | ✅ | createRequire, builtinModules |
+| `node:crypto` | ✅ | randomBytes, randomUUID, createHash (MD5), timingSafeEqual |
 | `node:http` | ❌ | Not yet implemented |
 | `node:https` | ❌ | Not yet implemented |
-| `node:crypto` | ❌ | Not yet implemented |
 | `node:util` | ✅ | format, inspect, promisify, types, deprecate |
 | `node:stream` | ✅ | Readable, Writable, Duplex, Transform, pipeline |
 | `node:worker_threads` | ❌ | Not yet implemented |
@@ -164,11 +164,12 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | Events | 1 | 0 | 1 |
 | Util | 1 | 0 | 1 |
 | Stream | 1 | 0 | 1 |
+| Crypto | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
 | FS module | 3 | 5 | 8 |
-| **Total** | **17** | **7** | **24** |
+| **Total** | **18** | **7** | **25** |
 
-**Pass Rate: 71%**
+**Pass Rate: 72%**
 
 **Passing Tests:**
 - `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
@@ -177,6 +178,7 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-events-basic.js` - EventEmitter
 - `test-util-basic.js` - util module (format, inspect, promisify, types)
 - `test-stream-basic.js` - stream module (Readable, Writable, Transform, pipeline)
+- `test-crypto-basic.js` - crypto module (randomBytes, randomUUID, MD5, timingSafeEqual)
 - `test-path.js` - Main path module tests
 - `test-path-parse-format.js` - `path.parse()` and `path.format()`
 - `test-path-dirname.js` - `path.dirname()`
