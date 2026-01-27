@@ -114,8 +114,8 @@ console.log("Hello from JavaScript!");
 console.log("Process args:", process.argv.slice(2));
 EOF
 
-# Run with arguments
-howth run script.js arg1 arg2
+# Run with arguments (use -- to separate args)
+howth run script.js -- arg1 arg2
 ```
 
 ## 5. Package Linking
@@ -227,7 +227,7 @@ howth workspaces
 howth workspaces --json
 
 # Link all workspace packages
-howth workspaces link
+howth workspaces --link
 # Should link @myorg/ui, @myorg/utils into root node_modules
 ```
 
@@ -331,7 +331,7 @@ EOF
 # Run various commands
 howth start      # Script shortcut
 howth test       # Script shortcut
-howth build      # Script shortcut
+howth run build  # Use 'run' for build script (howth build runs the build system)
 howth run dev    # Explicit run
 howth run index.ts  # Run TypeScript file
 
@@ -404,12 +404,19 @@ rm -rf /tmp/my-lib /tmp/test-monorepo /tmp/full-test /tmp/no-lock
 | Project init | `howth init` | |
 | Run scripts | `howth run <script>` | |
 | Run files | `howth run <file.ts>` | |
-| Script shortcuts | `howth test`, `howth build` | |
+| Run with args | `howth run file.js -- arg1 arg2` | |
+| Script shortcuts | `howth test`, `howth start` | |
 | Link package | `howth link` | |
 | Unlink package | `howth unlink` | |
 | List links | `howth link --list` | |
 | Workspaces list | `howth workspaces` | |
-| Workspaces link | `howth workspaces link` | |
+| Workspaces link | `howth workspaces --link` | |
 | Install | `howth install` | |
 | Workspace install | `howth install` (auto-links) | |
 | JSON output | `--json` flag | |
+
+## Notes
+
+- **Arguments**: Pass args to scripts/files using `--` separator: `howth run file.js -- arg1 arg2`
+- **Build command**: `howth build` runs the build system. Use `howth run build` for package.json scripts
+- **Workspaces**: Use `howth workspaces --link` (flag), not `howth workspaces link` (subcommand)
