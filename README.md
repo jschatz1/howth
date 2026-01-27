@@ -124,18 +124,20 @@ howth run --node script.ts
 | `process.version` | ✅ | Reports v20.0.0 |
 | `process.hrtime.bigint()` | ✅ | Full support |
 | `process.nextTick()` | ✅ | Via queueMicrotask |
-| `Buffer` | ✅ | Full support (alloc, from, concat, encoding, read/write) |
-| `fs.readFileSync()` | ✅ | Via `__howth_fs` |
-| `fs.writeFileSync()` | ✅ | Via `__howth_fs` |
+| `Buffer` | ✅ | Full support (alloc, from, concat, fill, encoding, read/write) |
+| `URL` / `URLSearchParams` | ✅ | Full support |
 | `node:fs` | ✅ | Sync, async, and promises API |
 | `node:path` | ✅ | Full support (join, resolve, dirname, basename, etc.) |
+| `node:events` | ✅ | EventEmitter with full API |
+| `node:assert` | ✅ | Full assertion support |
+| `node:child_process` | ✅ | execSync, spawnSync, exec, spawn |
+| `node:module` | ✅ | createRequire, builtinModules |
 | `node:http` | ❌ | Not yet implemented |
 | `node:https` | ❌ | Not yet implemented |
 | `node:crypto` | ❌ | Not yet implemented |
-| `node:buffer` | ❌ | Not yet implemented |
 | `node:stream` | ❌ | Not yet implemented |
 | `node:util` | ❌ | Not yet implemented |
-| `node:events` | ❌ | Not yet implemented |
+| `node:worker_threads` | ❌ | Not yet implemented |
 | `require()` | ✅ | Full CommonJS support |
 
 ### Node.js Compatibility Testing
@@ -154,37 +156,45 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 
 **Current Results (as of January 2025):**
 
-| Category | Passed | Failed | Skipped |
-|----------|--------|--------|---------|
-| Path module | 6 | 1 | 4 |
-| FS module | 1 | 2 | 5 |
-| **Total** | **6** | **3** | **9** |
+| Category | Passed | Skipped | Total |
+|----------|--------|---------|-------|
+| Buffer | 1 | 0 | 1 |
+| URL | 1 | 0 | 1 |
+| Process | 1 | 0 | 1 |
+| Events | 1 | 0 | 1 |
+| Path module | 8 | 2 | 10 |
+| FS module | 3 | 5 | 8 |
+| **Total** | **15** | **7** | **22** |
+
+**Pass Rate: 68%**
 
 **Passing Tests:**
+- `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
+- `test-url-basic.js` - URL and URLSearchParams
+- `test-process-basic.js` - process object (env, cwd, argv, events)
+- `test-events-basic.js` - EventEmitter
 - `test-path.js` - Main path module tests
 - `test-path-parse-format.js` - `path.parse()` and `path.format()`
+- `test-path-dirname.js` - `path.dirname()`
 - `test-path-basename.js` - `path.basename()`
 - `test-path-extname.js` - `path.extname()`
+- `test-path-relative.js` - `path.relative()`
+- `test-path-resolve.js` - `path.resolve()` (uses child_process)
 - `test-path-isabsolute.js` - `path.isAbsolute()`
 - `test-fs-exists.js` - `fs.exists()` and `fs.existsSync()`
+- `test-fs-readdir.js` - `fs.readdir()` and `fs.readdirSync()`
+- `test-fs-readfile.js` - `fs.readFile()` and `fs.readFileSync()`
 
 **Skipped Tests (known limitations):**
 | Test | Reason |
 |------|--------|
-| `test-path-resolve.js` | Requires `child_process` module |
-| `test-path-normalize.js` | CVE-2024-36139 security fixes not implemented |
-| `test-path-join.js` | CVE-2024-36139 security fixes not implemented |
-| `test-path-dirname.js` | Directory structure assumptions |
+| `test-path-normalize.js` | CVE-2024-36139 Windows path traversal fixes |
+| `test-path-join.js` | CVE-2024-36139 Windows path traversal fixes |
 | `test-fs-stat.js` | `fstat()` on stdin/stdout not supported |
 | `test-fs-mkdir.js` | Requires `worker_threads` module |
 | `test-fs-realpath.js` | Requires `worker_threads` module |
 | `test-fs-access.js` | Requires `internal/test/binding` |
 | `test-fs-copyfile.js` | Requires `internal/test/binding` |
-
-**Known Failing Tests:**
-- `test-path-relative.js` - Turkish Unicode case-folding edge cases
-- `test-fs-readdir.js` - Error message format differences
-- `test-fs-readfile.js` - Error property handling
 
 ### ES Module Support
 
