@@ -23,7 +23,13 @@ fn links_dir(channel: Channel) -> std::path::PathBuf {
 ///
 /// If `package` is None, register the current package.
 /// If `package` is Some, link that package into node_modules.
-pub fn link(cwd: &Path, package: Option<&str>, save: bool, channel: Channel, json: bool) -> Result<()> {
+pub fn link(
+    cwd: &Path,
+    package: Option<&str>,
+    save: bool,
+    channel: Channel,
+    json: bool,
+) -> Result<()> {
     match package {
         None => register_package(cwd, channel, json),
         Some(pkg) => link_package(cwd, pkg, save, channel, json),
@@ -47,13 +53,16 @@ fn register_package(cwd: &Path, channel: Channel, json: bool) -> Result<()> {
     let package_json_path = cwd.join("package.json");
     if !package_json_path.exists() {
         if json {
-            println!("{}", serde_json::json!({
-                "ok": false,
-                "error": {
-                    "code": "NO_PACKAGE_JSON",
-                    "message": "No package.json found in current directory"
-                }
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "NO_PACKAGE_JSON",
+                        "message": "No package.json found in current directory"
+                    }
+                })
+            );
         } else {
             eprintln!("error: No package.json found in current directory");
         }
@@ -98,12 +107,15 @@ fn register_package(cwd: &Path, channel: Channel, json: bool) -> Result<()> {
     }
 
     if json {
-        println!("{}", serde_json::json!({
-            "ok": true,
-            "action": "register",
-            "package": name,
-            "path": cwd.to_string_lossy()
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "action": "register",
+                "package": name,
+                "path": cwd.to_string_lossy()
+            })
+        );
     } else {
         println!("Registered {} -> {}", name, cwd.display());
         println!("\nRun `howth link {}` in another project to use it.", name);
@@ -118,13 +130,16 @@ fn unregister_package(cwd: &Path, channel: Channel, json: bool) -> Result<()> {
     let package_json_path = cwd.join("package.json");
     if !package_json_path.exists() {
         if json {
-            println!("{}", serde_json::json!({
-                "ok": false,
-                "error": {
-                    "code": "NO_PACKAGE_JSON",
-                    "message": "No package.json found in current directory"
-                }
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "NO_PACKAGE_JSON",
+                        "message": "No package.json found in current directory"
+                    }
+                })
+            );
         } else {
             eprintln!("error: No package.json found in current directory");
         }
@@ -145,13 +160,16 @@ fn unregister_package(cwd: &Path, channel: Channel, json: bool) -> Result<()> {
 
     if !link_path.exists() && link_path.symlink_metadata().is_err() {
         if json {
-            println!("{}", serde_json::json!({
-                "ok": false,
-                "error": {
-                    "code": "NOT_REGISTERED",
-                    "message": format!("Package '{}' is not registered", name)
-                }
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "NOT_REGISTERED",
+                        "message": format!("Package '{}' is not registered", name)
+                    }
+                })
+            );
         } else {
             eprintln!("error: Package '{}' is not registered", name);
         }
@@ -163,11 +181,14 @@ fn unregister_package(cwd: &Path, channel: Channel, json: bool) -> Result<()> {
         .map_err(|e| miette::miette!("Failed to remove link: {}", e))?;
 
     if json {
-        println!("{}", serde_json::json!({
-            "ok": true,
-            "action": "unregister",
-            "package": name
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "action": "unregister",
+                "package": name
+            })
+        );
     } else {
         println!("Unregistered {}", name);
     }
@@ -182,13 +203,16 @@ fn link_package(cwd: &Path, pkg: &str, save: bool, channel: Channel, json: bool)
     // Check if package is registered
     if !link_source.exists() && link_source.symlink_metadata().is_err() {
         if json {
-            println!("{}", serde_json::json!({
-                "ok": false,
-                "error": {
-                    "code": "NOT_REGISTERED",
-                    "message": format!("Package '{}' is not registered. Run `howth link` in the package directory first.", pkg)
-                }
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "NOT_REGISTERED",
+                        "message": format!("Package '{}' is not registered. Run `howth link` in the package directory first.", pkg)
+                    }
+                })
+            );
         } else {
             eprintln!("error: Package '{}' is not registered", pkg);
             eprintln!("hint: Run `howth link` in the {} directory first", pkg);
@@ -247,13 +271,16 @@ fn link_package(cwd: &Path, pkg: &str, save: bool, channel: Channel, json: bool)
     }
 
     if json {
-        println!("{}", serde_json::json!({
-            "ok": true,
-            "action": "link",
-            "package": pkg,
-            "from": actual_path.to_string_lossy(),
-            "to": link_dest.to_string_lossy()
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "action": "link",
+                "package": pkg,
+                "from": actual_path.to_string_lossy(),
+                "to": link_dest.to_string_lossy()
+            })
+        );
     } else {
         println!("Linked {} -> {}", pkg, actual_path.display());
     }
@@ -278,13 +305,16 @@ fn unlink_package(cwd: &Path, pkg: &str, json: bool) -> Result<()> {
 
     if !link_dest.exists() && link_dest.symlink_metadata().is_err() {
         if json {
-            println!("{}", serde_json::json!({
-                "ok": false,
-                "error": {
-                    "code": "NOT_LINKED",
-                    "message": format!("Package '{}' is not linked in this project", pkg)
-                }
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "NOT_LINKED",
+                        "message": format!("Package '{}' is not linked in this project", pkg)
+                    }
+                })
+            );
         } else {
             eprintln!("error: Package '{}' is not linked in this project", pkg);
         }
@@ -296,11 +326,14 @@ fn unlink_package(cwd: &Path, pkg: &str, json: bool) -> Result<()> {
         .map_err(|e| miette::miette!("Failed to remove link: {}", e))?;
 
     if json {
-        println!("{}", serde_json::json!({
-            "ok": true,
-            "action": "unlink",
-            "package": pkg
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "action": "unlink",
+                "package": pkg
+            })
+        );
     } else {
         println!("Unlinked {}", pkg);
     }
@@ -348,10 +381,13 @@ pub fn list(channel: Channel, json: bool) -> Result<()> {
 
     if !links.exists() {
         if json {
-            println!("{}", serde_json::json!({
-                "ok": true,
-                "packages": []
-            }));
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "packages": []
+                })
+            );
         } else {
             println!("No linked packages registered.");
         }
@@ -375,21 +411,23 @@ pub fn list(channel: Channel, json: bool) -> Result<()> {
     }
 
     if json {
-        println!("{}", serde_json::json!({
-            "ok": true,
-            "packages": packages
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "packages": packages
+            })
+        );
+    } else if packages.is_empty() {
+        println!("No linked packages registered.");
     } else {
-        if packages.is_empty() {
-            println!("No linked packages registered.");
-        } else {
-            println!("Registered packages:");
-            for pkg in &packages {
-                println!("  {} -> {}",
-                    pkg.get("name").and_then(|n| n.as_str()).unwrap_or("?"),
-                    pkg.get("path").and_then(|p| p.as_str()).unwrap_or("?")
-                );
-            }
+        println!("Registered packages:");
+        for pkg in &packages {
+            println!(
+                "  {} -> {}",
+                pkg.get("name").and_then(|n| n.as_str()).unwrap_or("?"),
+                pkg.get("path").and_then(|p| p.as_str()).unwrap_or("?")
+            );
         }
     }
 

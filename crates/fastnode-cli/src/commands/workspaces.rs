@@ -105,14 +105,12 @@ pub fn link(cwd: &Path, json: bool) -> Result<()> {
                         "linked": linked
                     })
                 );
+            } else if linked.is_empty() {
+                println!("No workspace packages to link.");
             } else {
-                if linked.is_empty() {
-                    println!("No workspace packages to link.");
-                } else {
-                    println!("Linked {} workspace package(s):", linked.len());
-                    for name in &linked {
-                        println!("  + {}", name);
-                    }
+                println!("Linked {} workspace package(s):", linked.len());
+                for name in &linked {
+                    println!("  + {}", name);
                 }
             }
             Ok(())

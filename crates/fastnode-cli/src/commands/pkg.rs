@@ -543,14 +543,28 @@ fn handle_response(
             } else {
                 // Print human-readable output
                 println!("howth install");
-                println!(
-                    "  packages: {} total, {} cached, {} downloaded",
-                    result.summary.total_packages, result.summary.cached, result.summary.downloaded
-                );
+                if result.summary.workspace_linked > 0 {
+                    println!(
+                        "  packages: {} total, {} cached, {} downloaded, {} workspace",
+                        result.summary.total_packages,
+                        result.summary.cached,
+                        result.summary.downloaded,
+                        result.summary.workspace_linked
+                    );
+                } else {
+                    println!(
+                        "  packages: {} total, {} cached, {} downloaded",
+                        result.summary.total_packages,
+                        result.summary.cached,
+                        result.summary.downloaded
+                    );
+                }
 
                 if !result.installed.is_empty() {
                     for pkg in &result.installed {
-                        let source = if pkg.from_cache {
+                        let source = if pkg.is_workspace {
+                            "workspace"
+                        } else if pkg.from_cache {
                             "cached"
                         } else {
                             "downloaded"

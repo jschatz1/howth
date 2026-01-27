@@ -941,6 +941,9 @@ pub struct InstallSummary {
     pub linked: u32,
     /// Packages that failed.
     pub failed: u32,
+    /// Workspace packages linked locally.
+    #[serde(default)]
+    pub workspace_linked: u32,
 }
 
 /// Information about a package that was installed.
@@ -951,9 +954,16 @@ pub struct InstallPackageInfo {
     /// Resolved version.
     pub version: String,
     /// Whether this came from cache.
+    #[serde(default)]
     pub from_cache: bool,
     /// Path in `node_modules`.
     pub link_path: String,
+    /// Path to the cached/source package.
+    #[serde(default)]
+    pub cache_path: String,
+    /// Whether this is a workspace package (local symlink).
+    #[serde(default)]
+    pub is_workspace: bool,
 }
 
 /// Error for a specific package during install.
@@ -2281,6 +2291,7 @@ mod tests {
             cached: 45,
             linked: 95,
             failed: 5,
+            workspace_linked: 3,
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("total_packages"));
@@ -2295,6 +2306,8 @@ mod tests {
             version: "4.17.21".to_string(),
             from_cache: true,
             link_path: "/project/node_modules/lodash".to_string(),
+            cache_path: "/cache/lodash".to_string(),
+            is_workspace: false,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("lodash"));
@@ -2327,12 +2340,15 @@ mod tests {
                 cached: 8,
                 linked: 10,
                 failed: 0,
+                workspace_linked: 0,
             },
             installed: vec![InstallPackageInfo {
                 name: "react".to_string(),
                 version: "18.2.0".to_string(),
                 from_cache: true,
                 link_path: "/project/node_modules/react".to_string(),
+                cache_path: "/cache/react".to_string(),
+                is_workspace: false,
             }],
             errors: vec![],
             notes: vec!["All packages installed successfully".to_string()],

@@ -5,10 +5,10 @@
 
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
-    build_doctor_report, build_pkg_graph, download_tarball, extract_tgz_atomic, get_tarball_url,
-    link_into_node_modules, resolve_version, why_from_graph, DoctorOptions, DoctorSeverity,
-    GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
-    RegistryClient, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
+    build_doctor_report, build_pkg_graph, detect_workspaces, download_tarball, extract_tgz_atomic,
+    find_workspace_root, get_tarball_url, link_into_node_modules, resolve_version, why_from_graph,
+    DoctorOptions, DoctorSeverity, GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError,
+    PkgWhyResult as CorePkgWhyResult, RegistryClient, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
@@ -273,11 +273,26 @@ pub async fn handle_pkg_install(
         }
     };
 
+    // Detect workspaces for local package linking
+    let workspace_root = find_workspace_root(&project_root);
+    let workspace_config = workspace_root
+        .as_ref()
+        .and_then(|root| detect_workspaces(root));
+
+    if let Some(ref config) = workspace_config {
+        debug!(
+            workspace_root = %config.root.display(),
+            packages = config.packages.len(),
+            "Detected workspace"
+        );
+    }
+
     let mut installed = Vec::new();
     let mut errors = Vec::new();
     let mut downloaded = 0u32;
     let mut cached = 0u32;
     let mut linked = 0u32;
+    let mut workspace_linked = 0u32;
 
     // Install each package from the lockfile
     for (key, lock_pkg) in &lockfile.packages {
@@ -293,6 +308,39 @@ pub async fn handle_pkg_install(
                 }
                 if dep.kind == "optional" && !include_optional {
                     continue;
+                }
+            }
+        }
+
+        // Check if this is a workspace package
+        if let Some(ref config) = workspace_config {
+            if let Some(ws_pkg) = config.get_package(name) {
+                // Link workspace package directly instead of fetching from registry
+                debug!(name = %name, path = %ws_pkg.path.display(), "Linking workspace package");
+
+                match link_into_node_modules(&project_root, name, &ws_pkg.path) {
+                    Ok(link_path) => {
+                        workspace_linked += 1;
+                        linked += 1;
+                        installed.push(InstallPackageInfo {
+                            name: name.to_string(),
+                            version: ws_pkg.version.clone(),
+                            from_cache: false,
+                            link_path: link_path.to_string_lossy().into_owned(),
+                            cache_path: ws_pkg.path.to_string_lossy().into_owned(),
+                            is_workspace: true,
+                        });
+                        continue;
+                    }
+                    Err(e) => {
+                        errors.push(InstallPackageError {
+                            name: name.to_string(),
+                            version: ws_pkg.version.clone(),
+                            code: e.code().to_string(),
+                            message: e.to_string(),
+                        });
+                        continue;
+                    }
                 }
             }
         }
@@ -326,9 +374,18 @@ pub async fn handle_pkg_install(
         downloaded,
         cached,
         linked,
+        workspace_linked,
         failed = errors.len(),
         "Install completed"
     );
+
+    let mut notes = vec![];
+    if workspace_linked > 0 {
+        notes.push(format!(
+            "{} workspace package(s) linked locally",
+            workspace_linked
+        ));
+    }
 
     Response::PkgInstallResult {
         result: PkgInstallResult {
@@ -341,10 +398,11 @@ pub async fn handle_pkg_install(
                 cached,
                 linked,
                 failed: errors.len() as u32,
+                workspace_linked,
             },
             installed,
             errors,
-            notes: vec![],
+            notes,
         },
     }
 }
@@ -403,6 +461,8 @@ async fn install_from_lockfile(
             version: version.to_string(),
             from_cache: was_cached,
             link_path: link_path.to_string_lossy().into_owned(),
+            cache_path: package_dir.to_string_lossy().into_owned(),
+            is_workspace: false,
         },
         was_cached,
     ))
