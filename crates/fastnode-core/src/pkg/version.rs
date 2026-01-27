@@ -10,6 +10,7 @@ use semver::{Version, VersionReq};
 /// - If `range` is `None`, returns `dist-tags.latest`
 /// - If `range` is an exact version, returns it if present
 /// - If `range` is a semver range, returns the highest satisfying version
+/// - Supports OR ranges like `^1.0.0 || ^2.0.0`
 ///
 /// # Errors
 /// Returns an error if no version satisfies the range.
@@ -42,12 +43,7 @@ pub fn resolve_version(
                 let _ = exact; // suppress unused warning
             }
 
-            // Parse as semver range
-            let req = VersionReq::parse(range).map_err(|e| {
-                PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
-            })?;
-
-            // Collect and parse all versions
+            // Collect and parse all versions (needed for matching)
             let versions = get_versions(packument);
             let mut parsed: Vec<Version> = versions
                 .iter()
@@ -56,6 +52,14 @@ pub fn resolve_version(
 
             // Sort descending to get highest first
             parsed.sort_by(|a, b| b.cmp(a));
+
+            // Handle OR ranges (e.g., "^1.0.0 || ^2.0.0")
+            if range.contains("||") {
+                return resolve_or_range(name, range, &parsed);
+            }
+
+            // Parse as single semver range
+            let req = parse_range(range)?;
 
             // Find first (highest) matching version
             for version in &parsed {
@@ -67,6 +71,122 @@ pub fn resolve_version(
             Err(PkgError::version_not_found(name, range))
         }
     }
+}
+
+/// Resolve an OR range like "^1.0.0 || ^2.0.0".
+///
+/// Returns the highest version matching any of the alternatives.
+fn resolve_or_range(name: &str, range: &str, versions: &[Version]) -> Result<String, PkgError> {
+    // Split by || and parse each alternative
+    let alternatives: Vec<&str> = range.split("||").map(str::trim).collect();
+
+    let mut reqs: Vec<VersionReq> = Vec::new();
+    for alt in &alternatives {
+        if alt.is_empty() {
+            continue;
+        }
+        match parse_range(alt) {
+            Ok(req) => reqs.push(req),
+            Err(_) => {
+                // Skip invalid alternatives, try others
+                continue;
+            }
+        }
+    }
+
+    if reqs.is_empty() {
+        return Err(PkgError::spec_invalid(format!(
+            "Invalid version range '{range}': no valid alternatives"
+        )));
+    }
+
+    // Find highest version matching any alternative
+    for version in versions {
+        for req in &reqs {
+            if req.matches(version) {
+                return Ok(version.to_string());
+            }
+        }
+    }
+
+    Err(PkgError::version_not_found(name, range))
+}
+
+/// Parse a single version range, handling npm-specific syntax.
+///
+/// Handles:
+/// - Standard semver ranges: ^1.0.0, ~1.0.0, >=1.0.0, etc.
+/// - Hyphen ranges: 1.0.0 - 2.0.0
+/// - X-ranges: 1.x, 1.0.x, *
+fn parse_range(range: &str) -> Result<VersionReq, PkgError> {
+    let range = range.trim();
+
+    // Handle hyphen ranges: "1.0.0 - 2.0.0" -> ">=1.0.0, <=2.0.0"
+    if let Some((start, end)) = parse_hyphen_range(range) {
+        let converted = format!(">={start}, <={end}");
+        return VersionReq::parse(&converted).map_err(|e| {
+            PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
+        });
+    }
+
+    // Handle x-ranges: "1.x" -> ">=1.0.0, <2.0.0"
+    if range.contains('x') || range.contains('X') || range == "*" {
+        let converted = convert_x_range(range);
+        return VersionReq::parse(&converted).map_err(|e| {
+            PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
+        });
+    }
+
+    // Standard semver range
+    VersionReq::parse(range).map_err(|e| {
+        PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
+    })
+}
+
+/// Parse a hyphen range like "1.0.0 - 2.0.0".
+fn parse_hyphen_range(range: &str) -> Option<(String, String)> {
+    // Look for " - " pattern (space-hyphen-space)
+    let parts: Vec<&str> = range.split(" - ").collect();
+    if parts.len() == 2 {
+        let start = parts[0].trim();
+        let end = parts[1].trim();
+        // Validate both look like versions
+        if !start.is_empty() && !end.is_empty() {
+            return Some((start.to_string(), end.to_string()));
+        }
+    }
+    None
+}
+
+/// Convert x-range to semver range.
+fn convert_x_range(range: &str) -> String {
+    let range = range.trim();
+
+    if range == "*" || range == "x" || range == "X" {
+        return ">=0.0.0".to_string();
+    }
+
+    // Replace x/X with 0 for parsing, then convert to appropriate range
+    let parts: Vec<&str> = range.split('.').collect();
+
+    match parts.as_slice() {
+        [major, "x" | "X"] | [major, "*"] => {
+            // "1.x" -> ">=1.0.0, <2.0.0"
+            if let Ok(m) = major.parse::<u64>() {
+                return format!(">={m}.0.0, <{}.0.0", m + 1);
+            }
+        }
+        [major, minor, "x" | "X"] | [major, minor, "*"] => {
+            // "1.2.x" -> ">=1.2.0, <1.3.0"
+            if let (Ok(m), Ok(n)) = (major.parse::<u64>(), minor.parse::<u64>()) {
+                return format!(">={m}.{n}.0, <{m}.{}.0", n + 1);
+            }
+        }
+        _ => {}
+    }
+
+    // Fallback: just replace x with 0
+    range.replace(['x', 'X'], "0")
 }
 
 #[cfg(test)]
@@ -157,5 +277,74 @@ mod tests {
         let packument = make_packument(&["1.0.0"], "1.0.0");
         let result = resolve_version(&packument, Some("not-a-range!!!"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_or_range_simple() {
+        let packument = make_packument(&["1.0.0", "2.0.0", "3.0.0"], "3.0.0");
+        // Should pick highest matching version (3.0.0 matches ^3.0.0)
+        let version = resolve_version(&packument, Some("^1.0.0 || ^2.0.0 || ^3.0.0")).unwrap();
+        assert_eq!(version, "3.0.0");
+    }
+
+    #[test]
+    fn test_or_range_picks_highest() {
+        let packument = make_packument(&["1.5.0", "2.5.0"], "2.5.0");
+        // Both match, should pick highest (2.5.0)
+        let version = resolve_version(&packument, Some("^1.0.0 || ^2.0.0")).unwrap();
+        assert_eq!(version, "2.5.0");
+    }
+
+    #[test]
+    fn test_or_range_only_first_matches() {
+        let packument = make_packument(&["1.0.0", "1.5.0"], "1.5.0");
+        // Only ^1.0.0 matches, ^2.0.0 has no versions
+        let version = resolve_version(&packument, Some("^1.0.0 || ^2.0.0")).unwrap();
+        assert_eq!(version, "1.5.0");
+    }
+
+    #[test]
+    fn test_or_range_only_second_matches() {
+        let packument = make_packument(&["2.0.0", "2.5.0"], "2.5.0");
+        // Only ^2.0.0 matches, ^1.0.0 has no versions
+        let version = resolve_version(&packument, Some("^1.0.0 || ^2.0.0")).unwrap();
+        assert_eq!(version, "2.5.0");
+    }
+
+    #[test]
+    fn test_or_range_with_spaces() {
+        let packument = make_packument(&["14.0.0", "15.0.0"], "15.0.0");
+        // Various spacing styles
+        let version = resolve_version(&packument, Some("^14.0.0||^15.0.0")).unwrap();
+        assert_eq!(version, "15.0.0");
+    }
+
+    #[test]
+    fn test_or_range_complex() {
+        let packument = make_packument(&["3.0.0", "4.0.0", "5.0.0"], "5.0.0");
+        // Real-world example: "^3.0.0 || ^4.0.0"
+        let version = resolve_version(&packument, Some("^3.0.0 || ^4.0.0")).unwrap();
+        assert_eq!(version, "4.0.0");
+    }
+
+    #[test]
+    fn test_or_range_no_match() {
+        let packument = make_packument(&["1.0.0", "2.0.0"], "2.0.0");
+        let result = resolve_version(&packument, Some("^3.0.0 || ^4.0.0"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_x_range() {
+        let packument = make_packument(&["1.0.0", "1.5.0", "2.0.0"], "2.0.0");
+        let version = resolve_version(&packument, Some("1.x")).unwrap();
+        assert_eq!(version, "1.5.0");
+    }
+
+    #[test]
+    fn test_hyphen_range() {
+        let packument = make_packument(&["1.0.0", "1.5.0", "2.0.0", "3.0.0"], "3.0.0");
+        let version = resolve_version(&packument, Some("1.0.0 - 2.0.0")).unwrap();
+        assert_eq!(version, "2.0.0");
     }
 }

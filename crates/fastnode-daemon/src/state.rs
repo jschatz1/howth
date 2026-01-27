@@ -1,13 +1,13 @@
 //! Shared daemon state.
 //!
 //! Holds the resolver cache, file watcher, package cache, build cache,
-//! and compiler backend, coordinating cache invalidation when files change.
+//! registry client, and compiler backend, coordinating cache invalidation when files change.
 
 use crate::cache::{DaemonBuildCache, DaemonPkgJsonCache, DaemonResolverCache};
 use crate::watch::WatcherState;
 use fastnode_core::compiler::{CompilerBackend, SwcBackend};
 use fastnode_core::config::Channel;
-use fastnode_core::pkg::PackageCache;
+use fastnode_core::pkg::{PackageCache, RegistryClient};
 use std::sync::Arc;
 
 /// Shared daemon state containing cache and watcher.
@@ -24,6 +24,8 @@ pub struct DaemonState {
     pub build_cache: Arc<DaemonBuildCache>,
     /// Compiler backend for transpilation (v3.1).
     pub compiler: Arc<dyn CompilerBackend>,
+    /// Shared registry client with persistent packument cache.
+    pub registry: Arc<RegistryClient>,
 }
 
 // Manual Debug impl because dyn CompilerBackend doesn't implement Debug
@@ -36,6 +38,7 @@ impl std::fmt::Debug for DaemonState {
             .field("pkg_json_cache", &self.pkg_json_cache)
             .field("build_cache", &self.build_cache)
             .field("compiler", &self.compiler.name())
+            .field("registry", &"RegistryClient")
             .finish()
     }
 }
@@ -56,6 +59,11 @@ impl DaemonState {
         let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
         let build_cache = Arc::new(DaemonBuildCache::new());
         let compiler: Arc<dyn CompilerBackend> = Arc::new(SwcBackend::new());
+
+        // Create shared registry client with persistent packument cache
+        let registry = RegistryClient::from_env_with_cache((*pkg_cache).clone())
+            .unwrap_or_else(|_| RegistryClient::from_env().expect("Failed to create registry client"));
+
         Self {
             cache,
             watcher,
@@ -63,6 +71,7 @@ impl DaemonState {
             pkg_json_cache,
             build_cache,
             compiler,
+            registry: Arc::new(registry),
         }
     }
 
@@ -74,6 +83,11 @@ impl DaemonState {
         let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
         let build_cache = Arc::new(DaemonBuildCache::new());
         let compiler: Arc<dyn CompilerBackend> = Arc::new(SwcBackend::new());
+
+        // Create shared registry client with persistent packument cache
+        let registry = RegistryClient::from_env_with_cache((*pkg_cache).clone())
+            .unwrap_or_else(|_| RegistryClient::from_env().expect("Failed to create registry client"));
+
         Self {
             cache,
             watcher,
@@ -81,6 +95,7 @@ impl DaemonState {
             pkg_json_cache,
             build_cache,
             compiler,
+            registry: Arc::new(registry),
         }
     }
 
@@ -92,6 +107,11 @@ impl DaemonState {
         let pkg_cache = Arc::new(PackageCache::new(Channel::Stable));
         let pkg_json_cache = Arc::new(DaemonPkgJsonCache::new());
         let build_cache = Arc::new(DaemonBuildCache::new());
+
+        // Create shared registry client with persistent packument cache
+        let registry = RegistryClient::from_env_with_cache((*pkg_cache).clone())
+            .unwrap_or_else(|_| RegistryClient::from_env().expect("Failed to create registry client"));
+
         Self {
             cache,
             watcher,
@@ -99,6 +119,7 @@ impl DaemonState {
             pkg_json_cache,
             build_cache,
             compiler,
+            registry: Arc::new(registry),
         }
     }
 }

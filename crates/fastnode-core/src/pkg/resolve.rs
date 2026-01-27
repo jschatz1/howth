@@ -1,6 +1,7 @@
 //! Dependency resolution and lockfile generation.
 //!
 //! Resolves dependencies from package.json and generates a lockfile.
+//! Uses parallel resolution with packument caching for performance.
 
 use super::deps::read_package_deps;
 use super::error::PkgError;
@@ -10,9 +11,12 @@ use super::lockfile::{
 };
 use super::registry::RegistryClient;
 use super::version::resolve_version;
+use futures::stream::{self, StreamExt};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Options for dependency resolution.
 #[derive(Debug, Clone, Default)]
@@ -34,7 +38,49 @@ pub struct ResolveResult {
     pub fetched_count: usize,
 }
 
+/// Maximum concurrent packument fetches.
+const MAX_CONCURRENT_FETCHES: usize = 32;
+
+/// Maximum resolution depth to prevent infinite loops.
+const MAX_DEPTH: usize = 100;
+
+/// Cached packument data.
+type PackumentCache = Arc<RwLock<HashMap<String, Arc<Value>>>>;
+
+/// State for parallel resolution.
+struct ResolveState {
+    /// Cached packuments (name -> packument JSON).
+    packuments: PackumentCache,
+    /// Resolved packages (key -> LockPackage).
+    packages: RwLock<BTreeMap<String, LockPackage>>,
+    /// Visited package keys to avoid re-resolution.
+    visited: RwLock<HashSet<String>>,
+    /// Counter for packages fetched from registry.
+    fetch_count: RwLock<usize>,
+}
+
+impl ResolveState {
+    fn new() -> Self {
+        Self {
+            packuments: Arc::new(RwLock::new(HashMap::new())),
+            packages: RwLock::new(BTreeMap::new()),
+            visited: RwLock::new(HashSet::new()),
+            fetch_count: RwLock::new(0),
+        }
+    }
+}
+
+/// A dependency to resolve.
+#[derive(Debug, Clone)]
+struct PendingDep {
+    name: String,
+    range: String,
+    depth: usize,
+}
+
 /// Resolve dependencies and generate a lockfile.
+///
+/// Uses parallel resolution with packument caching for improved performance.
 ///
 /// # Arguments
 /// * `project_root` - Path to the project directory containing package.json
@@ -69,37 +115,62 @@ pub async fn resolve_dependencies(
         .map(String::from);
 
     // Read dependencies from package.json
-    let pkg_deps = read_package_deps(&package_json_path, options.include_dev, options.include_optional)?;
+    let pkg_deps =
+        read_package_deps(&package_json_path, options.include_dev, options.include_optional)?;
 
-    // Track resolved packages
-    let mut packages: BTreeMap<String, LockPackage> = BTreeMap::new();
+    // Initialize resolution state
+    let state = Arc::new(ResolveState::new());
+
+    // Queue root dependencies
+    let mut pending: VecDeque<PendingDep> = pkg_deps
+        .deps
+        .iter()
+        .map(|(name, range)| PendingDep {
+            name: name.clone(),
+            range: range.clone(),
+            depth: 0,
+        })
+        .collect();
+
+    // Resolve in waves until no more pending dependencies
+    while !pending.is_empty() {
+        // Take current batch
+        let batch: Vec<PendingDep> = pending.drain(..).collect();
+
+        // Resolve batch in parallel
+        let new_deps = resolve_batch(&batch, registry, &state).await?;
+
+        // Add newly discovered dependencies to pending queue
+        for dep in new_deps {
+            if dep.depth <= MAX_DEPTH {
+                pending.push_back(dep);
+            }
+        }
+    }
+
+    // Build root dependencies map
     let mut dependencies: BTreeMap<String, LockDep> = BTreeMap::new();
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut fetched_count = 0;
+    let packages = state.packages.read().await;
 
-    // Resolve each root dependency
     for (name, range) in &pkg_deps.deps {
         let kind = get_dep_kind(&pkg_json, name);
 
-        // Resolve the package and its transitive deps
-        let (version, _) = resolve_package_tree(
-            name,
-            range,
-            registry,
-            &mut packages,
-            &mut visited,
-            &mut fetched_count,
-            0,
-        )
-        .await?;
+        // Find the resolved version for this root dependency
+        // We need to look through packages to find name@version
+        let version = packages
+            .keys()
+            .find(|key| key.starts_with(&format!("{}@", name)))
+            .and_then(|key| key.strip_prefix(&format!("{}@", name)))
+            .map(String::from)
+            .unwrap_or_default();
 
-        // Add to root dependencies
-        let key = format!("{}@{}", name, version);
-        dependencies.insert(
-            name.clone(),
-            LockDep::new(range.clone(), kind, key),
-        );
+        if !version.is_empty() {
+            let key = format!("{}@{}", name, version);
+            dependencies.insert(name.clone(), LockDep::new(range.clone(), kind, key));
+        }
     }
+
+    let fetch_count = *state.fetch_count.read().await;
 
     // Build lockfile
     let lockfile = Lockfile {
@@ -110,54 +181,121 @@ pub async fn resolve_dependencies(
         },
         root: LockRoot::new(root_name, root_version),
         dependencies,
-        packages,
+        packages: packages.clone(),
     };
 
     Ok(ResolveResult {
         resolved_count: lockfile.packages.len(),
-        fetched_count,
+        fetched_count: fetch_count,
         lockfile,
     })
 }
 
-/// Recursively resolve a package and its dependencies.
+/// Resolve a batch of dependencies in parallel.
 ///
-/// Returns (resolved_version, was_already_resolved).
-async fn resolve_package_tree(
-    name: &str,
-    range: &str,
+/// Returns newly discovered transitive dependencies.
+async fn resolve_batch(
+    batch: &[PendingDep],
     registry: &RegistryClient,
-    packages: &mut BTreeMap<String, LockPackage>,
-    visited: &mut HashSet<String>,
-    fetched_count: &mut usize,
-    depth: usize,
-) -> Result<(String, bool), PkgError> {
-    // Depth limit to prevent infinite recursion
-    if depth > 100 {
-        return Err(PkgError::spec_invalid(format!(
-            "Dependency depth limit exceeded for '{name}'"
-        )));
+    state: &Arc<ResolveState>,
+) -> Result<Vec<PendingDep>, PkgError> {
+    // Filter out already-visited packages and deduplicate by name
+    // (we only need to fetch each packument once per batch)
+    let mut names_to_fetch: HashSet<String> = HashSet::new();
+    let mut deps_to_resolve: Vec<PendingDep> = Vec::new();
+
+    {
+        let packuments = state.packuments.read().await;
+
+        for dep in batch {
+            // Check if we need to fetch this packument
+            if !packuments.contains_key(&dep.name) {
+                names_to_fetch.insert(dep.name.clone());
+            }
+            deps_to_resolve.push(dep.clone());
+        }
     }
 
-    // Fetch packument
-    let packument = registry.fetch_packument(name).await?;
-    *fetched_count += 1;
+    // Fetch all needed packuments in parallel
+    let names_vec: Vec<String> = names_to_fetch.into_iter().collect();
+
+    let fetch_results: Vec<Result<(String, Value), PkgError>> = stream::iter(names_vec)
+        .map(|name| {
+            let registry = registry.clone();
+            async move {
+                let packument = registry.fetch_packument(&name).await?;
+                Ok((name, packument))
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_FETCHES)
+        .collect()
+        .await;
+
+    // Store fetched packuments in cache
+    {
+        let mut packuments = state.packuments.write().await;
+        let mut fetch_count = state.fetch_count.write().await;
+
+        for result in fetch_results {
+            let (name, packument) = result?;
+            packuments.insert(name, Arc::new(packument));
+            *fetch_count += 1;
+        }
+    }
+
+    // Now resolve all dependencies using cached packuments
+    let mut new_deps: Vec<PendingDep> = Vec::new();
+
+    for dep in deps_to_resolve {
+        let resolved = resolve_single_dep(&dep, state).await?;
+        new_deps.extend(resolved);
+    }
+
+    Ok(new_deps)
+}
+
+/// Resolve a single dependency using cached packument.
+///
+/// Returns newly discovered transitive dependencies.
+async fn resolve_single_dep(
+    dep: &PendingDep,
+    state: &Arc<ResolveState>,
+) -> Result<Vec<PendingDep>, PkgError> {
+    // Get packument from cache
+    let packument = {
+        let packuments = state.packuments.read().await;
+        packuments
+            .get(&dep.name)
+            .cloned()
+            .ok_or_else(|| PkgError::not_found(&dep.name))?
+    };
 
     // Resolve version
-    let version = resolve_version(&packument, Some(range))?;
-    let key = format!("{}@{}", name, version);
+    let version = resolve_version(&packument, Some(&dep.range))?;
+    let key = format!("{}@{}", dep.name, version);
 
     // Check if already resolved
-    if visited.contains(&key) {
-        return Ok((version, true));
+    {
+        let visited = state.visited.read().await;
+        if visited.contains(&key) {
+            return Ok(Vec::new());
+        }
     }
-    visited.insert(key.clone());
+
+    // Mark as visited
+    {
+        let mut visited = state.visited.write().await;
+        if !visited.insert(key.clone()) {
+            // Another task already resolved this
+            return Ok(Vec::new());
+        }
+    }
 
     // Get package metadata
     let version_data = packument
         .get("versions")
         .and_then(|v| v.get(&version))
-        .ok_or_else(|| PkgError::version_not_found(name, &version))?;
+        .ok_or_else(|| PkgError::version_not_found(&dep.name, &version))?;
 
     // Get integrity hash
     let integrity = version_data
@@ -169,29 +307,15 @@ async fn resolve_package_tree(
         .to_string();
 
     // Get dependencies
-    let deps = version_data
+    let deps: BTreeMap<String, String> = version_data
         .get("dependencies")
         .and_then(|d| d.as_object())
         .map(|obj| {
             obj.iter()
                 .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect::<BTreeMap<String, String>>()
+                .collect()
         })
         .unwrap_or_default();
-
-    // Resolve transitive dependencies
-    for (dep_name, dep_range) in &deps {
-        let _ = Box::pin(resolve_package_tree(
-            dep_name,
-            dep_range,
-            registry,
-            packages,
-            visited,
-            fetched_count,
-            depth + 1,
-        ))
-        .await?;
-    }
 
     // Create lock package entry
     let lock_pkg = LockPackage {
@@ -200,7 +324,7 @@ async fn resolve_package_tree(
         resolution: LockResolution::Registry {
             registry: String::new(),
         },
-        dependencies: deps,
+        dependencies: deps.clone(),
         optional_dependencies: BTreeMap::new(),
         has_scripts: version_data
             .get("scripts")
@@ -211,9 +335,23 @@ async fn resolve_package_tree(
         os: Vec::new(),
     };
 
-    packages.insert(key, lock_pkg);
+    // Store resolved package
+    {
+        let mut packages = state.packages.write().await;
+        packages.insert(key, lock_pkg);
+    }
 
-    Ok((version, false))
+    // Return transitive dependencies for next wave
+    let new_deps: Vec<PendingDep> = deps
+        .into_iter()
+        .map(|(name, range)| PendingDep {
+            name,
+            range,
+            depth: dep.depth + 1,
+        })
+        .collect();
+
+    Ok(new_deps)
 }
 
 /// Get the dependency kind for a package.

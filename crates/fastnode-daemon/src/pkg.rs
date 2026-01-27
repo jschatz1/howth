@@ -7,11 +7,12 @@ use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
     add_dependency_to_package_json, build_doctor_report, build_pkg_graph, detect_workspaces,
     download_tarball, extract_tgz_atomic, find_workspace_root, get_tarball_url,
-    link_into_node_modules, read_package_deps, remove_dependency_from_package_json,
-    resolve_dependencies, resolve_version, why_from_graph, write_lockfile, DoctorOptions,
-    DoctorSeverity, GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError,
-    PkgWhyResult as CorePkgWhyResult, RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME,
-    MAX_TARBALL_SIZE,
+    link_into_node_modules, link_into_node_modules_direct, link_into_node_modules_with_version,
+    link_package_binaries, link_package_dependencies, read_package_deps,
+    remove_dependency_from_package_json, resolve_dependencies, resolve_version, why_from_graph,
+    write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions, LockPackage, Lockfile,
+    PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult, RegistryClient,
+    ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
@@ -46,8 +47,8 @@ pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str, save_dev
     let chan = parse_channel(channel);
     let cache = PackageCache::new(chan);
 
-    // Create registry client
-    let registry = match RegistryClient::from_env() {
+    // Create registry client with persistent packument cache
+    let registry = match RegistryClient::from_env_with_cache(cache.clone()) {
         Ok(r) => r,
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
@@ -192,6 +193,13 @@ async fn add_single_package(
 
     debug!(link = %link_path.display(), "Linked into node_modules");
 
+    // Link binaries into .bin
+    if let Ok(binaries) = link_package_binaries(project_root, &spec.name, &package_dir) {
+        for bin in &binaries {
+            debug!(bin = %bin.display(), "Linked binary");
+        }
+    }
+
     Ok((
         InstalledPackage {
             name: spec.name,
@@ -210,8 +218,10 @@ pub async fn handle_pkg_remove(packages: &[String], cwd: &str, channel: &str) ->
     let package_json_path = project_root.join("package.json");
     let node_modules = project_root.join("node_modules");
 
-    // Create registry client for lockfile regeneration
-    let registry = match RegistryClient::from_env() {
+    // Create package cache and registry client with persistent packument cache
+    let chan = parse_channel(channel);
+    let cache = PackageCache::new(chan);
+    let registry = match RegistryClient::from_env_with_cache(cache) {
         Ok(r) => r,
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
@@ -303,8 +313,10 @@ pub async fn handle_pkg_update(
     let project_root = Path::new(cwd);
     let package_json_path = project_root.join("package.json");
 
-    // Create registry client
-    let registry = match RegistryClient::from_env() {
+    // Create package cache and registry client with persistent packument cache
+    let chan = parse_channel(channel);
+    let cache = PackageCache::new(chan);
+    let registry = match RegistryClient::from_env_with_cache(cache) {
         Ok(r) => r,
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
@@ -462,6 +474,294 @@ pub async fn handle_pkg_update(
     }
 }
 
+/// Handle a PkgOutdated request.
+pub async fn handle_pkg_outdated(cwd: &str, channel: &str) -> Response {
+    use fastnode_proto::OutdatedPackage;
+
+    let project_root = Path::new(cwd);
+    let package_json_path = project_root.join("package.json");
+
+    // Create package cache and registry client with persistent packument cache
+    let chan = parse_channel(channel);
+    let cache = PackageCache::new(chan);
+    let registry = match RegistryClient::from_env_with_cache(cache) {
+        Ok(r) => r,
+        Err(e) => {
+            return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
+        }
+    };
+
+    // Read current lockfile to get installed versions
+    let lockfile_path = project_root.join(LOCKFILE_NAME);
+    let lockfile: Option<Lockfile> = if lockfile_path.exists() {
+        match Lockfile::read_from(&lockfile_path) {
+            Ok(lf) => Some(lf),
+            Err(e) => {
+                warn!(error = %e, "Failed to read lockfile");
+                None
+            }
+        }
+    } else {
+        return Response::error(
+            codes::PKG_LOCKFILE_NOT_FOUND,
+            "No lockfile found. Run 'howth install' first.".to_string(),
+        );
+    };
+
+    // Read dependencies from package.json
+    let deps_result = read_package_deps(&package_json_path, true, true);
+    let (all_deps, dev_deps) = match deps_result {
+        Ok(result) => {
+            // Also read dev deps to classify them
+            let dev_deps_result = read_package_deps(&package_json_path, true, false);
+            let dev_names: std::collections::HashSet<String> = dev_deps_result
+                .map(|r| r.deps.into_iter().map(|(n, _)| n).collect())
+                .unwrap_or_default();
+            (result.deps, dev_names)
+        }
+        Err(e) => {
+            return Response::error(e.code().to_string(), e.to_string());
+        }
+    };
+
+    let mut outdated = Vec::new();
+    let mut up_to_date_count = 0u32;
+
+    for (name, range) in all_deps {
+        // Get current installed version from lockfile
+        let current_version = lockfile
+            .as_ref()
+            .and_then(|lf| lf.dependencies.get(&name))
+            .and_then(|dep| dep.resolved.split('@').last().map(|s| s.to_string()));
+
+        let current = current_version.unwrap_or_else(|| "none".to_string());
+
+        // Fetch packument to check for updates
+        match registry.fetch_packument(&name).await {
+            Ok(packument) => {
+                // Resolve wanted version (within semver range)
+                let wanted = resolve_version(&packument, Some(&range))
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|_| current.clone());
+
+                // Resolve latest version (any version)
+                let latest = resolve_version(&packument, None)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|_| current.clone());
+
+                // Determine dep type
+                let dep_type = if dev_deps.contains(&name) {
+                    "dev"
+                } else {
+                    "dep"
+                };
+
+                // Check if outdated
+                if current != wanted || current != latest {
+                    outdated.push(OutdatedPackage {
+                        name,
+                        current,
+                        wanted,
+                        latest,
+                        dep_type: dep_type.to_string(),
+                    });
+                } else {
+                    up_to_date_count += 1;
+                }
+            }
+            Err(e) => {
+                warn!(name = %name, error = %e, "Failed to fetch packument for outdated check");
+            }
+        }
+    }
+
+    // Suppress unused variable warning
+    let _ = channel;
+
+    Response::PkgOutdatedResult {
+        outdated,
+        up_to_date_count,
+    }
+}
+
+/// Handle a PkgPublish request.
+///
+/// Uses npm CLI under the hood for reliable publishing.
+pub async fn handle_pkg_publish(
+    cwd: &str,
+    registry_url: Option<&str>,
+    token: Option<&str>,
+    dry_run: bool,
+    tag: Option<&str>,
+    access: Option<&str>,
+) -> Response {
+    use std::process::Command;
+
+    let project_root = Path::new(cwd);
+    let package_json_path = project_root.join("package.json");
+
+    // Read package.json
+    let package_json_content = match std::fs::read_to_string(&package_json_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Response::PkgPublishResult {
+                ok: false,
+                name: String::new(),
+                version: String::new(),
+                registry: String::new(),
+                tag: String::new(),
+                tarball_size: 0,
+                files_count: 0,
+                error: Some(format!("Failed to read package.json: {e}")),
+            };
+        }
+    };
+
+    let package_json: serde_json::Value = match serde_json::from_str(&package_json_content) {
+        Ok(v) => v,
+        Err(e) => {
+            return Response::PkgPublishResult {
+                ok: false,
+                name: String::new(),
+                version: String::new(),
+                registry: String::new(),
+                tag: String::new(),
+                tarball_size: 0,
+                files_count: 0,
+                error: Some(format!("Failed to parse package.json: {e}")),
+            };
+        }
+    };
+
+    let name = package_json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let version = package_json
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if name.is_empty() || version.is_empty() {
+        return Response::PkgPublishResult {
+            ok: false,
+            name,
+            version,
+            registry: String::new(),
+            tag: String::new(),
+            tarball_size: 0,
+            files_count: 0,
+            error: Some("package.json must have name and version fields".to_string()),
+        };
+    }
+
+    let registry = registry_url.unwrap_or("https://registry.npmjs.org");
+    let tag = tag.unwrap_or("latest");
+
+    // Build npm publish command
+    let mut cmd = Command::new("npm");
+    cmd.arg("publish");
+    cmd.current_dir(project_root);
+
+    if dry_run {
+        cmd.arg("--dry-run");
+    }
+
+    cmd.arg("--tag").arg(tag);
+
+    if let Some(reg) = registry_url {
+        cmd.arg("--registry").arg(reg);
+    }
+
+    if let Some(acc) = access {
+        cmd.arg("--access").arg(acc);
+    }
+
+    // Set token via environment if provided
+    if let Some(tok) = token {
+        cmd.env("NPM_TOKEN", tok);
+    }
+
+    debug!(
+        name = %name,
+        version = %version,
+        dry_run = dry_run,
+        "Running npm publish"
+    );
+
+    match cmd.output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if output.status.success() {
+                // Try to parse npm pack output for file count/size (best effort)
+                let files_count = stdout
+                    .lines()
+                    .filter(|l| l.contains("files:"))
+                    .next()
+                    .and_then(|l| l.split_whitespace().last())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0u32);
+
+                let tarball_size = stdout
+                    .lines()
+                    .filter(|l| l.contains("size:") || l.contains("unpacked size"))
+                    .next()
+                    .and_then(|l| {
+                        l.split_whitespace()
+                            .find(|s| s.chars().all(|c| c.is_ascii_digit()))
+                    })
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0u64);
+
+                Response::PkgPublishResult {
+                    ok: true,
+                    name,
+                    version,
+                    registry: registry.to_string(),
+                    tag: tag.to_string(),
+                    tarball_size,
+                    files_count,
+                    error: None,
+                }
+            } else {
+                Response::PkgPublishResult {
+                    ok: false,
+                    name,
+                    version,
+                    registry: registry.to_string(),
+                    tag: tag.to_string(),
+                    tarball_size: 0,
+                    files_count: 0,
+                    error: Some(format!(
+                        "npm publish failed: {}",
+                        if stderr.is_empty() {
+                            stdout.to_string()
+                        } else {
+                            stderr.to_string()
+                        }
+                    )),
+                }
+            }
+        }
+        Err(e) => Response::PkgPublishResult {
+            ok: false,
+            name,
+            version,
+            registry: registry.to_string(),
+            tag: tag.to_string(),
+            tarball_size: 0,
+            files_count: 0,
+            error: Some(format!(
+                "Failed to run npm publish (is npm installed?): {e}"
+            )),
+        },
+    }
+}
+
 /// Handle a PkgCacheList request.
 pub fn handle_pkg_cache_list(channel: &str) -> Response {
     let chan = parse_channel(channel);
@@ -538,8 +838,12 @@ pub async fn handle_pkg_install(
         }
     };
 
-    // Create registry client
-    let registry = match RegistryClient::from_env() {
+    // Create package cache for this channel (needed for registry client)
+    let chan = parse_channel(channel);
+    let cache = PackageCache::new(chan);
+
+    // Create registry client with persistent packument cache
+    let registry = match RegistryClient::from_env_with_cache(cache.clone()) {
         Ok(r) => r,
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
@@ -606,10 +910,6 @@ pub async fn handle_pkg_install(
         "Using lockfile"
     );
 
-    // Create package cache for this channel
-    let chan = parse_channel(channel);
-    let cache = PackageCache::new(chan);
-
     // Detect workspaces for local package linking
     let workspace_root = find_workspace_root(&project_root);
     let workspace_config = workspace_root
@@ -624,6 +924,8 @@ pub async fn handle_pkg_install(
         );
     }
 
+    use futures::stream::{self, StreamExt};
+
     let mut installed = Vec::new();
     let mut errors = Vec::new();
     let mut downloaded = 0u32;
@@ -631,7 +933,10 @@ pub async fn handle_pkg_install(
     let mut linked = 0u32;
     let mut workspace_linked = 0u32;
 
-    // Install each package from the lockfile
+    // Separate workspace packages from registry packages
+    // Workspace packages are linked locally (fast), registry packages need download (parallelized)
+    let mut registry_packages = Vec::new();
+
     for (key, lock_pkg) in &lockfile.packages {
         // Parse package name from key (format: "name@version")
         let name = key.rsplit_once('@').map_or(key.as_str(), |(n, _)| n);
@@ -655,8 +960,15 @@ pub async fn handle_pkg_install(
                 // Link workspace package directly instead of fetching from registry
                 debug!(name = %name, path = %ws_pkg.path.display(), "Linking workspace package");
 
-                match link_into_node_modules(&project_root, name, &ws_pkg.path) {
+                // Use direct linking for workspace packages (not pnpm layout)
+                match link_into_node_modules_direct(&project_root, name, &ws_pkg.path) {
                     Ok(link_path) => {
+                        // Link binaries for workspace package
+                        if let Ok(binaries) = link_package_binaries(&project_root, name, &ws_pkg.path) {
+                            for bin in &binaries {
+                                debug!(bin = %bin.display(), "Linked workspace binary");
+                            }
+                        }
                         workspace_linked += 1;
                         linked += 1;
                         installed.push(InstallPackageInfo {
@@ -682,7 +994,30 @@ pub async fn handle_pkg_install(
             }
         }
 
-        match install_from_lockfile(name, lock_pkg, &project_root, &cache, &registry).await {
+        // Collect registry packages for parallel download
+        registry_packages.push((name.to_string(), lock_pkg.clone()));
+    }
+
+    // Install registry packages in parallel (max 16 concurrent downloads)
+    const MAX_CONCURRENT_DOWNLOADS: usize = 16;
+
+    let results: Vec<_> = stream::iter(registry_packages)
+        .map(|(name, lock_pkg)| {
+            let project_root = project_root.clone();
+            let cache = cache.clone();
+            let registry = registry.clone();
+            async move {
+                let result = install_from_lockfile(&name, &lock_pkg, &project_root, &cache, &registry).await;
+                (name, lock_pkg.version.clone(), result)
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_DOWNLOADS)
+        .collect()
+        .await;
+
+    // Process results
+    for (name, version, result) in results {
+        match result {
             Ok((pkg_info, from_cache)) => {
                 if from_cache {
                     cached += 1;
@@ -694,11 +1029,56 @@ pub async fn handle_pkg_install(
             }
             Err(e) => {
                 errors.push(InstallPackageError {
-                    name: name.to_string(),
-                    version: lock_pkg.version.clone(),
+                    name,
+                    version,
                     code: e.code().to_string(),
                     message: e.to_string(),
                 });
+            }
+        }
+    }
+
+    // Phase 2: Link package dependencies (pnpm-style)
+    // This must happen after all packages are installed so the targets exist
+    debug!("Linking package dependencies (pnpm layout)");
+    for (key, lock_pkg) in &lockfile.packages {
+        if lock_pkg.dependencies.is_empty() {
+            continue;
+        }
+
+        // Parse package name from key (format: "name@version")
+        let name = key.rsplit_once('@').map_or(key.as_str(), |(n, _)| n);
+        let version = &lock_pkg.version;
+
+        // Resolve dependency versions from the lockfile
+        let mut resolved_deps = std::collections::BTreeMap::new();
+        for (dep_name, dep_range) in &lock_pkg.dependencies {
+            // Find the resolved version for this dependency in the lockfile
+            // The lockfile packages map uses "name@version" as keys
+            if let Some((_, dep_pkg)) = lockfile.packages.iter().find(|(k, _)| {
+                k.rsplit_once('@')
+                    .map_or(false, |(n, _)| n == dep_name)
+            }) {
+                resolved_deps.insert(dep_name.clone(), dep_pkg.version.clone());
+            } else {
+                // Dependency not in lockfile - might be optional or peer
+                debug!(
+                    pkg = %name,
+                    dep = %dep_name,
+                    range = %dep_range,
+                    "Dependency not found in lockfile, skipping"
+                );
+            }
+        }
+
+        if !resolved_deps.is_empty() {
+            if let Err(e) = link_package_dependencies(&project_root, name, version, &resolved_deps) {
+                warn!(
+                    pkg = %name,
+                    error = %e,
+                    "Failed to link package dependencies"
+                );
+                // Don't fail the install for dependency linking errors
             }
         }
     }
@@ -747,7 +1127,7 @@ pub async fn handle_pkg_install(
 /// Install a single package from lockfile.
 async fn install_from_lockfile(
     name: &str,
-    lock_pkg: &fastnode_core::pkg::LockPackage,
+    lock_pkg: &LockPackage,
     project_root: &Path,
     cache: &PackageCache,
     registry: &RegistryClient,
@@ -787,10 +1167,17 @@ async fn install_from_lockfile(
         debug!(path = %package_dir.display(), "Extracted to cache");
     }
 
-    // Link into node_modules
-    let link_path = link_into_node_modules(project_root, name, &package_dir)?;
+    // Link into node_modules using pnpm-style layout
+    let link_path = link_into_node_modules_with_version(project_root, name, version, &package_dir)?;
 
-    debug!(link = %link_path.display(), "Linked into node_modules");
+    debug!(link = %link_path.display(), "Linked into node_modules (pnpm layout)");
+
+    // Link binaries into .bin
+    if let Ok(binaries) = link_package_binaries(project_root, name, &package_dir) {
+        for bin in &binaries {
+            debug!(bin = %bin.display(), "Linked binary");
+        }
+    }
 
     Ok((
         InstallPackageInfo {

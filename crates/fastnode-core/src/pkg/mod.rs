@@ -47,7 +47,10 @@ pub use graph::{
     build_pkg_graph, codes as graph_codes, DepEdge, GraphErrorInfo, GraphOptions, PackageGraph,
     PackageId, PackageNode, PKG_GRAPH_SCHEMA_VERSION,
 };
-pub use link::link_into_node_modules;
+pub use link::{
+    link_into_node_modules, link_into_node_modules_direct, link_into_node_modules_with_version,
+    link_package_binaries, link_package_dependencies,
+};
 pub use lockfile::{
     codes as lockfile_codes, LockDep, LockDepEdge, LockMeta, LockPackage, LockResolution, LockRoot,
     Lockfile, LockfileError, LOCKFILE_NAME, PKG_LOCK_SCHEMA_VERSION,
