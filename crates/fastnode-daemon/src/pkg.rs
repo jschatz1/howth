@@ -5,11 +5,12 @@
 
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
-    build_doctor_report, build_pkg_graph, detect_workspaces, download_tarball, extract_tgz_atomic,
-    find_workspace_root, get_tarball_url, link_into_node_modules, resolve_dependencies,
-    resolve_version, why_from_graph, write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions,
-    Lockfile, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
-    RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
+    add_dependency_to_package_json, build_doctor_report, build_pkg_graph, detect_workspaces,
+    download_tarball, extract_tgz_atomic, find_workspace_root, get_tarball_url,
+    link_into_node_modules, resolve_dependencies, resolve_version, why_from_graph, write_lockfile,
+    DoctorOptions, DoctorSeverity, GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError,
+    PkgWhyResult as CorePkgWhyResult, RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME,
+    MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
@@ -36,8 +37,9 @@ fn parse_channel(channel: &str) -> Channel {
 }
 
 /// Handle a PkgAdd request.
-pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str) -> Response {
+pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str, save_dev: bool) -> Response {
     let project_root = Path::new(cwd);
+    let package_json_path = project_root.join("package.json");
 
     // Create package cache for this channel
     let chan = parse_channel(channel);
@@ -57,7 +59,31 @@ pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str) -> Respo
 
     for spec_str in specs {
         match add_single_package(spec_str, project_root, &cache, &registry).await {
-            Ok((pkg, from_cache)) => {
+            Ok((pkg, from_cache, version_range)) => {
+                // Update package.json with the dependency
+                let dep_section = if save_dev { "devDependencies" } else { "dependencies" };
+                debug!(
+                    name = %pkg.name,
+                    version = %pkg.version,
+                    range = %version_range,
+                    section = dep_section,
+                    "Adding to package.json"
+                );
+
+                if let Err(e) = add_dependency_to_package_json(
+                    &package_json_path,
+                    &pkg.name,
+                    &version_range,
+                    save_dev,
+                ) {
+                    warn!(error = %e, "Failed to update package.json");
+                    errors.push(PkgErrorInfo {
+                        spec: spec_str.clone(),
+                        code: e.code().to_string(),
+                        message: format!("Installed but failed to update package.json: {e}"),
+                    });
+                }
+
                 if from_cache {
                     reused_cache += 1;
                 }
@@ -73,6 +99,34 @@ pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str) -> Respo
         }
     }
 
+    // Regenerate lockfile if any packages were installed
+    if !installed.is_empty() {
+        debug!("Regenerating lockfile after adding packages");
+
+        let resolve_opts = ResolveOptions {
+            include_dev: true,
+            include_optional: false,
+        };
+
+        match resolve_dependencies(project_root, &registry, &resolve_opts).await {
+            Ok(result) => {
+                if let Err(e) = write_lockfile(project_root, &result.lockfile) {
+                    warn!(error = %e, "Failed to write lockfile");
+                    // Don't add to errors - packages were installed successfully
+                } else {
+                    debug!(
+                        resolved = result.resolved_count,
+                        fetched = result.fetched_count,
+                        "Lockfile regenerated"
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to resolve dependencies for lockfile");
+            }
+        }
+    }
+
     Response::PkgAddResult {
         installed,
         errors,
@@ -80,13 +134,13 @@ pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str) -> Respo
     }
 }
 
-/// Add a single package. Returns (InstalledPackage, was_cached).
+/// Add a single package. Returns (InstalledPackage, was_cached, version_range_for_package_json).
 async fn add_single_package(
     spec_str: &str,
     project_root: &Path,
     cache: &PackageCache,
     registry: &RegistryClient,
-) -> Result<(InstalledPackage, bool), PkgError> {
+) -> Result<(InstalledPackage, bool, String), PkgError> {
     // Parse the spec
     let spec = PackageSpec::parse(spec_str)?;
 
@@ -99,6 +153,13 @@ async fn add_single_package(
     let version = resolve_version(&packument, spec.range.as_deref())?;
 
     debug!(name = %spec.name, version = %version, "Resolved version");
+
+    // Determine version range for package.json
+    // If user specified a range, use it; otherwise use "^{resolved_version}"
+    let version_range = spec
+        .range
+        .clone()
+        .unwrap_or_else(|| format!("^{version}"));
 
     // Check if already cached
     let package_dir = cache.package_dir(&spec.name, &version);
@@ -138,6 +199,7 @@ async fn add_single_package(
             cache_path: package_dir.to_string_lossy().into_owned(),
         },
         was_cached,
+        version_range,
     ))
 }
 

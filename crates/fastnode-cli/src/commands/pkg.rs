@@ -21,6 +21,7 @@ pub enum PkgAction {
     Add {
         specs: Vec<String>,
         cwd: PathBuf,
+        save_dev: bool,
     },
     AddDeps {
         cwd: PathBuf,
@@ -213,6 +214,7 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
                         PkgAction::Add {
                             specs,
                             cwd: cwd.clone(),
+                            save_dev: false, // --deps mode reads from existing package.json
                         },
                         dep_errors,
                     )
@@ -1265,10 +1267,11 @@ async fn send_pkg_request(
 
     // Create request based on action
     let request = match action {
-        PkgAction::Add { specs, cwd } => Request::PkgAdd {
+        PkgAction::Add { specs, cwd, save_dev } => Request::PkgAdd {
             specs: specs.clone(),
             cwd: cwd.to_string_lossy().into_owned(),
             channel: channel.as_str().to_string(),
+            save_dev: *save_dev,
         },
         PkgAction::AddDeps { .. } => {
             // AddDeps is converted to Add before reaching this function

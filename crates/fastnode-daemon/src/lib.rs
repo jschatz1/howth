@@ -272,7 +272,8 @@ pub async fn handle_request_async(
             specs,
             cwd,
             channel,
-        } => (pkg::handle_pkg_add(specs, cwd, channel).await, false),
+            save_dev,
+        } => (pkg::handle_pkg_add(specs, cwd, channel, *save_dev).await, false),
         Request::PkgCacheList { channel } => (pkg::handle_pkg_cache_list(channel), false),
         Request::PkgCachePrune { channel } => (pkg::handle_pkg_cache_prune(channel), false),
         Request::PkgInstall {

@@ -360,6 +360,10 @@ enum PkgCommands {
         /// Include optionalDependencies (only with --deps)
         #[arg(long, requires = "deps")]
         optional: bool,
+
+        /// Save as devDependency (-D is shorthand for --save-dev)
+        #[arg(short = 'D', long = "save-dev", conflicts_with = "deps")]
+        save_dev: bool,
     },
 
     /// Show the dependency graph
@@ -489,7 +493,12 @@ fn main() -> Result<()> {
         return commands::init::run(&cwd, *yes, cli.json);
     }
 
-    if let Some(Commands::Link { package, save, list }) = &cli.command {
+    if let Some(Commands::Link {
+        package,
+        save,
+        list,
+    }) = &cli.command
+    {
         if *list {
             return commands::link::list(Channel::Stable, cli.json);
         }
@@ -607,6 +616,7 @@ fn main() -> Result<()> {
                 deps,
                 dev,
                 optional,
+                save_dev,
             } => {
                 if *deps {
                     commands::pkg::PkgAction::AddDeps {
@@ -622,6 +632,7 @@ fn main() -> Result<()> {
                     commands::pkg::PkgAction::Add {
                         specs: specs.clone(),
                         cwd: cwd.clone(),
+                        save_dev: *save_dev,
                     }
                 }
             }

@@ -172,6 +172,78 @@ fn json_type_name(value: &Value) -> &'static str {
     }
 }
 
+/// Add or update a dependency in package.json.
+///
+/// # Arguments
+/// * `package_json_path` - Path to the package.json file
+/// * `name` - Package name
+/// * `version_range` - Version range (e.g., "^1.0.0")
+/// * `save_dev` - If true, add to devDependencies; otherwise dependencies
+///
+/// # Errors
+/// Returns `PkgError` if the file cannot be read, parsed, or written.
+pub fn add_dependency_to_package_json(
+    package_json_path: &Path,
+    name: &str,
+    version_range: &str,
+    save_dev: bool,
+) -> Result<(), PkgError> {
+    // Check file exists
+    if !package_json_path.exists() {
+        return Err(PkgError::package_json_not_found(package_json_path));
+    }
+
+    // Read file contents
+    let content = fs::read_to_string(package_json_path)
+        .map_err(|e| PkgError::package_json_invalid(format!("Failed to read: {e}")))?;
+
+    // Parse JSON
+    let mut pkg_json: Value = serde_json::from_str(&content)
+        .map_err(|e| PkgError::package_json_invalid(format!("Invalid JSON: {e}")))?;
+
+    // Ensure root is object
+    let root = pkg_json
+        .as_object_mut()
+        .ok_or_else(|| PkgError::package_json_invalid("package.json must be a JSON object"))?;
+
+    // Determine the section to add to
+    let section_name = if save_dev {
+        "devDependencies"
+    } else {
+        "dependencies"
+    };
+
+    // Get or create the section
+    if !root.contains_key(section_name) {
+        root.insert(
+            section_name.to_string(),
+            Value::Object(serde_json::Map::new()),
+        );
+    }
+
+    let section = root
+        .get_mut(section_name)
+        .and_then(|v| v.as_object_mut())
+        .ok_or_else(|| {
+            PkgError::package_json_invalid(format!("'{section_name}' must be an object"))
+        })?;
+
+    // Add or update the dependency
+    section.insert(name.to_string(), Value::String(version_range.to_string()));
+
+    // Write back with pretty formatting
+    let formatted = serde_json::to_string_pretty(&pkg_json)
+        .map_err(|e| PkgError::package_json_invalid(format!("Failed to serialize: {e}")))?;
+
+    // Add trailing newline
+    let output = format!("{formatted}\n");
+
+    fs::write(package_json_path, output)
+        .map_err(|e| PkgError::package_json_invalid(format!("Failed to write: {e}")))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

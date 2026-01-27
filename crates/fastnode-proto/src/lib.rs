@@ -220,6 +220,8 @@ pub enum Request {
         cwd: String,
         /// Channel for cache directory.
         channel: String,
+        /// Save as devDependency instead of dependency.
+        save_dev: bool,
     },
 
     /// List cached packages.
@@ -1801,6 +1803,7 @@ mod tests {
             specs: vec!["react".to_string(), "lodash@^4.17.0".to_string()],
             cwd: "/home/user/project".to_string(),
             channel: "stable".to_string(),
+            save_dev: false,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("pkg_add"));
@@ -1923,6 +1926,7 @@ mod tests {
                 specs: vec!["react@^18.0.0".to_string()],
                 cwd: "/tmp/project".to_string(),
                 channel: "dev".to_string(),
+                save_dev: true,
             },
         );
 
@@ -1934,10 +1938,12 @@ mod tests {
                 specs,
                 cwd,
                 channel,
+                save_dev,
             } => {
                 assert_eq!(specs, vec!["react@^18.0.0"]);
                 assert_eq!(cwd, "/tmp/project");
                 assert_eq!(channel, "dev");
+                assert!(save_dev);
             }
             _ => panic!("Expected PkgAdd"),
         }
