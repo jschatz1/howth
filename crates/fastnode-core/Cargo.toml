@@ -38,6 +38,7 @@ walkdir.workspace = true
 rayon.workspace = true
 glob = "0.3"
 regex-lite = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 # Optional SWC integration for full transpilation support
 # NOTE: SWC has a known compatibility issue with serde 1.0.220+

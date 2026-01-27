@@ -6,9 +6,10 @@
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
     build_doctor_report, build_pkg_graph, detect_workspaces, download_tarball, extract_tgz_atomic,
-    find_workspace_root, get_tarball_url, link_into_node_modules, resolve_version, why_from_graph,
-    DoctorOptions, DoctorSeverity, GraphOptions, Lockfile, PackageCache, PackageSpec, PkgError,
-    PkgWhyResult as CorePkgWhyResult, RegistryClient, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
+    find_workspace_root, get_tarball_url, link_into_node_modules, resolve_dependencies,
+    resolve_version, why_from_graph, write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions,
+    Lockfile, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
+    RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
@@ -216,9 +217,17 @@ pub async fn handle_pkg_install(
         }
     };
 
+    // Create registry client
+    let registry = match RegistryClient::from_env() {
+        Ok(r) => r,
+        Err(e) => {
+            return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
+        }
+    };
+
     // Check for lockfile
     let lockfile_path = project_root.join(LOCKFILE_NAME);
-    if !lockfile_path.exists() {
+    let lockfile = if !lockfile_path.exists() {
         if frozen {
             return Response::error(
                 codes::PKG_INSTALL_LOCKFILE_NOT_FOUND,
@@ -229,49 +238,56 @@ pub async fn handle_pkg_install(
             );
         }
 
-        // No lockfile and not frozen - return empty success for now
-        // In the future, this would generate a lockfile from package.json
-        return Response::PkgInstallResult {
-            result: PkgInstallResult {
-                schema_version: PKG_INSTALL_SCHEMA_VERSION,
-                cwd: project_root.to_string_lossy().into_owned(),
-                ok: true,
-                summary: InstallSummary::default(),
-                installed: vec![],
-                errors: vec![],
-                notes: vec![
-                    "No lockfile found. Run `howth install` without --frozen to generate one."
-                        .to_string(),
-                ],
-            },
-        };
-    }
+        // No lockfile - generate one from package.json
+        debug!("No lockfile found, resolving dependencies...");
 
-    // Read the lockfile
-    let lockfile = match Lockfile::read_from(&lockfile_path) {
-        Ok(lf) => lf,
-        Err(e) => {
-            return Response::error(codes::PKG_INSTALL_LOCKFILE_INVALID, e.to_string());
+        let resolve_opts = ResolveOptions {
+            include_dev,
+            include_optional,
+        };
+
+        match resolve_dependencies(&project_root, &registry, &resolve_opts).await {
+            Ok(result) => {
+                debug!(
+                    resolved = result.resolved_count,
+                    fetched = result.fetched_count,
+                    "Dependencies resolved"
+                );
+
+                // Write lockfile
+                if let Err(e) = write_lockfile(&project_root, &result.lockfile) {
+                    return Response::error(
+                        codes::PKG_INSTALL_LOCKFILE_INVALID,
+                        format!("Failed to write lockfile: {e}"),
+                    );
+                }
+
+                debug!(path = %lockfile_path.display(), "Wrote lockfile");
+                result.lockfile
+            }
+            Err(e) => {
+                return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
+            }
+        }
+    } else {
+        // Read existing lockfile
+        match Lockfile::read_from(&lockfile_path) {
+            Ok(lf) => lf,
+            Err(e) => {
+                return Response::error(codes::PKG_INSTALL_LOCKFILE_INVALID, e.to_string());
+            }
         }
     };
 
     debug!(
         lockfile = %lockfile_path.display(),
         packages = lockfile.packages.len(),
-        "Read lockfile"
+        "Using lockfile"
     );
 
     // Create package cache for this channel
     let chan = parse_channel(channel);
     let cache = PackageCache::new(chan);
-
-    // Create registry client
-    let registry = match RegistryClient::from_env() {
-        Ok(r) => r,
-        Err(e) => {
-            return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
-        }
-    };
 
     // Detect workspaces for local package linking
     let workspace_root = find_workspace_root(&project_root);

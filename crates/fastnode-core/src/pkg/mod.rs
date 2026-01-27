@@ -23,6 +23,7 @@ pub mod graph;
 pub mod link;
 pub mod lockfile;
 pub mod registry;
+pub mod resolve;
 pub mod spec;
 pub mod tarball;
 pub mod version;
@@ -56,3 +57,4 @@ pub use workspaces::{
     detect_workspaces, find_workspace_root, link_workspace_packages, WorkspaceConfig,
     WorkspacePackage,
 };
+pub use resolve::{resolve_dependencies, write_lockfile, ResolveOptions, ResolveResult};
