@@ -34,6 +34,7 @@ serde_json.workspace = true
 axum.workspace = true
 notify.workspace = true
 walkdir.workspace = true
+which = "7"
 
 [dev-dependencies]
 tempfile.workspace = true

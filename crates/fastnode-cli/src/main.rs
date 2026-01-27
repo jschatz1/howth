@@ -119,6 +119,16 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Execute a binary from node_modules/.bin or PATH
+    Exec {
+        /// Binary name to execute (e.g., "jest", "eslint", "tsc")
+        binary: String,
+
+        /// Arguments to pass to the binary (after --)
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+
     /// Install dependencies from lockfile
     Install {
         /// Fail if lockfile is missing or out of date
@@ -585,6 +595,10 @@ fn main() -> Result<()> {
         );
     }
 
+    if let Some(Commands::Exec { binary, args }) = &cli.command {
+        return commands::exec::run(&cwd, binary, args, cli.json);
+    }
+
     if let Some(Commands::Watch { watch_cmd }) = &cli.command {
         let action = match watch_cmd {
             WatchCommands::Start { roots } => {
@@ -866,6 +880,7 @@ fn main() -> Result<()> {
             | Commands::Unlink { .. }
             | Commands::Ping
             | Commands::Run { .. }
+            | Commands::Exec { .. }
             | Commands::Script(_)
             | Commands::Watch { .. }
             | Commands::Workspaces { .. }
