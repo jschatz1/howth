@@ -1,0 +1,12 @@
+{
+  "name": "express-howth-example",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "howth run server.js",
+    "dev": "howth run server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
