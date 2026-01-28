@@ -140,6 +140,11 @@ howth run --node script.ts
 | `node:os` | ✅ | platform, arch, cpus, homedir, tmpdir, EOL, constants |
 | `node:querystring` | ✅ | parse, stringify, escape, unescape |
 | `node:timers` | ✅ | setTimeout, setInterval, setImmediate, promises |
+| `node:string_decoder` | ✅ | StringDecoder class for buffer decoding |
+| `node:url` | ✅ | parse, format, resolve, pathToFileURL, fileURLToPath |
+| `node:punycode` | ✅ | toASCII, toUnicode, ucs2 encode/decode |
+| `node:console` | ✅ | Global console exported as module |
+| `node:constants` | ✅ | Deprecated constants module |
 | `node:worker_threads` | ❌ | Not yet implemented |
 | `require()` | ✅ | Full CommonJS support |
 
@@ -162,7 +167,7 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | Category | Passed | Skipped | Total |
 |----------|--------|---------|-------|
 | Buffer | 1 | 0 | 1 |
-| URL | 1 | 0 | 1 |
+| URL | 2 | 0 | 2 |
 | Process | 1 | 0 | 1 |
 | Events | 1 | 0 | 1 |
 | Util | 1 | 0 | 1 |
@@ -171,11 +176,13 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | OS | 1 | 0 | 1 |
 | Querystring | 1 | 0 | 1 |
 | Timers | 1 | 0 | 1 |
+| String decoder | 1 | 0 | 1 |
+| Punycode | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
 | FS module | 9 | 4 | 13 |
-| **Total** | **27** | **6** | **33** |
+| **Total** | **30** | **6** | **36** |
 
-**Pass Rate: 82%**
+**Pass Rate: 83%**
 
 **Passing Tests:**
 - `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
@@ -205,6 +212,9 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-os-basic.js` - OS module (platform, arch, cpus, homedir, tmpdir)
 - `test-querystring-basic.js` - querystring module (parse, stringify)
 - `test-timers-basic.js` - timers module (setTimeout, clearTimeout, promises)
+- `test-string-decoder-basic.js` - StringDecoder for buffer to string conversion
+- `test-url-module-basic.js` - URL module (parse, format, resolve, file URLs)
+- `test-punycode-basic.js` - Punycode for internationalized domain names
 
 **Skipped Tests (known limitations):**
 | Test | Reason |

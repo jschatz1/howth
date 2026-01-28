@@ -276,20 +276,29 @@
         }
       }
 
-      const match = fullUrl.match(/^([a-z]+):\/\/([^\/:?#]+)(?::(\d+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+      // Parse URL with optional auth (user:pass@)
+      // Also handle file:// URLs which may have empty hostname (file:///path)
+      const match = fullUrl.match(/^([a-z]+):\/\/(?:([^:@\/]+)(?::([^@\/]*))?@)?([^\/:?#]*)(?::(\d+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
       if (!match) {
         throw new TypeError("Invalid URL: " + url);
       }
 
       this.protocol = match[1].toLowerCase() + ":";
-      this.hostname = match[2];
-      this.port = match[3] || "";
-      this.pathname = match[4] || "/";
-      this.search = match[5] || "";
-      this.hash = match[6] || "";
+      this.username = match[2] || "";
+      this.password = match[3] || "";
+      this.hostname = match[4];
+      this.port = match[5] || "";
+      this.pathname = match[6] || "/";
+      this.search = match[7] || "";
+      this.hash = match[8] || "";
       this.host = this.port ? this.hostname + ":" + this.port : this.hostname;
       this.origin = this.protocol + "//" + this.host;
-      this.href = this.origin + this.pathname + this.search + this.hash;
+      // Build href with auth if present
+      let authPart = "";
+      if (this.username) {
+        authPart = this.username + (this.password ? ":" + this.password : "") + "@";
+      }
+      this.href = this.protocol + "//" + authPart + this.host + this.pathname + this.search + this.hash;
       this.searchParams = new URLSearchParams(this.search);
     }
 
@@ -6419,6 +6428,562 @@
   globalThis.__howth_modules["timers"] = timersModule;
   globalThis.__howth_modules["node:timers/promises"] = timersPromises;
   globalThis.__howth_modules["timers/promises"] = timersPromises;
+
+  // ============================================================================
+  // string_decoder module
+  // ============================================================================
+
+  /**
+   * StringDecoder for decoding Buffer objects into strings.
+   */
+  class StringDecoder {
+    #encoding;
+    #lastNeed = 0;
+    #lastTotal = 0;
+    #lastChar;
+
+    constructor(encoding = "utf8") {
+      this.#encoding = encoding.toLowerCase().replace("-", "");
+      if (this.#encoding === "utf8" || this.#encoding === "utf-8") {
+        this.#encoding = "utf8";
+        this.#lastChar = Buffer.allocUnsafe(4);
+      } else if (this.#encoding === "utf16le" || this.#encoding === "ucs2") {
+        this.#encoding = "utf16le";
+        this.#lastChar = Buffer.allocUnsafe(4);
+      } else if (this.#encoding === "base64") {
+        this.#lastChar = Buffer.allocUnsafe(3);
+      } else {
+        this.#lastChar = Buffer.allocUnsafe(0);
+      }
+    }
+
+    get encoding() {
+      return this.#encoding;
+    }
+
+    write(buffer) {
+      if (buffer.length === 0) return "";
+
+      // For simple encodings, just convert directly
+      if (
+        this.#encoding === "ascii" ||
+        this.#encoding === "latin1" ||
+        this.#encoding === "binary" ||
+        this.#encoding === "hex"
+      ) {
+        return buffer.toString(this.#encoding);
+      }
+
+      // UTF-8 decoding with multi-byte character handling
+      if (this.#encoding === "utf8") {
+        return this.#utf8Write(buffer);
+      }
+
+      // UTF-16LE decoding
+      if (this.#encoding === "utf16le") {
+        return this.#utf16leWrite(buffer);
+      }
+
+      // Base64 decoding
+      if (this.#encoding === "base64") {
+        return this.#base64Write(buffer);
+      }
+
+      return buffer.toString(this.#encoding);
+    }
+
+    #utf8Write(buffer) {
+      // Handle any leftover bytes from previous write
+      if (this.#lastNeed > 0) {
+        const needed = Math.min(buffer.length, this.#lastNeed);
+        buffer.copy(this.#lastChar, this.#lastTotal - this.#lastNeed, 0, needed);
+        if (needed < this.#lastNeed) {
+          this.#lastNeed -= needed;
+          return "";
+        }
+        const result = this.#lastChar.toString("utf8", 0, this.#lastTotal);
+        this.#lastNeed = 0;
+        if (needed === buffer.length) {
+          return result;
+        }
+        buffer = buffer.slice(needed);
+        return result + this.#utf8Write(buffer);
+      }
+
+      // Check for incomplete multi-byte sequence at end
+      const len = buffer.length;
+      if (len === 0) return "";
+
+      // Check last few bytes for incomplete sequences
+      let incomplete = 0;
+      const lastByte = buffer[len - 1];
+
+      if ((lastByte & 0x80) === 0) {
+        // ASCII - complete
+        incomplete = 0;
+      } else if ((lastByte & 0xc0) === 0x80) {
+        // Continuation byte - check backwards
+        let pos = len - 1;
+        while (pos >= 0 && (buffer[pos] & 0xc0) === 0x80) {
+          pos--;
+        }
+        if (pos >= 0) {
+          const startByte = buffer[pos];
+          let expectedLen = 1;
+          if ((startByte & 0xf8) === 0xf0) expectedLen = 4;
+          else if ((startByte & 0xf0) === 0xe0) expectedLen = 3;
+          else if ((startByte & 0xe0) === 0xc0) expectedLen = 2;
+
+          const actualLen = len - pos;
+          if (actualLen < expectedLen) {
+            incomplete = actualLen;
+            this.#lastTotal = expectedLen;
+            this.#lastNeed = expectedLen - actualLen;
+            buffer.copy(this.#lastChar, 0, pos);
+            return buffer.toString("utf8", 0, pos);
+          }
+        }
+      } else if ((lastByte & 0xe0) === 0xc0) {
+        // 2-byte start
+        incomplete = 1;
+        this.#lastTotal = 2;
+        this.#lastNeed = 1;
+        this.#lastChar[0] = lastByte;
+        return buffer.toString("utf8", 0, len - 1);
+      } else if ((lastByte & 0xf0) === 0xe0) {
+        // 3-byte start
+        incomplete = 1;
+        this.#lastTotal = 3;
+        this.#lastNeed = 2;
+        this.#lastChar[0] = lastByte;
+        return buffer.toString("utf8", 0, len - 1);
+      } else if ((lastByte & 0xf8) === 0xf0) {
+        // 4-byte start
+        incomplete = 1;
+        this.#lastTotal = 4;
+        this.#lastNeed = 3;
+        this.#lastChar[0] = lastByte;
+        return buffer.toString("utf8", 0, len - 1);
+      }
+
+      return buffer.toString("utf8");
+    }
+
+    #utf16leWrite(buffer) {
+      let result = "";
+
+      if (this.#lastNeed > 0) {
+        if (buffer.length >= this.#lastNeed) {
+          buffer.copy(this.#lastChar, 2 - this.#lastNeed, 0, this.#lastNeed);
+          result = this.#lastChar.toString("utf16le", 0, 2);
+          buffer = buffer.slice(this.#lastNeed);
+          this.#lastNeed = 0;
+        } else {
+          buffer.copy(this.#lastChar, 2 - this.#lastNeed, 0, buffer.length);
+          this.#lastNeed -= buffer.length;
+          return "";
+        }
+      }
+
+      const len = buffer.length - (buffer.length % 2);
+      result += buffer.toString("utf16le", 0, len);
+
+      if (buffer.length % 2 === 1) {
+        this.#lastChar[0] = buffer[buffer.length - 1];
+        this.#lastNeed = 1;
+        this.#lastTotal = 2;
+      }
+
+      return result;
+    }
+
+    #base64Write(buffer) {
+      let result = "";
+
+      if (this.#lastNeed > 0) {
+        const needed = Math.min(buffer.length, this.#lastNeed);
+        buffer.copy(this.#lastChar, 3 - this.#lastNeed, 0, needed);
+        if (needed < this.#lastNeed) {
+          this.#lastNeed -= needed;
+          return "";
+        }
+        result = this.#lastChar.toString("base64", 0, 3);
+        buffer = buffer.slice(needed);
+        this.#lastNeed = 0;
+      }
+
+      const len = buffer.length - (buffer.length % 3);
+      result += buffer.toString("base64", 0, len);
+
+      const remaining = buffer.length % 3;
+      if (remaining > 0) {
+        buffer.copy(this.#lastChar, 0, len);
+        this.#lastNeed = 3 - remaining;
+        this.#lastTotal = 3;
+      }
+
+      return result;
+    }
+
+    end(buffer) {
+      let result = "";
+      if (buffer && buffer.length > 0) {
+        result = this.write(buffer);
+      }
+      if (this.#lastNeed > 0) {
+        // Output remaining incomplete character as replacement
+        if (this.#encoding === "utf8") {
+          result += "\ufffd";
+        } else if (this.#encoding === "utf16le") {
+          result += this.#lastChar.toString("utf16le", 0, 2 - this.#lastNeed);
+        } else if (this.#encoding === "base64") {
+          result += this.#lastChar.toString("base64", 0, 3 - this.#lastNeed);
+        }
+        this.#lastNeed = 0;
+      }
+      return result;
+    }
+
+    text(buffer, offset) {
+      if (offset) {
+        buffer = buffer.slice(offset);
+      }
+      return this.write(buffer);
+    }
+  }
+
+  const stringDecoderModule = {
+    StringDecoder,
+  };
+
+  // Register the string_decoder module
+  globalThis.__howth_modules["node:string_decoder"] = stringDecoderModule;
+  globalThis.__howth_modules["string_decoder"] = stringDecoderModule;
+
+  // ============================================================================
+  // url module (Node.js style, wrapping WHATWG URL)
+  // ============================================================================
+
+  /**
+   * Parse a URL string into an object (legacy Node.js API).
+   */
+  function urlParse(urlString, parseQueryString = false, slashesDenoteHost = false) {
+    const result = {
+      protocol: null,
+      slashes: null,
+      auth: null,
+      host: null,
+      port: null,
+      hostname: null,
+      hash: null,
+      search: null,
+      query: null,
+      pathname: null,
+      path: null,
+      href: urlString,
+    };
+
+    try {
+      // Handle protocol-relative URLs
+      let url;
+      if (urlString.startsWith("//") && slashesDenoteHost) {
+        url = new URL("http:" + urlString);
+        result.protocol = null;
+        result.slashes = true;
+      } else {
+        url = new URL(urlString);
+        result.protocol = url.protocol;
+        result.slashes = url.protocol.endsWith(":");
+      }
+
+      result.hostname = url.hostname || null;
+      result.port = url.port || null;
+      result.host = url.host || null;
+      result.pathname = url.pathname || null;
+      result.search = url.search || null;
+      result.hash = url.hash || null;
+
+      if (url.username || url.password) {
+        result.auth = url.username + (url.password ? ":" + url.password : "");
+      }
+
+      if (parseQueryString && url.search) {
+        result.query = querystringModule.parse(url.search.slice(1));
+      } else {
+        result.query = url.search ? url.search.slice(1) : null;
+      }
+
+      result.path = (result.pathname || "") + (result.search || "");
+      result.href = url.href;
+    } catch (e) {
+      // If URL parsing fails, do basic parsing
+      result.href = urlString;
+    }
+
+    return result;
+  }
+
+  /**
+   * Format a URL object into a string (legacy Node.js API).
+   */
+  function urlFormat(urlObject) {
+    if (typeof urlObject === "string") {
+      return urlObject;
+    }
+
+    let result = "";
+
+    if (urlObject.protocol) {
+      result += urlObject.protocol;
+      if (!urlObject.protocol.endsWith(":")) {
+        result += ":";
+      }
+    }
+
+    if (urlObject.slashes || (urlObject.protocol && /^https?:?$/.test(urlObject.protocol))) {
+      result += "//";
+    }
+
+    if (urlObject.auth) {
+      result += urlObject.auth + "@";
+    }
+
+    if (urlObject.hostname) {
+      result += urlObject.hostname;
+    } else if (urlObject.host) {
+      result += urlObject.host.split(":")[0];
+    }
+
+    if (urlObject.port) {
+      result += ":" + urlObject.port;
+    }
+
+    if (urlObject.pathname) {
+      result += urlObject.pathname;
+    }
+
+    if (urlObject.search) {
+      result += urlObject.search.startsWith("?") ? urlObject.search : "?" + urlObject.search;
+    } else if (urlObject.query) {
+      const query =
+        typeof urlObject.query === "string"
+          ? urlObject.query
+          : querystringModule.stringify(urlObject.query);
+      if (query) {
+        result += "?" + query;
+      }
+    }
+
+    if (urlObject.hash) {
+      result += urlObject.hash.startsWith("#") ? urlObject.hash : "#" + urlObject.hash;
+    }
+
+    return result;
+  }
+
+  /**
+   * Resolve a target URL relative to a base URL.
+   */
+  function urlResolve(from, to) {
+    return new URL(to, from).href;
+  }
+
+  /**
+   * Convert a file path to a file:// URL.
+   */
+  function pathToFileURL(filepath) {
+    let url = "file://";
+    if (process.platform === "win32") {
+      filepath = filepath.replace(/\\/g, "/");
+      if (filepath.startsWith("//")) {
+        // UNC path
+        url += filepath;
+      } else {
+        url += "/" + filepath;
+      }
+    } else {
+      url += filepath;
+    }
+    return new URL(url);
+  }
+
+  /**
+   * Convert a file:// URL to a file path.
+   */
+  function fileURLToPath(url) {
+    if (typeof url === "string") {
+      url = new URL(url);
+    }
+    if (url.protocol !== "file:") {
+      throw new TypeError('The URL must be of scheme file');
+    }
+    let pathname = decodeURIComponent(url.pathname);
+    if (process.platform === "win32") {
+      if (url.hostname) {
+        // UNC path
+        return "\\\\" + url.hostname + pathname.replace(/\//g, "\\");
+      }
+      // Remove leading slash for Windows paths
+      if (/^\/[a-zA-Z]:/.test(pathname)) {
+        pathname = pathname.slice(1);
+      }
+      return pathname.replace(/\//g, "\\");
+    }
+    return pathname;
+  }
+
+  const urlModule = {
+    parse: urlParse,
+    format: urlFormat,
+    resolve: urlResolve,
+    URL: globalThis.URL,
+    URLSearchParams: globalThis.URLSearchParams,
+    pathToFileURL,
+    fileURLToPath,
+    // Deprecated but still used
+    Url: function Url() {
+      return urlParse.apply(this, arguments);
+    },
+  };
+
+  // Register the url module
+  globalThis.__howth_modules["node:url"] = urlModule;
+  globalThis.__howth_modules["url"] = urlModule;
+
+  // ============================================================================
+  // punycode module (deprecated but still used)
+  // ============================================================================
+
+  /**
+   * Punycode encoding/decoding for internationalized domain names.
+   * This is a simplified implementation.
+   */
+  const punycode = {
+    version: "2.1.0",
+
+    /**
+     * Convert a Punycode string to Unicode.
+     */
+    decode: function (input) {
+      // Basic implementation - for full support would need complete algorithm
+      const basic = [];
+      const nonBasic = [];
+
+      let i = input.lastIndexOf("-");
+      if (i >= 0) {
+        for (let j = 0; j < i; j++) {
+          basic.push(input.charCodeAt(j));
+        }
+      }
+
+      // For now, just handle basic ASCII
+      return String.fromCodePoint(...basic);
+    },
+
+    /**
+     * Convert a Unicode string to Punycode.
+     */
+    encode: function (input) {
+      const output = [];
+      const inputLength = input.length;
+
+      // Handle basic code points
+      for (let i = 0; i < inputLength; i++) {
+        const codePoint = input.charCodeAt(i);
+        if (codePoint < 0x80) {
+          output.push(String.fromCharCode(codePoint));
+        }
+      }
+
+      const basicLength = output.length;
+      if (basicLength > 0) {
+        output.push("-");
+      }
+
+      // For simplicity, just return basic ASCII for now
+      return output.join("");
+    },
+
+    /**
+     * Convert a Unicode domain name to ASCII (Punycode).
+     */
+    toASCII: function (domain) {
+      return domain
+        .split(".")
+        .map((label) => {
+          if (/[^\x00-\x7F]/.test(label)) {
+            return "xn--" + punycode.encode(label);
+          }
+          return label;
+        })
+        .join(".");
+    },
+
+    /**
+     * Convert an ASCII (Punycode) domain name to Unicode.
+     */
+    toUnicode: function (domain) {
+      return domain
+        .split(".")
+        .map((label) => {
+          if (label.startsWith("xn--")) {
+            return punycode.decode(label.slice(4));
+          }
+          return label;
+        })
+        .join(".");
+    },
+
+    ucs2: {
+      decode: function (string) {
+        const output = [];
+        for (let i = 0; i < string.length; i++) {
+          const value = string.charCodeAt(i);
+          if (value >= 0xd800 && value <= 0xdbff && i + 1 < string.length) {
+            const extra = string.charCodeAt(i + 1);
+            if ((extra & 0xfc00) === 0xdc00) {
+              output.push(((value & 0x3ff) << 10) + (extra & 0x3ff) + 0x10000);
+              i++;
+              continue;
+            }
+          }
+          output.push(value);
+        }
+        return output;
+      },
+      encode: function (array) {
+        return String.fromCodePoint(...array);
+      },
+    },
+  };
+
+  // Register the punycode module
+  globalThis.__howth_modules["node:punycode"] = punycode;
+  globalThis.__howth_modules["punycode"] = punycode;
+
+  // ============================================================================
+  // console module (export the global console)
+  // ============================================================================
+
+  const consoleModule = globalThis.console;
+
+  // Register the console module
+  globalThis.__howth_modules["node:console"] = consoleModule;
+  globalThis.__howth_modules["console"] = consoleModule;
+
+  // ============================================================================
+  // constants module (deprecated, use fs.constants or os.constants)
+  // ============================================================================
+
+  const constantsModule = {
+    ...fsConstants,
+    ...osConstants.signals,
+    ...osConstants.errno,
+  };
+
+  // Register the constants module
+  globalThis.__howth_modules["node:constants"] = constantsModule;
+  globalThis.__howth_modules["constants"] = constantsModule;
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

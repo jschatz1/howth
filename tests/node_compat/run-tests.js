@@ -42,6 +42,15 @@ const TESTS = [
   // Timers tests
   'test-timers-basic.js',
 
+  // String decoder tests
+  'test-string-decoder-basic.js',
+
+  // URL module tests
+  'test-url-module-basic.js',
+
+  // Punycode tests
+  'test-punycode-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',
