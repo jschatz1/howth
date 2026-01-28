@@ -102,7 +102,13 @@ fn get_package_script(cwd: &Path, entry: &str) -> Option<String> {
 }
 
 /// Run a package.json script.
-fn run_script(cwd: &Path, script_name: &str, script_cmd: &str, args: &[String], json: bool) -> Result<()> {
+fn run_script(
+    cwd: &Path,
+    script_name: &str,
+    script_cmd: &str,
+    args: &[String],
+    json: bool,
+) -> Result<()> {
     use std::io::Write;
     if !json {
         println!("$ {}", script_cmd);
@@ -148,16 +154,16 @@ fn run_script(cwd: &Path, script_name: &str, script_cmd: &str, args: &[String], 
         cmd.env("PATH", new_path);
     }
 
-    let status = cmd.status().map_err(|e| {
-        miette::miette!("Failed to execute script '{}': {}", script_name, e)
-    })?;
+    let status = cmd
+        .status()
+        .map_err(|e| miette::miette!("Failed to execute script '{}': {}", script_name, e))?;
 
     std::process::exit(status.code().unwrap_or(1));
 }
 
 /// Run using native V8 runtime (no Node.js subprocess).
 #[cfg(feature = "native-runtime")]
-fn run_native(cwd: &Path, entry: &Path, _args: &[String], json: bool) -> Result<()> {
+fn run_native(cwd: &Path, entry: &Path, args: &[String], json: bool) -> Result<()> {
     use fastnode_runtime::{Runtime, RuntimeOptions};
 
     // Resolve entry path
@@ -167,9 +173,16 @@ fn run_native(cwd: &Path, entry: &Path, _args: &[String], json: bool) -> Result<
         cwd.join(entry)
     };
 
-    let entry_path = entry_path.canonicalize().map_err(|e| {
-        miette::miette!("Cannot find file {}: {}", entry.display(), e)
-    })?;
+    let entry_path = entry_path
+        .canonicalize()
+        .map_err(|e| miette::miette!("Cannot find file {}: {}", entry.display(), e))?;
+
+    // Build process.argv: ['howth', '/path/to/script.js', ...args]
+    let mut script_args = vec![
+        "howth".to_string(),
+        entry_path.to_string_lossy().to_string(),
+    ];
+    script_args.extend(args.iter().cloned());
 
     // Create runtime and execute as module (supports imports)
     // deno_core requires a current_thread runtime for async ops
@@ -181,6 +194,7 @@ fn run_native(cwd: &Path, entry: &Path, _args: &[String], json: bool) -> Result<
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(cwd.to_path_buf()),
             main_module: Some(entry_path.clone()),
+            args: Some(script_args),
         })
         .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
 

@@ -1,0 +1,248 @@
+#!/usr/bin/env node
+/**
+ * Example Test Runner
+ *
+ * Runs all example apps to verify they work correctly with howth.
+ * Used for end-to-end testing and CI validation.
+ *
+ * Run with Node.js: node examples/run-all.js
+ * Run with howth:   howth run --native examples/run-all.js
+ */
+
+const { execSync, spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+
+const c = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  cyan: '\x1b[36m',
+  dim: '\x1b[2m',
+};
+
+const EXAMPLES_DIR = path.dirname(process.argv[1] || __filename);
+const HOWTH_BIN = process.env.HOWTH_BIN || path.join(EXAMPLES_DIR, '../target/debug/howth');
+
+// Check if howth binary exists
+if (!fs.existsSync(HOWTH_BIN)) {
+  console.error(`${c.red}Error: howth binary not found at ${HOWTH_BIN}${c.reset}`);
+  console.error('Run: cargo build --features native-runtime -p fastnode-cli');
+  process.exit(1);
+}
+
+console.log(`\n${c.bold}${c.cyan}Howth Example Test Runner${c.reset}`);
+console.log(`${c.dim}Using: ${HOWTH_BIN}${c.reset}\n`);
+
+const results = {
+  passed: [],
+  failed: [],
+};
+
+// Test definitions
+const tests = [
+  {
+    name: 'CLI Tool - Help',
+    dir: 'cli-tool',
+    script: 'cli.js',
+    args: ['--help'],
+    timeout: 5000,
+    validate: (output, code) => code === 0 && output.includes('howth-cli') && output.includes('COMMANDS'),
+  },
+  {
+    name: 'CLI Tool - Count',
+    dir: 'cli-tool',
+    script: 'cli.js',
+    args: ['count', EXAMPLES_DIR],
+    timeout: 10000,
+    validate: (output, code) => code === 0 && output.includes('Files:') && output.includes('Directories:'),
+  },
+  {
+    name: 'CLI Tool - Tree',
+    dir: 'cli-tool',
+    script: 'cli.js',
+    args: ['tree', EXAMPLES_DIR],
+    timeout: 5000,
+    validate: (output, code) => code === 0 && output.includes('examples'),
+  },
+  {
+    name: 'File Processor - Analyze',
+    dir: 'file-processor',
+    script: 'processor.js',
+    args: ['analyze', EXAMPLES_DIR],
+    timeout: 10000,
+    validate: (output, code) => code === 0 && output.includes('Files by extension') && output.includes('.js'),
+  },
+  {
+    name: 'File Processor - TODOs',
+    dir: 'file-processor',
+    script: 'processor.js',
+    args: ['todos', EXAMPLES_DIR],
+    timeout: 10000,
+    validate: (output, code) => code === 0 && (output.includes('TODO') || output.includes('Total: 0 items')),
+  },
+  {
+    name: 'Env Loader',
+    dir: 'env-loader',
+    script: 'index.js',
+    args: [],
+    timeout: 5000,
+    validate: (output, code) => code === 0 && output.includes('Config loading demo completed'),
+  },
+  // HTTP Server tests (spawn and test)
+  {
+    name: 'HTTP Server - Startup',
+    dir: 'http-server',
+    script: 'server.js',
+    args: [],
+    timeout: 5000,
+    server: true,
+    port: 3100,
+    // Server tests just check they don't crash on startup
+    validate: (output, code) => code === null || code === 0 || output.includes('Server') || output.includes('listening'),
+  },
+  {
+    name: 'TODO API - Startup',
+    dir: 'todo-api',
+    script: 'server.js',
+    args: [],
+    timeout: 5000,
+    server: true,
+    port: 3101,
+    validate: (output, code) => code === null || code === 0 || output.includes('API') || output.includes('running'),
+  },
+  {
+    name: 'Static Server - Startup',
+    dir: 'static-server',
+    script: 'server.js',
+    args: [EXAMPLES_DIR],
+    timeout: 5000,
+    server: true,
+    port: 3102,
+    validate: (output, code) => code === null || code === 0 || output.includes('Server') || output.includes('Serving'),
+  },
+];
+
+// Run a single test
+async function runTest(test) {
+  const scriptPath = path.join(EXAMPLES_DIR, test.dir, test.script);
+
+  if (!fs.existsSync(scriptPath)) {
+    return { success: false, error: `Script not found: ${scriptPath}` };
+  }
+
+  return new Promise((resolve) => {
+    // Arguments after script must be passed with -- separator
+    const args = ['run', '--native', scriptPath];
+    if (test.args.length > 0) {
+      args.push('--', ...test.args);
+    }
+    let output = '';
+    let error = '';
+
+    const proc = spawn(HOWTH_BIN, args, {
+      cwd: path.join(EXAMPLES_DIR, test.dir),
+      timeout: test.timeout,
+      env: { ...process.env, PORT: test.port?.toString() },
+    });
+
+    proc.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    proc.stderr.on('data', (data) => {
+      error += data.toString();
+    });
+
+    // For server tests, kill after short delay and check output
+    if (test.server) {
+      setTimeout(() => {
+        // Give a bit more time to capture output before killing
+        setTimeout(() => {
+          proc.kill('SIGTERM');
+        }, 500);
+      }, 1500);
+    }
+
+    proc.on('close', (code) => {
+      // For server tests, we expect to kill them (code will be null or non-zero)
+      const combined = output + error;
+
+      // Pass code to validator for server tests
+      if (test.validate(combined, code)) {
+        resolve({ success: true, output: combined });
+      } else {
+        resolve({
+          success: false,
+          error: error || output || `Validation failed (code ${code}). Output: ${combined.slice(0, 200)}`,
+          code,
+        });
+      }
+    });
+
+    proc.on('error', (err) => {
+      resolve({ success: false, error: err.message });
+    });
+
+    // Timeout handler
+    setTimeout(() => {
+      if (!proc.killed) {
+        proc.kill('SIGKILL');
+        resolve({ success: false, error: 'Test timed out' });
+      }
+    }, test.timeout + 1000);
+  });
+}
+
+// Run all tests
+async function runAllTests() {
+  console.log(`${c.bold}Running ${tests.length} tests...${c.reset}\n`);
+
+  for (const test of tests) {
+    process.stdout.write(`  ${test.name}... `);
+
+    try {
+      const result = await runTest(test);
+
+      if (result.success) {
+        console.log(`${c.green}✓ PASS${c.reset}`);
+        results.passed.push(test.name);
+      } else {
+        console.log(`${c.red}✗ FAIL${c.reset}`);
+        console.log(`    ${c.dim}${result.error?.slice(0, 100)}${c.reset}`);
+        results.failed.push({ name: test.name, error: result.error });
+      }
+    } catch (err) {
+      console.log(`${c.red}✗ ERROR${c.reset}`);
+      console.log(`    ${c.dim}${err.message}${c.reset}`);
+      results.failed.push({ name: test.name, error: err.message });
+    }
+  }
+
+  // Summary
+  console.log(`\n${c.bold}${'═'.repeat(50)}${c.reset}`);
+  console.log(`${c.bold}Summary${c.reset}`);
+  console.log(`${'═'.repeat(50)}`);
+  console.log(`  ${c.green}Passed:${c.reset} ${results.passed.length}`);
+  console.log(`  ${c.red}Failed:${c.reset} ${results.failed.length}`);
+  console.log(`  ${c.cyan}Total:${c.reset}  ${tests.length}`);
+
+  const passRate = Math.round((results.passed.length / tests.length) * 100);
+  console.log(`\n  ${c.bold}Pass rate: ${passRate}%${c.reset}`);
+
+  if (results.failed.length > 0) {
+    console.log(`\n${c.red}Failed tests:${c.reset}`);
+    for (const { name, error } of results.failed) {
+      console.log(`  ${c.red}✗${c.reset} ${name}`);
+      console.log(`    ${c.dim}${error?.slice(0, 80)}${c.reset}`);
+    }
+    process.exit(1);
+  } else {
+    console.log(`\n${c.green}${c.bold}All examples passed!${c.reset}\n`);
+  }
+}
+
+runAllTests();

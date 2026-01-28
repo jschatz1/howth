@@ -82,7 +82,12 @@ pub struct RuntimeOptions {
     pub main_module: Option<PathBuf>,
     /// Working directory.
     pub cwd: Option<PathBuf>,
+    /// Command-line arguments for the script (simulates process.argv).
+    pub args: Option<Vec<String>>,
 }
+
+/// Thread-local storage for script arguments (set before runtime creation).
+static SCRIPT_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
 /// Shared state for the runtime.
 #[derive(Default)]
@@ -1006,7 +1011,12 @@ fn op_howth_exit(code: i32) {
 #[op2]
 #[serde]
 fn op_howth_args() -> Vec<String> {
-    std::env::args().collect()
+    // Use script args if set, otherwise fall back to system args
+    if let Some(args) = SCRIPT_ARGS.get() {
+        args.clone()
+    } else {
+        std::env::args().collect()
+    }
 }
 
 /// Fetch response from a URL.
@@ -1294,6 +1304,11 @@ impl Runtime {
     /// Create a new runtime.
     pub fn new(options: RuntimeOptions) -> Result<Self, RuntimeError> {
         let state = Rc::new(RefCell::new(RuntimeState::default()));
+
+        // Set script args if provided (for process.argv)
+        if let Some(args) = options.args {
+            let _ = SCRIPT_ARGS.set(args);
+        }
 
         let cwd = options
             .cwd
