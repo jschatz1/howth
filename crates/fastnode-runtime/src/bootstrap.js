@@ -7543,8 +7543,9 @@
       this.headersSent = false;
       this.sendDate = true;
       this.finished = false;
+      this.writableEnded = false;
       this._headers = {};
-      this._body = [];
+      this._body = "";
     }
 
     setHeader(name, value) {
@@ -7587,9 +7588,24 @@
       return this;
     }
 
-    _write(chunk, encoding, callback) {
-      this._body.push(chunk);
+    write(chunk, encoding, callback) {
+      if (typeof encoding === "function") {
+        callback = encoding;
+        encoding = undefined;
+      }
+      if (chunk) {
+        if (Buffer.isBuffer(chunk)) {
+          this._body += chunk.toString(encoding || "utf8");
+        } else {
+          this._body += String(chunk);
+        }
+      }
       if (callback) callback();
+      return true;
+    }
+
+    _write(chunk, encoding, callback) {
+      this.write(chunk, encoding, callback);
     }
 
     end(data, encoding, callback) {
@@ -7597,9 +7613,14 @@
         callback = data;
         data = null;
       }
-      if (data) this._body.push(data);
+      if (typeof encoding === "function") {
+        callback = encoding;
+        encoding = undefined;
+      }
+      if (data) this.write(data, encoding);
       this.headersSent = true;
       this.finished = true;
+      this.writableEnded = true;
       this.emit("finish");
       if (callback) callback();
       return this;
@@ -7626,8 +7647,10 @@
 
       this.method = (options.method || "GET").toUpperCase();
       this.path = options.path || options.pathname || "/";
+      // Use hostname (without port) for host
+      this.hostname = options.hostname || (options.host ? options.host.split(':')[0] : "localhost");
       this.host = options.host || options.hostname || "localhost";
-      this.port = options.port || (options.protocol === "https:" ? 443 : 80);
+      this.port = options.port ? parseInt(options.port, 10) : (options.protocol === "https:" ? 443 : 80);
       this.protocol = options.protocol || "http:";
       this.headers = {};
       this.timeout = options.timeout;
@@ -7711,7 +7734,9 @@
     }
 
     async _doFetch() {
-      const url = `${this.protocol}//${this.host}${this.port !== 80 && this.port !== 443 ? ":" + this.port : ""}${this.path}`;
+      // Use hostname (without port) to avoid double-port issues
+      const portSuffix = (this.port !== 80 && this.port !== 443) ? ":" + this.port : "";
+      const url = `${this.protocol}//${this.hostname}${portSuffix}${this.path}`;
 
       const fetchOptions = {
         method: this.method,
@@ -7741,11 +7766,20 @@
 
         // Get body
         const body = await response.arrayBuffer();
-        incoming.push(Buffer.from(body));
-        incoming.push(null);
-        incoming.complete = true;
+        const bodyBuffer = Buffer.from(body);
 
+        // Emit response first, then push body data asynchronously
+        // This allows listeners to attach before data arrives
         this.emit("response", incoming);
+
+        // Push body data on next tick so event listeners have time to attach
+        setTimeout(() => {
+          if (bodyBuffer.length > 0) {
+            incoming.push(bodyBuffer);
+          }
+          incoming.push(null);
+          incoming.complete = true;
+        }, 0);
       } catch (err) {
         this.emit("error", err);
       }
@@ -7797,28 +7831,133 @@
 
       hostname = hostname || "0.0.0.0";
       port = port || 0;
+      this._hostname = hostname;
+      this._port = port;
 
-      // For now, emit an error since we don't have native server support yet
-      // This would need native Rust ops to actually work
       const self = this;
-      setTimeout(() => {
-        self.listening = true;
-        self.emit("listening");
-        if (callback) callback();
-      }, 0);
+
+      // Start the native HTTP server
+      (async () => {
+        try {
+          const result = await ops.op_howth_http_listen(port, hostname);
+          self._serverId = result.id;
+          self._port = result.port;
+          self._address = result.address;
+          self.listening = true;
+          self.emit("listening");
+          if (callback) callback();
+
+          // Start accepting connections
+          self._acceptLoop();
+        } catch (err) {
+          self.emit("error", err);
+        }
+      })();
 
       return this;
+    }
+
+    async _acceptLoop() {
+      while (this.listening && this._serverId !== null) {
+        try {
+          const request = await ops.op_howth_http_accept(this._serverId);
+          if (!request) continue;
+
+          this._connections++;
+
+          // Create IncomingMessage and ServerResponse
+          const req = new IncomingMessage();
+          req.method = request.method;
+          req.url = request.url;
+          req.headers = request.headers;
+          req.httpVersion = "1.1";
+          req.httpVersionMajor = 1;
+          req.httpVersionMinor = 1;
+          req._requestId = request.id;
+
+          // Push body data if present
+          if (request.body) {
+            req.push(Buffer.from(request.body));
+          }
+          req.push(null); // End the stream
+
+          const res = new ServerResponse(req);
+          res._requestId = request.id;
+
+          // Override end to send the response
+          const originalEnd = res.end.bind(res);
+          res.end = (data, encoding, callback) => {
+            if (typeof data === "function") {
+              callback = data;
+              data = undefined;
+            }
+            if (typeof encoding === "function") {
+              callback = encoding;
+              encoding = undefined;
+            }
+
+            if (data) {
+              res.write(data, encoding);
+            }
+
+            // Send the response via native op
+            const headers = {};
+            if (res._headers) {
+              for (const [key, value] of Object.entries(res._headers)) {
+                headers[key] = Array.isArray(value) ? value.join(", ") : String(value);
+              }
+            }
+
+            ops.op_howth_http_respond(request.id, {
+              status: res.statusCode,
+              headers: headers,
+              body: res._body || "",
+            }).then(() => {
+              res.finished = true;
+              res.writableEnded = true;
+              res.emit("finish");
+              if (callback) callback();
+              this._connections--;
+            }).catch((err) => {
+              res.emit("error", err);
+              this._connections--;
+            });
+          };
+
+          // Emit the request event
+          this.emit("request", req, res);
+        } catch (err) {
+          if (this.listening) {
+            this.emit("error", err);
+          }
+          break;
+        }
+      }
     }
 
     close(callback) {
       this.listening = false;
-      if (callback) this.once("close", callback);
-      setTimeout(() => this.emit("close"), 0);
+      const self = this;
+
+      if (this._serverId !== null) {
+        ops.op_howth_http_close(this._serverId).then(() => {
+          self._serverId = null;
+          self.emit("close");
+          if (callback) callback();
+        }).catch((err) => {
+          self.emit("error", err);
+          if (callback) callback(err);
+        });
+      } else {
+        if (callback) this.once("close", callback);
+        setTimeout(() => this.emit("close"), 0);
+      }
+
       return this;
     }
 
     address() {
-      return this.listening ? { port: this._port, family: "IPv4", address: this._hostname } : null;
+      return this.listening ? { port: this._port, family: "IPv4", address: this._address || this._hostname } : null;
     }
 
     getConnections(callback) {

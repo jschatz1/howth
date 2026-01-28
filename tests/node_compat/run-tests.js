@@ -65,6 +65,7 @@ const TESTS = [
 
   // HTTP tests
   'test-http-basic.js',
+  'test-http-server-basic.js',  // custom: HTTP server test
 
   // HTTPS tests
   'test-https-basic.js',

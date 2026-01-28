@@ -139,6 +139,11 @@ extension!(
         // Child process ops
         op_howth_spawn_sync,
         op_howth_exec_sync,
+        // HTTP server ops
+        op_howth_http_listen,
+        op_howth_http_accept,
+        op_howth_http_respond,
+        op_howth_http_close,
     ],
 );
 
@@ -632,6 +637,235 @@ fn op_howth_exec_sync(
             error: Some(format!("ENOENT: spawn error: {}", e)),
         },
     }
+}
+
+// HTTP Server implementation using hyper
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::collections::HashMap;
+use tokio::sync::Mutex;
+
+/// Global server ID counter
+static NEXT_SERVER_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Represents an HTTP request from a client
+#[derive(serde::Serialize, Clone)]
+pub struct HttpRequest {
+    pub id: u32,
+    pub method: String,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    pub body: String,
+}
+
+/// Represents an HTTP response to send
+#[derive(serde::Deserialize)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<String>,
+}
+
+/// Server state stored in a global map
+struct ServerState {
+    listener: tokio::net::TcpListener,
+    local_addr: std::net::SocketAddr,
+}
+
+/// Global map of active HTTP servers
+lazy_static::lazy_static! {
+    static ref HTTP_SERVERS: Mutex<HashMap<u32, Arc<Mutex<ServerState>>>> = Mutex::new(HashMap::new());
+}
+
+/// Start listening on a port and return a server ID
+#[op2(async)]
+#[serde]
+async fn op_howth_http_listen(
+    port: u16,
+    #[string] hostname: String,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    let addr = format!("{}:{}", hostname, port);
+    let listener = tokio::net::TcpListener::bind(&addr).await
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to bind: {}", e)))?;
+
+    let local_addr = listener.local_addr()
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to get local addr: {}", e)))?;
+
+    let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+    let state = ServerState {
+        listener,
+        local_addr,
+    };
+
+    HTTP_SERVERS.lock().await.insert(server_id, Arc::new(Mutex::new(state)));
+
+    Ok(serde_json::json!({
+        "id": server_id,
+        "address": local_addr.ip().to_string(),
+        "port": local_addr.port(),
+    }))
+}
+
+/// Accept a connection and read an HTTP request
+#[op2(async)]
+#[serde]
+async fn op_howth_http_accept(server_id: u32) -> Result<Option<HttpRequest>, deno_core::error::AnyError> {
+    let servers = HTTP_SERVERS.lock().await;
+    let server = servers.get(&server_id)
+        .ok_or_else(|| deno_core::error::AnyError::msg("Server not found"))?
+        .clone();
+    drop(servers);
+
+    let mut state = server.lock().await;
+
+    // Accept a connection
+    let (mut stream, _addr) = match state.listener.accept().await {
+        Ok(conn) => conn,
+        Err(e) => {
+            return Err(deno_core::error::AnyError::msg(format!("Accept failed: {}", e)));
+        }
+    };
+
+    drop(state);
+
+    // Read the HTTP request
+    use tokio::io::AsyncReadExt;
+    let mut buffer = vec![0u8; 8192];
+    let n = stream.read(&mut buffer).await
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Read failed: {}", e)))?;
+
+    if n == 0 {
+        return Ok(None);
+    }
+
+    buffer.truncate(n);
+    let request_str = String::from_utf8_lossy(&buffer);
+
+    // Parse the HTTP request
+    let mut lines = request_str.lines();
+    let request_line = lines.next().unwrap_or("");
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+
+    if parts.len() < 2 {
+        return Err(deno_core::error::AnyError::msg("Invalid HTTP request"));
+    }
+
+    let method = parts[0].to_string();
+    let url = parts[1].to_string();
+
+    // Parse headers
+    let mut headers = HashMap::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+        }
+    }
+
+    // Find body (after empty line)
+    let body = if let Some(pos) = request_str.find("\r\n\r\n") {
+        request_str[pos + 4..].to_string()
+    } else if let Some(pos) = request_str.find("\n\n") {
+        request_str[pos + 2..].to_string()
+    } else {
+        String::new()
+    };
+
+    // Store the stream for later response
+    let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+    // Store connection for response
+    get_connections().lock().await.insert(request_id, stream);
+
+    Ok(Some(HttpRequest {
+        id: request_id,
+        method,
+        url,
+        headers,
+        body,
+    }))
+}
+
+/// Connection storage for pending responses
+static PENDING_CONNECTIONS: std::sync::OnceLock<Mutex<HashMap<u32, tokio::net::TcpStream>>> = std::sync::OnceLock::new();
+
+fn get_connections() -> &'static Mutex<HashMap<u32, tokio::net::TcpStream>> {
+    PENDING_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Send an HTTP response
+#[op2(async)]
+async fn op_howth_http_respond(
+    request_id: u32,
+    #[serde] response: HttpResponse,
+) -> Result<(), deno_core::error::AnyError> {
+    use tokio::io::AsyncWriteExt;
+
+    // Get the connection
+    let mut connections = get_connections().lock().await;
+    let mut stream = connections.remove(&request_id)
+        .ok_or_else(|| deno_core::error::AnyError::msg("Connection not found"))?;
+    drop(connections);
+
+    // Build the HTTP response
+    let status_text = match response.status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Unknown",
+    };
+
+    let body = response.body.unwrap_or_default();
+    let mut response_text = format!("HTTP/1.1 {} {}\r\n", response.status, status_text);
+
+    // Add headers
+    if let Some(headers) = response.headers {
+        for (key, value) in headers {
+            response_text.push_str(&format!("{}: {}\r\n", key, value));
+        }
+    }
+
+    // Add content-length if not present
+    if !response_text.to_lowercase().contains("content-length") {
+        response_text.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+
+    // End headers
+    response_text.push_str("\r\n");
+
+    // Add body
+    response_text.push_str(&body);
+
+    // Write response
+    stream.write_all(response_text.as_bytes()).await
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Write failed: {}", e)))?;
+
+    stream.flush().await
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Flush failed: {}", e)))?;
+
+    Ok(())
+}
+
+/// Close an HTTP server
+#[op2(async)]
+async fn op_howth_http_close(server_id: u32) -> Result<(), deno_core::error::AnyError> {
+    let mut servers = HTTP_SERVERS.lock().await;
+    servers.remove(&server_id);
+    Ok(())
 }
 
 /// Base64 encode helper.

@@ -190,12 +190,12 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | TTY | 1 | 0 | 1 |
 | V8 | 1 | 0 | 1 |
 | Async hooks | 1 | 0 | 1 |
-| HTTP | 1 | 0 | 1 |
+| HTTP | 2 | 0 | 2 |
 | HTTPS | 1 | 0 | 1 |
 | Net | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
 | FS module | 9 | 4 | 13 |
-| **Total** | **37** | **6** | **43** |
+| **Total** | **38** | **6** | **44** |
 
 **Pass Rate: 86%**
 
@@ -235,6 +235,7 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-v8-basic.js` - V8 module (heap stats, serialize/deserialize)
 - `test-async-hooks-basic.js` - Async hooks (AsyncLocalStorage, AsyncResource)
 - `test-http-basic.js` - HTTP client and server APIs
+- `test-http-server-basic.js` - Native HTTP server (request/response cycle)
 - `test-https-basic.js` - HTTPS module (wraps HTTP with TLS)
 - `test-net-basic.js` - TCP Socket and Server, IP utilities
 
