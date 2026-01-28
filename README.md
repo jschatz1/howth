@@ -150,6 +150,9 @@ howth run --node script.ts
 | `node:v8` | ✅ | Heap statistics, serialize/deserialize |
 | `node:domain` | ✅ | Deprecated domain module for error handling |
 | `node:async_hooks` | ✅ | AsyncLocalStorage, AsyncResource |
+| `node:http` | ✅ | Client (request/get), Server, Agent, IncomingMessage |
+| `node:https` | ✅ | Client (request/get), wraps http with TLS |
+| `node:net` | ✅ | Socket, Server, isIP/isIPv4/isIPv6 |
 | `node:worker_threads` | ❌ | Not yet implemented |
 | `require()` | ✅ | Full CommonJS support |
 
@@ -187,11 +190,14 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | TTY | 1 | 0 | 1 |
 | V8 | 1 | 0 | 1 |
 | Async hooks | 1 | 0 | 1 |
+| HTTP | 1 | 0 | 1 |
+| HTTPS | 1 | 0 | 1 |
+| Net | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
 | FS module | 9 | 4 | 13 |
-| **Total** | **34** | **6** | **40** |
+| **Total** | **37** | **6** | **43** |
 
-**Pass Rate: 85%**
+**Pass Rate: 86%**
 
 **Passing Tests:**
 - `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
@@ -228,6 +234,9 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-tty-basic.js` - TTY detection and streams
 - `test-v8-basic.js` - V8 module (heap stats, serialize/deserialize)
 - `test-async-hooks-basic.js` - Async hooks (AsyncLocalStorage, AsyncResource)
+- `test-http-basic.js` - HTTP client and server APIs
+- `test-https-basic.js` - HTTPS module (wraps HTTP with TLS)
+- `test-net-basic.js` - TCP Socket and Server, IP utilities
 
 **Skipped Tests (known limitations):**
 | Test | Reason |

@@ -63,6 +63,15 @@ const TESTS = [
   // Async hooks tests
   'test-async-hooks-basic.js',
 
+  // HTTP tests
+  'test-http-basic.js',
+
+  // HTTPS tests
+  'test-https-basic.js',
+
+  // Net tests
+  'test-net-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',

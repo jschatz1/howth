@@ -10,6 +10,10 @@ deno_core = "0.311"
 deno_node = "0.166"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio.workspace = true
+hyper = { version = "1.4", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
+http-body-util = "0.1"
+bytes = "1.5"
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

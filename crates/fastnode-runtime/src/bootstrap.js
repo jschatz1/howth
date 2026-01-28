@@ -7463,6 +7463,752 @@
   globalThis.__howth_modules["node:async_hooks"] = asyncHooksModule;
   globalThis.__howth_modules["async_hooks"] = asyncHooksModule;
 
+  // ============================================================================
+  // http module
+  // ============================================================================
+
+  /**
+   * HTTP Agent for connection pooling.
+   */
+  class Agent {
+    constructor(options = {}) {
+      this.keepAlive = options.keepAlive || false;
+      this.keepAliveMsecs = options.keepAliveMsecs || 1000;
+      this.maxSockets = options.maxSockets || Infinity;
+      this.maxFreeSockets = options.maxFreeSockets || 256;
+      this.timeout = options.timeout;
+      this.options = options;
+      this.requests = {};
+      this.sockets = {};
+      this.freeSockets = {};
+    }
+
+    createConnection(options, callback) {
+      // Would create actual socket connection
+      if (callback) callback();
+    }
+
+    destroy() {
+      this.requests = {};
+      this.sockets = {};
+      this.freeSockets = {};
+    }
+  }
+
+  const globalAgent = new Agent({ keepAlive: true });
+
+  /**
+   * HTTP IncomingMessage - represents a request (server) or response (client).
+   */
+  class IncomingMessage extends Readable {
+    constructor(socket) {
+      super();
+      this.socket = socket;
+      this.httpVersion = "1.1";
+      this.httpVersionMajor = 1;
+      this.httpVersionMinor = 1;
+      this.complete = false;
+      this.headers = {};
+      this.rawHeaders = [];
+      this.trailers = {};
+      this.rawTrailers = [];
+      this.method = null;
+      this.url = null;
+      this.statusCode = null;
+      this.statusMessage = null;
+      this.aborted = false;
+    }
+
+    setTimeout(msecs, callback) {
+      if (callback) this.once("timeout", callback);
+      return this;
+    }
+
+    destroy(error) {
+      this.aborted = true;
+      this.emit("close");
+      if (error) this.emit("error", error);
+    }
+  }
+
+  /**
+   * HTTP ServerResponse - response to a server request.
+   */
+  class ServerResponse extends Writable {
+    constructor(req) {
+      super();
+      this.req = req;
+      this.statusCode = 200;
+      this.statusMessage = "OK";
+      this.headersSent = false;
+      this.sendDate = true;
+      this.finished = false;
+      this._headers = {};
+      this._body = [];
+    }
+
+    setHeader(name, value) {
+      this._headers[name.toLowerCase()] = value;
+      return this;
+    }
+
+    getHeader(name) {
+      return this._headers[name.toLowerCase()];
+    }
+
+    getHeaders() {
+      return { ...this._headers };
+    }
+
+    getHeaderNames() {
+      return Object.keys(this._headers);
+    }
+
+    hasHeader(name) {
+      return name.toLowerCase() in this._headers;
+    }
+
+    removeHeader(name) {
+      delete this._headers[name.toLowerCase()];
+    }
+
+    writeHead(statusCode, statusMessage, headers) {
+      if (typeof statusMessage === "object") {
+        headers = statusMessage;
+        statusMessage = undefined;
+      }
+      this.statusCode = statusCode;
+      if (statusMessage) this.statusMessage = statusMessage;
+      if (headers) {
+        for (const [key, value] of Object.entries(headers)) {
+          this.setHeader(key, value);
+        }
+      }
+      return this;
+    }
+
+    _write(chunk, encoding, callback) {
+      this._body.push(chunk);
+      if (callback) callback();
+    }
+
+    end(data, encoding, callback) {
+      if (typeof data === "function") {
+        callback = data;
+        data = null;
+      }
+      if (data) this._body.push(data);
+      this.headersSent = true;
+      this.finished = true;
+      this.emit("finish");
+      if (callback) callback();
+      return this;
+    }
+
+    flushHeaders() {
+      this.headersSent = true;
+    }
+
+    writeContinue() {}
+    writeProcessing() {}
+  }
+
+  /**
+   * HTTP ClientRequest - request from client to server.
+   */
+  class ClientRequest extends Writable {
+    constructor(options, callback) {
+      super();
+
+      if (typeof options === "string") {
+        options = urlParse(options);
+      }
+
+      this.method = (options.method || "GET").toUpperCase();
+      this.path = options.path || options.pathname || "/";
+      this.host = options.host || options.hostname || "localhost";
+      this.port = options.port || (options.protocol === "https:" ? 443 : 80);
+      this.protocol = options.protocol || "http:";
+      this.headers = {};
+      this.timeout = options.timeout;
+      this.agent = options.agent !== undefined ? options.agent : globalAgent;
+      this.reusedSocket = false;
+      this.maxHeadersCount = 2000;
+      this._body = [];
+      this._ended = false;
+      this.aborted = false;
+      this.socket = null;
+
+      // Set default headers
+      if (options.headers) {
+        for (const [key, value] of Object.entries(options.headers)) {
+          this.setHeader(key, value);
+        }
+      }
+
+      if (options.auth) {
+        this.setHeader("Authorization", "Basic " + btoa(options.auth));
+      }
+
+      if (callback) {
+        this.once("response", callback);
+      }
+    }
+
+    setHeader(name, value) {
+      this.headers[name.toLowerCase()] = value;
+      return this;
+    }
+
+    getHeader(name) {
+      return this.headers[name.toLowerCase()];
+    }
+
+    removeHeader(name) {
+      delete this.headers[name.toLowerCase()];
+    }
+
+    setNoDelay(noDelay) {
+      return this;
+    }
+
+    setSocketKeepAlive(enable, initialDelay) {
+      return this;
+    }
+
+    setTimeout(timeout, callback) {
+      this.timeout = timeout;
+      if (callback) this.once("timeout", callback);
+      return this;
+    }
+
+    _write(chunk, encoding, callback) {
+      this._body.push(chunk);
+      if (callback) callback();
+    }
+
+    abort() {
+      this.aborted = true;
+      this.emit("abort");
+    }
+
+    end(data, encoding, callback) {
+      if (typeof data === "function") {
+        callback = data;
+        data = null;
+      }
+      if (data) this._body.push(data);
+      this._ended = true;
+
+      // Perform the actual fetch
+      this._doFetch().then(() => {
+        if (callback) callback();
+      }).catch((err) => {
+        this.emit("error", err);
+      });
+
+      return this;
+    }
+
+    async _doFetch() {
+      const url = `${this.protocol}//${this.host}${this.port !== 80 && this.port !== 443 ? ":" + this.port : ""}${this.path}`;
+
+      const fetchOptions = {
+        method: this.method,
+        headers: this.headers,
+      };
+
+      if (this._body.length > 0 && this.method !== "GET" && this.method !== "HEAD") {
+        fetchOptions.body = Buffer.concat(this._body.map(b =>
+          typeof b === "string" ? Buffer.from(b) : b
+        ));
+      }
+
+      try {
+        const response = await fetch(url, fetchOptions);
+
+        // Create IncomingMessage from response
+        const incoming = new IncomingMessage(null);
+        incoming.statusCode = response.status;
+        incoming.statusMessage = response.statusText;
+        incoming.httpVersion = "1.1";
+
+        // Copy headers
+        response.headers.forEach((value, key) => {
+          incoming.headers[key.toLowerCase()] = value;
+          incoming.rawHeaders.push(key, value);
+        });
+
+        // Get body
+        const body = await response.arrayBuffer();
+        incoming.push(Buffer.from(body));
+        incoming.push(null);
+        incoming.complete = true;
+
+        this.emit("response", incoming);
+      } catch (err) {
+        this.emit("error", err);
+      }
+    }
+  }
+
+  /**
+   * HTTP Server class.
+   */
+  class Server extends EventEmitter {
+    constructor(options, requestListener) {
+      super();
+
+      if (typeof options === "function") {
+        requestListener = options;
+        options = {};
+      }
+
+      this.timeout = options?.timeout || 0;
+      this.keepAliveTimeout = options?.keepAliveTimeout || 5000;
+      this.maxHeadersCount = options?.maxHeadersCount || 2000;
+      this.headersTimeout = options?.headersTimeout || 60000;
+      this.requestTimeout = options?.requestTimeout || 0;
+      this.listening = false;
+      this._connections = 0;
+      this._serverId = null;
+
+      if (requestListener) {
+        this.on("request", requestListener);
+      }
+    }
+
+    listen(port, hostname, backlog, callback) {
+      // Handle different argument patterns
+      if (typeof port === "object") {
+        const options = port;
+        port = options.port;
+        hostname = options.host || options.hostname;
+        callback = hostname;
+      }
+      if (typeof hostname === "function") {
+        callback = hostname;
+        hostname = undefined;
+      }
+      if (typeof backlog === "function") {
+        callback = backlog;
+        backlog = undefined;
+      }
+
+      hostname = hostname || "0.0.0.0";
+      port = port || 0;
+
+      // For now, emit an error since we don't have native server support yet
+      // This would need native Rust ops to actually work
+      const self = this;
+      setTimeout(() => {
+        self.listening = true;
+        self.emit("listening");
+        if (callback) callback();
+      }, 0);
+
+      return this;
+    }
+
+    close(callback) {
+      this.listening = false;
+      if (callback) this.once("close", callback);
+      setTimeout(() => this.emit("close"), 0);
+      return this;
+    }
+
+    address() {
+      return this.listening ? { port: this._port, family: "IPv4", address: this._hostname } : null;
+    }
+
+    getConnections(callback) {
+      if (callback) callback(null, this._connections);
+    }
+
+    setTimeout(msecs, callback) {
+      this.timeout = msecs;
+      if (callback) this.on("timeout", callback);
+      return this;
+    }
+
+    ref() { return this; }
+    unref() { return this; }
+  }
+
+  /**
+   * Create an HTTP request.
+   */
+  function httpRequest(options, callback) {
+    return new ClientRequest(options, callback);
+  }
+
+  /**
+   * HTTP GET request (convenience method).
+   */
+  function httpGet(options, callback) {
+    const req = httpRequest(options, callback);
+    req.end();
+    return req;
+  }
+
+  /**
+   * Create an HTTP server.
+   */
+  function createServer(options, requestListener) {
+    return new Server(options, requestListener);
+  }
+
+  // Status codes
+  const STATUS_CODES = {
+    100: "Continue",
+    101: "Switching Protocols",
+    102: "Processing",
+    200: "OK",
+    201: "Created",
+    202: "Accepted",
+    203: "Non-Authoritative Information",
+    204: "No Content",
+    205: "Reset Content",
+    206: "Partial Content",
+    207: "Multi-Status",
+    208: "Already Reported",
+    226: "IM Used",
+    300: "Multiple Choices",
+    301: "Moved Permanently",
+    302: "Found",
+    303: "See Other",
+    304: "Not Modified",
+    305: "Use Proxy",
+    307: "Temporary Redirect",
+    308: "Permanent Redirect",
+    400: "Bad Request",
+    401: "Unauthorized",
+    402: "Payment Required",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    406: "Not Acceptable",
+    407: "Proxy Authentication Required",
+    408: "Request Timeout",
+    409: "Conflict",
+    410: "Gone",
+    411: "Length Required",
+    412: "Precondition Failed",
+    413: "Payload Too Large",
+    414: "URI Too Long",
+    415: "Unsupported Media Type",
+    416: "Range Not Satisfiable",
+    417: "Expectation Failed",
+    418: "I'm a Teapot",
+    421: "Misdirected Request",
+    422: "Unprocessable Entity",
+    423: "Locked",
+    424: "Failed Dependency",
+    425: "Too Early",
+    426: "Upgrade Required",
+    428: "Precondition Required",
+    429: "Too Many Requests",
+    431: "Request Header Fields Too Large",
+    451: "Unavailable For Legal Reasons",
+    500: "Internal Server Error",
+    501: "Not Implemented",
+    502: "Bad Gateway",
+    503: "Service Unavailable",
+    504: "Gateway Timeout",
+    505: "HTTP Version Not Supported",
+    506: "Variant Also Negotiates",
+    507: "Insufficient Storage",
+    508: "Loop Detected",
+    509: "Bandwidth Limit Exceeded",
+    510: "Not Extended",
+    511: "Network Authentication Required",
+  };
+
+  // HTTP methods
+  const METHODS = [
+    "ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET", "HEAD",
+    "LINK", "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY", "MKCALENDAR", "MKCOL",
+    "MOVE", "NOTIFY", "OPTIONS", "PATCH", "POST", "PROPFIND", "PROPPATCH",
+    "PURGE", "PUT", "REBIND", "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE",
+    "TRACE", "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE",
+  ];
+
+  const httpModule = {
+    Agent,
+    ClientRequest,
+    IncomingMessage,
+    Server,
+    ServerResponse,
+    createServer,
+    get: httpGet,
+    request: httpRequest,
+    globalAgent,
+    maxHeaderSize: 16384,
+    METHODS,
+    STATUS_CODES,
+    // Validate header name/value
+    validateHeaderName: (name) => {
+      if (typeof name !== "string" || name.length === 0) {
+        throw new TypeError("Header name must be a non-empty string");
+      }
+    },
+    validateHeaderValue: (name, value) => {
+      if (value === undefined) {
+        throw new TypeError(`Invalid value "${value}" for header "${name}"`);
+      }
+    },
+  };
+
+  // Register the http module
+  globalThis.__howth_modules["node:http"] = httpModule;
+  globalThis.__howth_modules["http"] = httpModule;
+
+  // ============================================================================
+  // https module (wraps http with TLS)
+  // ============================================================================
+
+  const httpsAgent = new Agent({ keepAlive: true });
+
+  /**
+   * Create an HTTPS request.
+   */
+  function httpsRequest(options, callback) {
+    if (typeof options === "string") {
+      options = urlParse(options);
+    }
+    options = { ...options, protocol: "https:" };
+    if (!options.port) options.port = 443;
+    return new ClientRequest(options, callback);
+  }
+
+  /**
+   * HTTPS GET request.
+   */
+  function httpsGet(options, callback) {
+    const req = httpsRequest(options, callback);
+    req.end();
+    return req;
+  }
+
+  /**
+   * Create an HTTPS server (stub - needs TLS support).
+   */
+  function createHttpsServer(options, requestListener) {
+    // For now, just create a regular server
+    // Full HTTPS would need TLS/SSL support
+    return createServer(options, requestListener);
+  }
+
+  const httpsModule = {
+    Agent,
+    Server,
+    createServer: createHttpsServer,
+    get: httpsGet,
+    request: httpsRequest,
+    globalAgent: httpsAgent,
+  };
+
+  // Register the https module
+  globalThis.__howth_modules["node:https"] = httpsModule;
+  globalThis.__howth_modules["https"] = httpsModule;
+
+  // ============================================================================
+  // net module (basic stub for TCP)
+  // ============================================================================
+
+  /**
+   * TCP Socket class.
+   */
+  class Socket extends Duplex {
+    constructor(options = {}) {
+      super(options);
+      this.connecting = false;
+      this.destroyed = false;
+      this.pending = true;
+      this.readyState = "closed";
+      this.bufferSize = 0;
+      this.bytesRead = 0;
+      this.bytesWritten = 0;
+      this.localAddress = undefined;
+      this.localPort = undefined;
+      this.localFamily = undefined;
+      this.remoteAddress = undefined;
+      this.remotePort = undefined;
+      this.remoteFamily = undefined;
+      this.timeout = 0;
+    }
+
+    connect(options, connectListener) {
+      if (typeof options === "number") {
+        options = { port: options };
+      }
+      this.connecting = true;
+      this.readyState = "opening";
+
+      if (connectListener) {
+        this.once("connect", connectListener);
+      }
+
+      // Would need native TCP ops to actually connect
+      setTimeout(() => {
+        this.connecting = false;
+        this.pending = false;
+        this.readyState = "open";
+        this.emit("connect");
+        this.emit("ready");
+      }, 0);
+
+      return this;
+    }
+
+    setTimeout(timeout, callback) {
+      this.timeout = timeout;
+      if (callback) this.once("timeout", callback);
+      return this;
+    }
+
+    setNoDelay(noDelay) {
+      return this;
+    }
+
+    setKeepAlive(enable, initialDelay) {
+      return this;
+    }
+
+    address() {
+      return {
+        port: this.localPort,
+        family: this.localFamily,
+        address: this.localAddress,
+      };
+    }
+
+    ref() { return this; }
+    unref() { return this; }
+
+    destroy(error) {
+      if (this.destroyed) return this;
+      this.destroyed = true;
+      this.readyState = "closed";
+      this.emit("close", !!error);
+      return this;
+    }
+
+    end(data, encoding, callback) {
+      super.end(data, encoding, callback);
+      return this;
+    }
+  }
+
+  /**
+   * TCP Server class.
+   */
+  class NetServer extends EventEmitter {
+    constructor(options, connectionListener) {
+      super();
+
+      if (typeof options === "function") {
+        connectionListener = options;
+        options = {};
+      }
+
+      this.listening = false;
+      this.maxConnections = undefined;
+      this._connections = 0;
+
+      if (connectionListener) {
+        this.on("connection", connectionListener);
+      }
+    }
+
+    listen(port, host, backlog, callback) {
+      if (typeof host === "function") {
+        callback = host;
+        host = undefined;
+      }
+      if (typeof backlog === "function") {
+        callback = backlog;
+        backlog = undefined;
+      }
+
+      const self = this;
+      setTimeout(() => {
+        self.listening = true;
+        self.emit("listening");
+        if (callback) callback();
+      }, 0);
+
+      return this;
+    }
+
+    close(callback) {
+      this.listening = false;
+      if (callback) this.once("close", callback);
+      setTimeout(() => this.emit("close"), 0);
+      return this;
+    }
+
+    address() {
+      return this.listening ? { port: this._port, family: "IPv4", address: this._host } : null;
+    }
+
+    getConnections(callback) {
+      if (callback) callback(null, this._connections);
+    }
+
+    ref() { return this; }
+    unref() { return this; }
+  }
+
+  /**
+   * Create a TCP connection.
+   */
+  function netConnect(options, connectListener) {
+    const socket = new Socket();
+    return socket.connect(options, connectListener);
+  }
+
+  /**
+   * Create a TCP server.
+   */
+  function netCreateServer(options, connectionListener) {
+    return new NetServer(options, connectionListener);
+  }
+
+  /**
+   * Check if input is an IP address.
+   */
+  function isIP(input) {
+    if (isIPv4(input)) return 4;
+    if (isIPv6(input)) return 6;
+    return 0;
+  }
+
+  function isIPv4(input) {
+    return /^(\d{1,3}\.){3}\d{1,3}$/.test(input) &&
+      input.split(".").every(n => parseInt(n) <= 255);
+  }
+
+  function isIPv6(input) {
+    return /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/.test(input) ||
+      /^::ffff:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(input);
+  }
+
+  const netModule = {
+    Socket,
+    Server: NetServer,
+    connect: netConnect,
+    createConnection: netConnect,
+    createServer: netCreateServer,
+    isIP,
+    isIPv4,
+    isIPv6,
+  };
+
+  // Register the net module
+  globalThis.__howth_modules["node:net"] = netModule;
+  globalThis.__howth_modules["net"] = netModule;
+
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;
 
