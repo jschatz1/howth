@@ -143,6 +143,163 @@ howth run --native examples/env-loader/index.js
 
 ---
 
+### 8. JSON Database (`json-db/`)
+File-based JSON database with MongoDB-like query syntax.
+
+```bash
+howth run --native examples/json-db/db.js
+```
+
+**Features demonstrated:**
+- JSON file persistence
+- CRUD operations (insert, find, update, delete)
+- Query operators ($gt, $lt, $in, $regex, etc.)
+- Aggregation pipeline ($match, $group, $sort, $limit)
+- Indexes for faster lookups
+
+---
+
+### 9. Test Runner (`test-runner/`)
+Minimal test framework with describe/it syntax (like Mocha/Jest).
+
+```bash
+howth run --native examples/test-runner/runner.js
+```
+
+**Features demonstrated:**
+- describe/it DSL
+- Assertion library (equal, deepEqual, throws, etc.)
+- Async test support
+- beforeAll/afterAll/beforeEach/afterEach hooks
+- Test filtering with .skip and .only
+- Colored output with timing
+
+---
+
+### 10. Proxy Server (`proxy-server/`)
+HTTP proxy server with path rewriting and request logging.
+
+```bash
+howth run --native examples/proxy-server/proxy.js
+
+# Test endpoints
+curl http://localhost:3080/api/users    # Proxies to jsonplaceholder
+curl http://localhost:3080/httpbin/get  # Proxies to httpbin.org
+```
+
+**Features demonstrated:**
+- HTTP request forwarding
+- Path rewriting rules
+- Header modification
+- Request logging with colors
+- Error handling (502 Bad Gateway)
+
+---
+
+### 11. Markdown Processor (`markdown/`)
+Markdown to HTML converter with frontmatter and TOC generation.
+
+```bash
+howth run --native examples/markdown/md.js
+howth run --native examples/markdown/md.js -- README.md
+```
+
+**Features demonstrated:**
+- Markdown parsing (headers, lists, code blocks, tables)
+- YAML frontmatter extraction
+- Table of contents generation
+- HTML output with styling
+- File I/O
+
+---
+
+### 12. LRU Cache (`lru-cache/`)
+Least Recently Used cache implementation with TTL support.
+
+```bash
+howth run --native examples/lru-cache/cache.js
+```
+
+**Features demonstrated:**
+- O(1) get/set operations
+- Doubly-linked list for LRU ordering
+- Time-to-live (TTL) expiration
+- Cache statistics (hit rate, evictions)
+- Memoization helper function
+
+---
+
+### 13. Task Scheduler (`task-scheduler/`)
+Cron-like task scheduler with retry logic and dependencies.
+
+```bash
+howth run --native examples/task-scheduler/scheduler.js
+```
+
+**Features demonstrated:**
+- Interval-based task scheduling
+- Cron expression parsing
+- Task priorities
+- Retry logic with configurable delay
+- Task dependencies
+- Status monitoring and history
+
+---
+
+### 14. Dev Server (`dev-server/`)
+Vite-like development server with live reload.
+
+```bash
+howth run --native examples/dev-server/server.js
+# Then visit http://localhost:3000
+```
+
+**Features demonstrated:**
+- Static file serving with ES modules
+- Live reload via Server-Sent Events (SSE)
+- File watching
+- SPA routing fallback
+- API endpoints
+- Auto-generated example files
+
+---
+
+### 15. SSR App (`ssr-app/`)
+Server-Side Rendering framework example.
+
+```bash
+howth run --native examples/ssr-app/server.js
+# Then visit http://localhost:3000
+```
+
+**Features demonstrated:**
+- Component-based architecture
+- Template rendering
+- State hydration to client
+- Route handling
+- API routes
+- HTML escaping
+
+---
+
+### 16. Static Site Generator (`static-site/`)
+Build static HTML sites from markdown.
+
+```bash
+howth run --native examples/static-site/build.js
+# Output in examples/static-site/dist/
+```
+
+**Features demonstrated:**
+- Markdown to HTML processing
+- Frontmatter extraction
+- Template layouts
+- Static asset copying
+- Sitemap generation
+- Recursive directory processing
+
+---
+
 ## Test Runner
 
 Run all examples as a test suite:
@@ -159,8 +316,8 @@ These examples exercise the following Node.js APIs:
 
 | Module | Usage |
 |--------|-------|
-| `http` | Server, client, routing |
-| `fs` | Read/write files, directories |
+| `http` | Server, client, routing, proxy |
+| `fs` | Read/write files, directories, JSON |
 | `path` | Path manipulation |
 | `url` | URL parsing |
 | `process` | argv, env, cwd, exit |
@@ -168,6 +325,8 @@ These examples exercise the following Node.js APIs:
 | `stream` | Readable/Writable streams |
 | `buffer` | Buffer operations |
 | `querystring` | Query parsing |
+| `timers` | setTimeout, setInterval, clearTimeout |
+| `console` | Logging with colors |
 
 ## Adding New Examples
 

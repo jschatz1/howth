@@ -118,6 +118,7 @@ fn resolve_or_range(name: &str, range: &str, versions: &[Version]) -> Result<Str
 /// - Standard semver ranges: ^1.0.0, ~1.0.0, >=1.0.0, etc.
 /// - Hyphen ranges: 1.0.0 - 2.0.0
 /// - X-ranges: 1.x, 1.0.x, *
+/// - Space-separated comparators: >= 2.1.2 < 3.0.0
 fn parse_range(range: &str) -> Result<VersionReq, PkgError> {
     let range = range.trim();
 
@@ -137,8 +138,12 @@ fn parse_range(range: &str) -> Result<VersionReq, PkgError> {
         });
     }
 
+    // Handle space-separated comparators: ">= 2.1.2 < 3.0.0" -> ">=2.1.2, <3.0.0"
+    // npm allows spaces between comparators to mean AND
+    let converted = convert_space_separated_comparators(range);
+
     // Standard semver range
-    VersionReq::parse(range).map_err(|e| {
+    VersionReq::parse(&converted).map_err(|e| {
         PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
     })
 }
@@ -156,6 +161,76 @@ fn parse_hyphen_range(range: &str) -> Option<(String, String)> {
         }
     }
     None
+}
+
+/// Convert space-separated comparators to comma-separated.
+///
+/// npm allows: ">= 2.1.2 < 3.0.0" which means ">=2.1.2 AND <3.0.0"
+/// Rust semver requires: ">=2.1.2, <3.0.0"
+fn convert_space_separated_comparators(range: &str) -> String {
+    let range = range.trim();
+
+    // Regex-like parsing: split on spaces, but keep operators attached to versions
+    // Comparator patterns: >=, <=, >, <, =, ~, ^, or bare version
+    let mut result = String::new();
+    let mut chars = range.chars().peekable();
+    let mut current_token = String::new();
+    let mut need_comma = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' => {
+                // End of current token
+                if !current_token.is_empty() {
+                    let trimmed = current_token.trim();
+                    if !trimmed.is_empty() {
+                        // Check if this looks like a complete comparator (has version number)
+                        if token_has_version(trimmed) {
+                            if need_comma {
+                                result.push_str(", ");
+                            }
+                            result.push_str(trimmed);
+                            need_comma = true;
+                        } else {
+                            // Operator without version, keep accumulating
+                            if need_comma {
+                                result.push_str(", ");
+                                need_comma = false;
+                            }
+                            result.push_str(trimmed);
+                        }
+                    }
+                    current_token.clear();
+                }
+            }
+            _ => {
+                current_token.push(c);
+            }
+        }
+    }
+
+    // Handle last token
+    if !current_token.is_empty() {
+        let trimmed = current_token.trim();
+        if !trimmed.is_empty() {
+            if token_has_version(trimmed) && need_comma {
+                result.push_str(", ");
+            }
+            result.push_str(trimmed);
+        }
+    }
+
+    // If nothing was parsed (no spaces), return original
+    if result.is_empty() {
+        return range.to_string();
+    }
+
+    result
+}
+
+/// Check if a token contains a version number (has digits).
+fn token_has_version(token: &str) -> bool {
+    token.chars().any(|c| c.is_ascii_digit())
 }
 
 /// Convert x-range to semver range.
@@ -346,5 +421,29 @@ mod tests {
         let packument = make_packument(&["1.0.0", "1.5.0", "2.0.0", "3.0.0"], "3.0.0");
         let version = resolve_version(&packument, Some("1.0.0 - 2.0.0")).unwrap();
         assert_eq!(version, "2.0.0");
+    }
+
+    #[test]
+    fn test_space_separated_comparators() {
+        let packument = make_packument(&["2.0.0", "2.1.2", "2.5.0", "3.0.0"], "3.0.0");
+        // ">= 2.1.2 < 3.0.0" should match 2.1.2 and 2.5.0, pick highest (2.5.0)
+        let version = resolve_version(&packument, Some(">= 2.1.2 < 3.0.0")).unwrap();
+        assert_eq!(version, "2.5.0");
+    }
+
+    #[test]
+    fn test_space_separated_comparators_no_spaces_around_ops() {
+        let packument = make_packument(&["2.0.0", "2.1.2", "2.5.0", "3.0.0"], "3.0.0");
+        // ">=2.1.2 <3.0.0" should also work
+        let version = resolve_version(&packument, Some(">=2.1.2 <3.0.0")).unwrap();
+        assert_eq!(version, "2.5.0");
+    }
+
+    #[test]
+    fn test_space_separated_comparators_exact_boundary() {
+        let packument = make_packument(&["2.1.2", "3.0.0"], "3.0.0");
+        // Should include 2.1.2 but not 3.0.0
+        let version = resolve_version(&packument, Some(">= 2.1.2 < 3.0.0")).unwrap();
+        assert_eq!(version, "2.1.2");
     }
 }

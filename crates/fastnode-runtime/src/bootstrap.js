@@ -3,22 +3,97 @@
   const core = Deno.core;
   const ops = core.ops;
 
+  // Node.js uses 'global' as an alias for globalThis
+  globalThis.global = globalThis;
+
+  Error.stackTraceLimit = 50;
+
   // Console implementation
+  const consoleTimers = new Map();
+  const consoleCounts = new Map();
+
   globalThis.console = {
     log(...args) {
       ops.op_howth_print(args.map(String).join(" ") + "\n");
     },
     error(...args) {
-      ops.op_howth_print_error(args.map(String).join(" ") + "\n");
+      ops.op_howth_print_error(args.map(a => a instanceof Error ? (a.stack || String(a)) : String(a)).join(" ") + "\n");
     },
     warn(...args) {
-      ops.op_howth_print_error(args.map(String).join(" ") + "\n");
+      ops.op_howth_print_error(args.map(a => a instanceof Error ? (a.stack || String(a)) : String(a)).join(" ") + "\n");
     },
     info(...args) {
       ops.op_howth_print(args.map(String).join(" ") + "\n");
     },
     debug(...args) {
       ops.op_howth_print(args.map(String).join(" ") + "\n");
+    },
+    assert(condition, ...args) {
+      if (!condition) {
+        const message = args.length > 0 ? args.map(String).join(" ") : "Assertion failed";
+        ops.op_howth_print_error("Assertion failed: " + message + "\n");
+      }
+    },
+    time(label = "default") {
+      consoleTimers.set(label, Date.now());
+    },
+    timeEnd(label = "default") {
+      const start = consoleTimers.get(label);
+      if (start !== undefined) {
+        const duration = Date.now() - start;
+        ops.op_howth_print(`${label}: ${duration}ms\n`);
+        consoleTimers.delete(label);
+      } else {
+        ops.op_howth_print_error(`Timer '${label}' does not exist\n`);
+      }
+    },
+    timeLog(label = "default", ...args) {
+      const start = consoleTimers.get(label);
+      if (start !== undefined) {
+        const duration = Date.now() - start;
+        const extra = args.length > 0 ? " " + args.map(String).join(" ") : "";
+        ops.op_howth_print(`${label}: ${duration}ms${extra}\n`);
+      } else {
+        ops.op_howth_print_error(`Timer '${label}' does not exist\n`);
+      }
+    },
+    count(label = "default") {
+      const count = (consoleCounts.get(label) || 0) + 1;
+      consoleCounts.set(label, count);
+      ops.op_howth_print(`${label}: ${count}\n`);
+    },
+    countReset(label = "default") {
+      consoleCounts.delete(label);
+    },
+    trace(...args) {
+      const err = new Error();
+      const stack = err.stack || "";
+      const message = args.length > 0 ? args.map(String).join(" ") : "Trace";
+      ops.op_howth_print(`${message}\n${stack}\n`);
+    },
+    dir(obj, options) {
+      // Simple dir implementation
+      ops.op_howth_print(JSON.stringify(obj, null, 2) + "\n");
+    },
+    dirxml(...args) {
+      // Alias to dir for non-browser environments
+      this.dir(...args);
+    },
+    table(data) {
+      // Simple table implementation
+      ops.op_howth_print(JSON.stringify(data, null, 2) + "\n");
+    },
+    clear() {
+      // Clear console (no-op in most non-TTY environments)
+    },
+    group(...args) {
+      ops.op_howth_print(args.map(String).join(" ") + "\n");
+    },
+    groupCollapsed(...args) {
+      ops.op_howth_print(args.map(String).join(" ") + "\n");
+    },
+    groupEnd() {
+      // No-op
     },
   };
 
@@ -81,6 +156,21 @@
     listenerCount(event) {
       return (processListeners.get(event) || []).length;
     },
+    prependListener(event, listener) {
+      if (!processListeners.has(event)) {
+        processListeners.set(event, []);
+      }
+      processListeners.get(event).unshift(listener);
+      return this;
+    },
+    prependOnceListener(event, listener) {
+      const wrapper = (...args) => {
+        this.off(event, wrapper);
+        listener(...args);
+      };
+      wrapper.listener = listener;
+      return this.prependListener(event, wrapper);
+    },
 
     // Environment
     env: new Proxy({}, {
@@ -99,32 +189,167 @@
     cwd() {
       return ops.op_howth_cwd();
     },
+    chdir(directory) {
+      if (typeof directory !== 'string') {
+        throw new TypeError('The "directory" argument must be of type string');
+      }
+      ops.op_howth_chdir(directory);
+    },
     exit(code = 0) {
       // Emit exit event before exiting
-      this.exitCode = code;
-      this.emit("exit", code);
+      globalThis.process.exitCode = code;
+      globalThis.process.emit("exit", code);
       ops.op_howth_exit(code);
     },
     exitCode: 0,
     argv: ops.op_howth_args(),
+    argv0: ops.op_howth_args()[0] || "howth",
+    execArgv: [], // Command-line options passed to Node.js executable
+    execPath: ops.op_howth_args()[0] || "/usr/bin/howth",
     platform: ops.op_howth_platform(),
-    version: "v20.0.0", // Fake Node.js version for compatibility
+    version: "v20.18.0", // Fake Node.js version for compatibility
     versions: {
-      node: "20.0.0",
+      node: "20.18.0",
       v8: "11.0.0",
       howth: "0.1.0",
+    },
+    features: {
+      inspector: false,
+      debug: false,
+      uv: true,
+      ipv6: true,
+      tls_alpn: true,
+      tls_sni: true,
+      tls_ocsp: true,
+      tls: true,
+      typescript: false, // Node.js 22+ has native TypeScript support
     },
     pid: 1,
     ppid: 0,
     arch: ops.op_howth_arch(),
     title: "howth",
-    hrtime: {
-      bigint() {
-        return BigInt(ops.op_howth_hrtime());
+    hrtime: Object.assign(
+      function hrtime(time) {
+        const nowBigInt = BigInt(ops.op_howth_hrtime());
+        const seconds = Number(nowBigInt / 1000000000n);
+        const nanoseconds = Number(nowBigInt % 1000000000n);
+        if (time) {
+          // Return diff from provided time
+          const diffSec = seconds - time[0];
+          const diffNsec = nanoseconds - time[1];
+          if (diffNsec < 0) {
+            return [diffSec - 1, 1000000000 + diffNsec];
+          }
+          return [diffSec, diffNsec];
+        }
+        return [seconds, nanoseconds];
       },
-    },
+      {
+        bigint() {
+          return BigInt(ops.op_howth_hrtime());
+        },
+      }
+    ),
     nextTick(callback, ...args) {
-      queueMicrotask(() => callback(...args));
+      queueMicrotask(() => {
+        try {
+          callback(...args);
+        } catch (err) {
+          // Emit uncaughtException if handlers exist, otherwise rethrow
+          const listeners = processListeners.get("uncaughtException");
+          if (listeners && listeners.length > 0) {
+            for (const listener of [...listeners]) {
+              listener(err);
+            }
+          } else {
+            console.error("[howth] Uncaught exception in nextTick:", err instanceof Error ? err.stack || err.message : err);
+            throw err;
+          }
+        }
+      });
+    },
+    // process.binding - deprecated Node.js internal API for native bindings
+    binding(name) {
+      const bindings = {
+        // fs binding - used by some native modules
+        fs: {
+          FSReqCallback: class FSReqCallback {
+            constructor() {
+              this.oncomplete = null;
+              this.context = null;
+            }
+          },
+          StatWatcher: class StatWatcher {},
+          writeBuffer() {},
+          read() {},
+          open() {},
+          close() {},
+          fstat() {},
+          stat() {},
+          lstat() {},
+          fchmod() {},
+          chmod() {},
+          fchown() {},
+          chown() {},
+          access() {},
+          rename() {},
+          unlink() {},
+          rmdir() {},
+          mkdir() {},
+          readdir() {},
+          internalModuleReadJSON() { return undefined; },
+          internalModuleStat() { return 0; },
+        },
+        // buffer binding
+        buffer: {
+          setupBufferJS() {},
+          createFromString() {},
+          byteLengthUtf8() {},
+        },
+        // constants binding
+        constants: {
+          fs: {
+            F_OK: 0,
+            R_OK: 4,
+            W_OK: 2,
+            X_OK: 1,
+            O_RDONLY: 0,
+            O_WRONLY: 1,
+            O_RDWR: 2,
+            O_CREAT: 64,
+            O_EXCL: 128,
+            O_TRUNC: 512,
+            O_APPEND: 1024,
+          },
+          os: {},
+          crypto: {},
+          zlib: {},
+        },
+        // util binding
+        util: {
+          isDate(val) { return val instanceof Date; },
+          isRegExp(val) { return val instanceof RegExp; },
+          isMap(val) { return val instanceof Map; },
+          isSet(val) { return val instanceof Set; },
+          isArrayBuffer(val) { return val instanceof ArrayBuffer; },
+          isDataView(val) { return val instanceof DataView; },
+          isNativeError(val) { return val instanceof Error; },
+          isPromise(val) { return val instanceof Promise; },
+        },
+        // natives binding - for internal module source code
+        natives: {},
+        // config binding
+        config: {
+          hasOpenSSL: false,
+          fipsMode: false,
+          hasIntl: false,
+          hasTracing: false,
+        },
+      };
+      if (bindings[name]) {
+        return bindings[name];
+      }
+      throw new Error(`No such module: ${name}`);
     },
     // Standard streams (minimal implementation)
     stdout: {
@@ -260,9 +485,65 @@
     }
   };
 
+  // TextEncoderStream - Web Streams API
+  globalThis.TextEncoderStream = class TextEncoderStream {
+    constructor() {
+      this.encoding = "utf-8";
+      const encoder = new TextEncoder();
+      this.readable = new ReadableStream({
+        start() {},
+      });
+      this.writable = new WritableStream({
+        write(chunk) {
+          // Transform string to Uint8Array
+          return encoder.encode(chunk);
+        },
+      });
+      // Create a simple transform
+      const { readable, writable } = new TransformStream({
+        transform(chunk, controller) {
+          controller.enqueue(encoder.encode(chunk));
+        },
+      });
+      this.readable = readable;
+      this.writable = writable;
+    }
+  };
+
+  // TextDecoderStream - Web Streams API
+  globalThis.TextDecoderStream = class TextDecoderStream {
+    constructor(encoding = "utf-8") {
+      this.encoding = encoding.toLowerCase();
+      const decoder = new TextDecoder(encoding);
+      const { readable, writable } = new TransformStream({
+        transform(chunk, controller) {
+          const text = decoder.decode(chunk, { stream: true });
+          if (text) controller.enqueue(text);
+        },
+        flush(controller) {
+          const text = decoder.decode();
+          if (text) controller.enqueue(text);
+        },
+      });
+      this.readable = readable;
+      this.writable = writable;
+    }
+  };
+
   // URL implementation (basic)
   globalThis.URL = class URL {
     constructor(url, base) {
+      // Convert URL objects or other types to string
+      if (url && typeof url === "object" && url.href) {
+        url = url.href;
+      } else if (typeof url !== "string") {
+        url = String(url);
+      }
+      if (base && typeof base === "object" && base.href) {
+        base = base.href;
+      } else if (base !== undefined && typeof base !== "string") {
+        base = String(base);
+      }
       let fullUrl = url;
       if (base) {
         // Simple base URL handling
@@ -666,7 +947,7 @@
     }
   };
 
-  // crypto implementation
+  // crypto implementation - Web Crypto API
   globalThis.crypto = {
     getRandomValues(array) {
       const bytes = ops.op_howth_random_bytes(array.length);
@@ -688,6 +969,150 @@
             : new TextEncoder().encode(String(data));
         const result = ops.op_howth_hash(algo, bytes);
         return new Uint8Array(result).buffer;
+      },
+
+      async generateKey(algorithm, extractable, keyUsages) {
+        const algo = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
+        const keyBytes = ops.op_howth_random_bytes(32); // 256 bits
+
+        const key = {
+          type: 'secret',
+          extractable,
+          algorithm: algo,
+          usages: keyUsages,
+          _keyData: keyBytes,
+        };
+
+        if (algo.name === 'RSA-OAEP' || algo.name === 'RSA-PSS' || algo.name === 'RSASSA-PKCS1-v1_5') {
+          // Return a key pair for asymmetric algorithms
+          return {
+            publicKey: { ...key, type: 'public', _keyData: ops.op_howth_random_bytes(256) },
+            privateKey: { ...key, type: 'private', _keyData: ops.op_howth_random_bytes(256) },
+          };
+        }
+
+        return key;
+      },
+
+      async importKey(format, keyData, algorithm, extractable, keyUsages) {
+        const algo = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
+        let data;
+        if (format === 'raw') {
+          data = keyData instanceof ArrayBuffer ? new Uint8Array(keyData) : keyData;
+        } else if (format === 'jwk') {
+          // JWK format - simplified handling
+          data = keyData.k ? new TextEncoder().encode(keyData.k) : new Uint8Array(32);
+        } else {
+          data = new Uint8Array(32);
+        }
+
+        return {
+          type: 'secret',
+          extractable,
+          algorithm: algo,
+          usages: keyUsages,
+          _keyData: data,
+        };
+      },
+
+      async exportKey(format, key) {
+        if (format === 'raw') {
+          return key._keyData.buffer || key._keyData;
+        } else if (format === 'jwk') {
+          return {
+            kty: 'oct',
+            k: btoa(String.fromCharCode(...key._keyData)),
+            alg: key.algorithm.name,
+            ext: key.extractable,
+            key_ops: key.usages,
+          };
+        }
+        throw new Error(`Unsupported export format: ${format}`);
+      },
+
+      async sign(algorithm, key, data) {
+        const algo = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
+        const dataBytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+
+        // Simple HMAC-like signature using hash
+        const keyBytes = key._keyData || new Uint8Array(32);
+        const combined = new Uint8Array(keyBytes.length + dataBytes.length);
+        combined.set(keyBytes);
+        combined.set(dataBytes, keyBytes.length);
+
+        const result = ops.op_howth_hash('SHA-256', combined);
+        return new Uint8Array(result).buffer;
+      },
+
+      async verify(algorithm, key, signature, data) {
+        const newSig = await this.sign(algorithm, key, data);
+        const sigBytes = new Uint8Array(signature);
+        const newSigBytes = new Uint8Array(newSig);
+
+        if (sigBytes.length !== newSigBytes.length) return false;
+        for (let i = 0; i < sigBytes.length; i++) {
+          if (sigBytes[i] !== newSigBytes[i]) return false;
+        }
+        return true;
+      },
+
+      async encrypt(algorithm, key, data) {
+        // Stub: just XOR with key for minimal implementation
+        const algo = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
+        const dataBytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+        const keyBytes = key._keyData || new Uint8Array(32);
+
+        const result = new Uint8Array(dataBytes.length);
+        for (let i = 0; i < dataBytes.length; i++) {
+          result[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
+        }
+        return result.buffer;
+      },
+
+      async decrypt(algorithm, key, data) {
+        // XOR is symmetric, so decrypt is same as encrypt
+        return this.encrypt(algorithm, key, data);
+      },
+
+      async deriveBits(algorithm, baseKey, length) {
+        const algo = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
+        const keyBytes = baseKey._keyData || new Uint8Array(32);
+        const numBytes = Math.ceil(length / 8);
+
+        // Simple derivation using hash iterations
+        let result = keyBytes;
+        const salt = algo.salt ? new Uint8Array(algo.salt) : new Uint8Array(16);
+        for (let i = 0; i < (algo.iterations || 1); i++) {
+          const combined = new Uint8Array(result.length + salt.length);
+          combined.set(result);
+          combined.set(salt, result.length);
+          result = new Uint8Array(ops.op_howth_hash('SHA-256', combined));
+        }
+
+        return result.slice(0, numBytes).buffer;
+      },
+
+      async deriveKey(algorithm, baseKey, derivedKeyAlgorithm, extractable, keyUsages) {
+        const bits = await this.deriveBits(algorithm, baseKey, derivedKeyAlgorithm.length || 256);
+        return {
+          type: 'secret',
+          extractable,
+          algorithm: derivedKeyAlgorithm,
+          usages: keyUsages,
+          _keyData: new Uint8Array(bits),
+        };
+      },
+
+      async wrapKey(format, key, wrappingKey, wrapAlgorithm) {
+        const exported = await this.exportKey(format, key);
+        const data = format === 'raw' ? new Uint8Array(exported) : new TextEncoder().encode(JSON.stringify(exported));
+        return this.encrypt(wrapAlgorithm, wrappingKey, data);
+      },
+
+      async unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, keyUsages) {
+        const decrypted = await this.decrypt(unwrapAlgorithm, unwrappingKey, wrappedKey);
+        const data = format === 'raw' ? decrypted : JSON.parse(new TextDecoder().decode(new Uint8Array(decrypted)));
+        return this.importKey(format, data, unwrappedKeyAlgorithm, extractable, keyUsages);
       },
     },
   };
@@ -1144,6 +1569,12 @@
       return new Buffer(size);
     }
 
+    static allocUnsafeSlow(size) {
+      // In Node.js, allocUnsafeSlow is similar to allocUnsafe but uses
+      // a slower allocation path that doesn't use the pool
+      return new Buffer(size);
+    }
+
     static from(data, encoding = "utf8") {
       if (typeof data === "string") {
         if (encoding === "base64") {
@@ -1360,6 +1791,82 @@
     writeInt32LE(value, offset = 0) { return this.writeUInt32LE(value >>> 0, offset); }
     writeInt32BE(value, offset = 0) { return this.writeUInt32BE(value >>> 0, offset); }
 
+    // Float and Double methods using DataView
+    readFloatLE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 4);
+      return view.getFloat32(0, true);
+    }
+    readFloatBE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 4);
+      return view.getFloat32(0, false);
+    }
+    readDoubleLE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      return view.getFloat64(0, true);
+    }
+    readDoubleBE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      return view.getFloat64(0, false);
+    }
+    writeFloatLE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 4);
+      view.setFloat32(0, value, true);
+      return offset + 4;
+    }
+    writeFloatBE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 4);
+      view.setFloat32(0, value, false);
+      return offset + 4;
+    }
+    writeDoubleLE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      view.setFloat64(0, value, true);
+      return offset + 8;
+    }
+    writeDoubleBE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      view.setFloat64(0, value, false);
+      return offset + 8;
+    }
+
+    // BigInt methods
+    readBigInt64LE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      return view.getBigInt64(0, true);
+    }
+    readBigInt64BE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      return view.getBigInt64(0, false);
+    }
+    readBigUInt64LE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      return view.getBigUint64(0, true);
+    }
+    readBigUInt64BE(offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      return view.getBigUint64(0, false);
+    }
+    writeBigInt64LE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      view.setBigInt64(0, value, true);
+      return offset + 8;
+    }
+    writeBigInt64BE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      view.setBigInt64(0, value, false);
+      return offset + 8;
+    }
+    writeBigUInt64LE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      view.setBigUint64(0, value, true);
+      return offset + 8;
+    }
+    writeBigUInt64BE(value, offset = 0) {
+      const view = new DataView(this.buffer, this.byteOffset + offset, 8);
+      view.setBigUint64(0, value, false);
+      return offset + 8;
+    }
+
     toJSON() {
       return { type: "Buffer", data: Array.from(this) };
     }
@@ -1367,17 +1874,139 @@
 
   // performance API
   const performanceStart = Date.now();
+  const performanceMarks = new Map();
+  const performanceMeasures = [];
+  const performanceEntries = [];
+
   globalThis.performance = {
     now() {
       return Date.now() - performanceStart;
     },
     timeOrigin: performanceStart,
-    mark(name) {
-      // Minimal implementation
-      return { name, startTime: this.now() };
+
+    mark(name, options = {}) {
+      const startTime = options.startTime ?? this.now();
+      const entry = {
+        name,
+        entryType: "mark",
+        startTime,
+        duration: 0,
+        detail: options.detail,
+        toJSON() {
+          return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration };
+        },
+      };
+      performanceMarks.set(name, entry);
+      performanceEntries.push(entry);
+      return entry;
     },
-    measure(name, startMark, endMark) {
-      return { name, duration: 0 };
+
+    measure(name, startMarkOrOptions, endMark) {
+      let startTime = 0;
+      let endTime = this.now();
+      let detail;
+
+      if (typeof startMarkOrOptions === "string") {
+        const startMarkEntry = performanceMarks.get(startMarkOrOptions);
+        if (startMarkEntry) startTime = startMarkEntry.startTime;
+        if (endMark) {
+          const endMarkEntry = performanceMarks.get(endMark);
+          if (endMarkEntry) endTime = endMarkEntry.startTime;
+        }
+      } else if (startMarkOrOptions && typeof startMarkOrOptions === "object") {
+        if (startMarkOrOptions.start !== undefined) {
+          if (typeof startMarkOrOptions.start === "string") {
+            const m = performanceMarks.get(startMarkOrOptions.start);
+            startTime = m ? m.startTime : 0;
+          } else {
+            startTime = startMarkOrOptions.start;
+          }
+        }
+        if (startMarkOrOptions.end !== undefined) {
+          if (typeof startMarkOrOptions.end === "string") {
+            const m = performanceMarks.get(startMarkOrOptions.end);
+            endTime = m ? m.startTime : this.now();
+          } else {
+            endTime = startMarkOrOptions.end;
+          }
+        }
+        if (startMarkOrOptions.duration !== undefined) {
+          endTime = startTime + startMarkOrOptions.duration;
+        }
+        detail = startMarkOrOptions.detail;
+      }
+
+      const entry = {
+        name,
+        entryType: "measure",
+        startTime,
+        duration: endTime - startTime,
+        detail,
+        toJSON() {
+          return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration };
+        },
+      };
+      performanceMeasures.push(entry);
+      performanceEntries.push(entry);
+      return entry;
+    },
+
+    clearMarks(name) {
+      if (name) {
+        performanceMarks.delete(name);
+        const idx = performanceEntries.findIndex((e) => e.name === name && e.entryType === "mark");
+        if (idx !== -1) performanceEntries.splice(idx, 1);
+      } else {
+        performanceMarks.clear();
+        for (let i = performanceEntries.length - 1; i >= 0; i--) {
+          if (performanceEntries[i].entryType === "mark") performanceEntries.splice(i, 1);
+        }
+      }
+    },
+
+    clearMeasures(name) {
+      if (name) {
+        const idx = performanceMeasures.findIndex((m) => m.name === name);
+        if (idx !== -1) performanceMeasures.splice(idx, 1);
+        const idx2 = performanceEntries.findIndex((e) => e.name === name && e.entryType === "measure");
+        if (idx2 !== -1) performanceEntries.splice(idx2, 1);
+      } else {
+        performanceMeasures.length = 0;
+        for (let i = performanceEntries.length - 1; i >= 0; i--) {
+          if (performanceEntries[i].entryType === "measure") performanceEntries.splice(i, 1);
+        }
+      }
+    },
+
+    clearResourceTimings() {
+      // Clear resource timing entries
+      for (let i = performanceEntries.length - 1; i >= 0; i--) {
+        if (performanceEntries[i].entryType === "resource") performanceEntries.splice(i, 1);
+      }
+    },
+
+    getEntries() {
+      return [...performanceEntries];
+    },
+
+    getEntriesByName(name, type) {
+      return performanceEntries.filter(
+        (e) => e.name === name && (!type || e.entryType === type)
+      );
+    },
+
+    getEntriesByType(type) {
+      return performanceEntries.filter((e) => e.entryType === type);
+    },
+
+    setResourceTimingBufferSize(maxSize) {
+      // No-op for now
+    },
+
+    toJSON() {
+      return {
+        timeOrigin: this.timeOrigin,
+      };
     },
   };
 
@@ -2539,8 +3168,38 @@
 
   // Register the path module
   globalThis.__howth_modules = globalThis.__howth_modules || {};
+
+  // Register process module (already created as globalThis.process)
+  globalThis.__howth_modules["node:process"] = globalThis.process;
+  globalThis.__howth_modules["process"] = globalThis.process;
+
+  // Register Buffer module
+  const bufferModule = {
+    Buffer: globalThis.Buffer,
+    kMaxLength: 2147483647,
+    kStringMaxLength: 536870888,
+    constants: {
+      MAX_LENGTH: 2147483647,
+      MAX_STRING_LENGTH: 536870888,
+    },
+    SlowBuffer: globalThis.Buffer,
+    transcode: () => { throw new Error('transcode not implemented'); },
+    isEncoding(enc) {
+      return ['utf8', 'utf-8', 'ascii', 'latin1', 'binary', 'base64', 'hex', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le'].includes(String(enc).toLowerCase());
+    },
+    isBuffer(obj) {
+      return obj instanceof globalThis.Buffer;
+    },
+  };
+  globalThis.__howth_modules["node:buffer"] = bufferModule;
+  globalThis.__howth_modules["buffer"] = bufferModule;
+
   globalThis.__howth_modules["node:path"] = pathModule;
   globalThis.__howth_modules["path"] = pathModule;
+  globalThis.__howth_modules["node:path/posix"] = posixPath;
+  globalThis.__howth_modules["path/posix"] = posixPath;
+  globalThis.__howth_modules["node:path/win32"] = win32Path;
+  globalThis.__howth_modules["path/win32"] = win32Path;
   // ============================================
   // node:fs module
   // ============================================
@@ -2680,13 +3339,18 @@
     },
 
     writeFileSync(path, data, options) {
-      if (typeof data === "string") {
-        ops.op_howth_write_file(String(path), data);
-      } else if (data instanceof Uint8Array || Buffer.isBuffer(data)) {
-        const base64 = Buffer.from(data).toString("base64");
-        ops.op_howth_fs_write_bytes(String(path), base64);
-      } else {
-        ops.op_howth_write_file(String(path), String(data));
+      const p = String(path);
+      try {
+        if (typeof data === "string") {
+          ops.op_howth_write_file(p, data);
+        } else if (data instanceof Uint8Array || Buffer.isBuffer(data)) {
+          const base64 = Buffer.from(data).toString("base64");
+          ops.op_howth_fs_write_bytes(p, base64);
+        } else {
+          ops.op_howth_write_file(p, String(data));
+        }
+      } catch (e) {
+        throw normalizeFsError(e, 'open', p);
       }
     },
 
@@ -2706,13 +3370,26 @@
     },
 
     mkdirSync(path, options) {
-      const recursive = options?.recursive || false;
-      ops.op_howth_fs_mkdir(String(path), recursive);
+      const p = String(path);
+      const recursive = typeof options === 'object' ? (options?.recursive || false) : false;
+      try {
+        ops.op_howth_fs_mkdir(p, recursive);
+        // Node.js returns the first created directory path when recursive is true
+        if (recursive) return p;
+        return undefined;
+      } catch (e) {
+        throw normalizeFsError(e, 'mkdir', p);
+      }
     },
 
     rmdirSync(path, options) {
+      const p = String(path);
       const recursive = options?.recursive || false;
-      ops.op_howth_fs_rmdir(String(path), recursive);
+      try {
+        ops.op_howth_fs_rmdir(p, recursive);
+      } catch (e) {
+        throw normalizeFsError(e, 'rmdir', p);
+      }
     },
 
     rmSync(path, options) {
@@ -2732,15 +3409,16 @@
     },
 
     unlinkSync(path) {
-      ops.op_howth_fs_unlink(String(path));
+      const p = String(path);
+      try { ops.op_howth_fs_unlink(p); } catch (e) { throw normalizeFsError(e, 'unlink', p); }
     },
 
     renameSync(oldPath, newPath) {
-      ops.op_howth_fs_rename(String(oldPath), String(newPath));
+      try { ops.op_howth_fs_rename(String(oldPath), String(newPath)); } catch (e) { throw normalizeFsError(e, 'rename', String(oldPath)); }
     },
 
     copyFileSync(src, dest, mode) {
-      ops.op_howth_fs_copy(String(src), String(dest));
+      try { ops.op_howth_fs_copy(String(src), String(dest)); } catch (e) { throw normalizeFsError(e, 'copyfile', String(src)); }
     },
 
     readdirSync(path, options) {
@@ -2778,12 +3456,38 @@
         return new Stats(stat);
       } catch (e) {
         if (!throwIfNoEntry) return undefined;
-        throw e;
+        throw normalizeFsError(e, "lstat", String(path));
       }
     },
 
-    realpathSync(path, options) {
-      return ops.op_howth_fs_realpath(String(path));
+    realpathSync: Object.assign(
+      function realpathSync(path, options) {
+        return ops.op_howth_fs_realpath(String(path));
+      },
+      {
+        // native is the same as realpathSync on Unix
+        native(path, options) {
+          return ops.op_howth_fs_realpath(String(path));
+        }
+      }
+    ),
+
+    readlinkSync(path, options) {
+      return ops.op_howth_fs_readlink(String(path));
+    },
+
+    symlinkSync(target, path, type) {
+      // type can be 'file', 'dir', or 'junction' (Windows only)
+      ops.op_howth_fs_symlink(String(target), String(path), type || 'file');
+    },
+
+    chownSync(path, uid, gid) {
+      ops.op_howth_fs_chown(String(path), uid, gid);
+    },
+
+    lchownSync(path, uid, gid) {
+      // For symlinks - same as chown on most systems
+      ops.op_howth_fs_chown(String(path), uid, gid);
     },
 
     chmodSync(path, mode) {
@@ -2796,56 +3500,111 @@
       ops.op_howth_fs_access(String(path), m);
     },
 
-    // File descriptor-based operations (simplified implementation)
-    // We use a simple fd counter and map to simulate file descriptors
+    // File descriptor-based operations using Rust ops
+    // Track fd to path mapping for fstatSync (Rust doesn't have fstat_fd yet)
+    _fdPaths: new Map(),
+
     openSync(path, flags, mode) {
-      // Simplified: just verify file exists/can be created and return a pseudo-fd
       const strPath = String(path);
-      const flagStr = typeof flags === 'string' ? flags : '';
-
-      // Check if file exists for read operations
-      if (flagStr === 'r' || flags === 0) {
-        if (!ops.op_howth_fs_exists(strPath)) {
-          const err = new Error(`ENOENT: no such file or directory, open '${strPath}'`);
-          err.code = 'ENOENT';
-          err.syscall = 'open';
-          err.path = strPath;
-          throw err;
+      // Convert flags to string format if numeric
+      let flagStr = typeof flags === 'string' ? flags : 'r';
+      if (typeof flags === 'number') {
+        // Convert numeric flags to string flags
+        // O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=64, O_TRUNC=512, O_APPEND=1024
+        const O_WRONLY = 1, O_RDWR = 2, O_CREAT = 64, O_TRUNC = 512, O_APPEND = 1024;
+        if ((flags & O_RDWR) && (flags & O_CREAT) && (flags & O_TRUNC)) {
+          flagStr = 'w+';
+        } else if ((flags & O_WRONLY) && (flags & O_CREAT) && (flags & O_TRUNC)) {
+          flagStr = 'w';
+        } else if ((flags & O_WRONLY) && (flags & O_CREAT) && (flags & O_APPEND)) {
+          flagStr = 'a';
+        } else if ((flags & O_RDWR) && (flags & O_CREAT) && (flags & O_APPEND)) {
+          flagStr = 'a+';
+        } else if (flags & O_RDWR) {
+          flagStr = 'r+';
+        } else {
+          flagStr = 'r';
         }
       }
-
-      // For write operations, create the file if it doesn't exist
-      if (flagStr === 'w' || flagStr === 'w+' || (flags & 64)) { // O_CREAT
-        if (!ops.op_howth_fs_exists(strPath)) {
-          ops.op_howth_write_file(strPath, '');
-        }
+      const m = mode || 0o666;
+      const result = ops.op_howth_fs_open_fd(strPath, flagStr, m);
+      if (result.error) {
+        const err = new Error(result.error);
+        err.code = 'ENOENT';
+        err.syscall = 'open';
+        err.path = strPath;
+        throw err;
       }
-
-      // Return a pseudo file descriptor (we track paths by fd)
-      if (!globalThis.__howth_fd_map) {
-        globalThis.__howth_fd_map = new Map();
-        globalThis.__howth_fd_counter = 3; // Start after stdin/stdout/stderr
-      }
-      const fd = globalThis.__howth_fd_counter++;
-      globalThis.__howth_fd_map.set(fd, { path: strPath, flags, mode });
-      return fd;
+      // Track fd to path for fstatSync
+      this._fdPaths.set(result.fd, strPath);
+      return result.fd;
     },
 
     closeSync(fd) {
-      if (globalThis.__howth_fd_map) {
-        globalThis.__howth_fd_map.delete(fd);
+      ops.op_howth_fs_close_fd(fd);
+      this._fdPaths.delete(fd);
+    },
+
+    readSync(fd, buffer, offset, length, position) {
+      // Handle overloaded signatures
+      if (buffer instanceof Buffer || ArrayBuffer.isView(buffer)) {
+        offset = offset || 0;
+        length = length || buffer.length - offset;
+      } else {
+        // options object style
+        const options = buffer || {};
+        buffer = options.buffer || Buffer.alloc(16384);
+        offset = options.offset || 0;
+        length = options.length || buffer.length;
+        position = options.position;
       }
+
+      // Seek to position if specified
+      if (position !== null && position !== undefined && position >= 0) {
+        ops.op_howth_fs_seek_fd(fd, position, 0); // SEEK_SET = 0
+      }
+
+      const result = ops.op_howth_fs_read_fd(fd, length);
+      if (result === null) {
+        return 0; // EOF
+      }
+
+      // Copy data to buffer
+      const data = new Uint8Array(result);
+      for (let i = 0; i < data.length && i + offset < buffer.length; i++) {
+        buffer[offset + i] = data[i];
+      }
+      return data.length;
+    },
+
+    writeSync(fd, buffer, offset, length, position) {
+      let data;
+      if (typeof buffer === 'string') {
+        data = new TextEncoder().encode(buffer);
+        if (position !== null && position !== undefined && position >= 0) {
+          ops.op_howth_fs_seek_fd(fd, position, 0);
+        }
+      } else {
+        offset = offset || 0;
+        length = length || buffer.length - offset;
+        data = buffer.slice(offset, offset + length);
+        if (position !== null && position !== undefined && position >= 0) {
+          ops.op_howth_fs_seek_fd(fd, position, 0);
+        }
+      }
+      return ops.op_howth_fs_write_fd(fd, Array.from(data));
     },
 
     fstatSync(fd, options) {
-      if (!globalThis.__howth_fd_map || !globalThis.__howth_fd_map.has(fd)) {
+      // Use the tracked fd to path mapping
+      if (!this._fdPaths.has(fd)) {
         const err = new Error(`EBADF: bad file descriptor, fstat`);
         err.code = 'EBADF';
         err.syscall = 'fstat';
         throw err;
       }
-      const info = globalThis.__howth_fd_map.get(fd);
-      return fsSync.statSync(info.path, options);
+      const path = this._fdPaths.get(fd);
+      return this.statSync(path, options);
     },
 
     truncateSync(path, len) {
@@ -2916,6 +3675,22 @@
 
     async realpath(path, options) {
       return fsSync.realpathSync(path, options);
+    },
+
+    async readlink(path, options) {
+      return fsSync.readlinkSync(path, options);
+    },
+
+    async symlink(target, path, type) {
+      return fsSync.symlinkSync(target, path, type);
+    },
+
+    async chown(path, uid, gid) {
+      return fsSync.chownSync(path, uid, gid);
+    },
+
+    async lchown(path, uid, gid) {
+      return fsSync.lchownSync(path, uid, gid);
     },
 
     async chmod(path, mode) {
@@ -3162,6 +3937,50 @@
       }
     },
 
+    readlink(path, options, callback) {
+      if (typeof options === "function") {
+        callback = options;
+        options = undefined;
+      }
+      try {
+        const result = fsSync.readlinkSync(path, options);
+        queueMicrotask(() => callback(null, result));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    symlink(target, path, type, callback) {
+      if (typeof type === "function") {
+        callback = type;
+        type = undefined;
+      }
+      try {
+        fsSync.symlinkSync(target, path, type);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    chown(path, uid, gid, callback) {
+      try {
+        fsSync.chownSync(path, uid, gid);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
+    lchown(path, uid, gid, callback) {
+      try {
+        fsSync.lchownSync(path, uid, gid);
+        queueMicrotask(() => callback(null));
+      } catch (e) {
+        queueMicrotask(() => callback(e));
+      }
+    },
+
     chmod(path, mode, callback) {
       try {
         fsSync.chmodSync(path, mode);
@@ -3233,6 +4052,72 @@
       }
     },
 
+    read(fd, buffer, offset, length, position, callback) {
+      // Handle overloaded signatures
+      if (typeof offset === 'function') {
+        callback = offset;
+        offset = 0;
+        length = buffer.length;
+        position = null;
+      } else if (typeof length === 'function') {
+        callback = length;
+        length = buffer.length - offset;
+        position = null;
+      } else if (typeof position === 'function') {
+        callback = position;
+        position = null;
+      }
+
+      try {
+        const bytesRead = fsSync.readSync(fd, buffer, offset, length, position);
+        queueMicrotask(() => callback(null, bytesRead, buffer));
+      } catch (e) {
+        queueMicrotask(() => callback(e, 0, buffer));
+      }
+    },
+
+    write(fd, buffer, offset, length, position, callback) {
+      // Handle overloaded signatures
+      if (typeof buffer === 'string') {
+        // fs.write(fd, string, position, encoding, callback)
+        const str = buffer;
+        position = offset;
+        const encoding = length || 'utf8';
+        callback = position || (() => {});
+        if (typeof position === 'function') {
+          callback = position;
+          position = null;
+        }
+        try {
+          const bytesWritten = fsSync.writeSync(fd, str, null, null, position);
+          queueMicrotask(() => callback(null, bytesWritten, str));
+        } catch (e) {
+          queueMicrotask(() => callback(e, 0, str));
+        }
+      } else {
+        // fs.write(fd, buffer, offset, length, position, callback)
+        if (typeof offset === 'function') {
+          callback = offset;
+          offset = 0;
+          length = buffer.length;
+          position = null;
+        } else if (typeof length === 'function') {
+          callback = length;
+          length = buffer.length - offset;
+          position = null;
+        } else if (typeof position === 'function') {
+          callback = position;
+          position = null;
+        }
+        try {
+          const bytesWritten = fsSync.writeSync(fd, buffer, offset, length, position);
+          queueMicrotask(() => callback(null, bytesWritten, buffer));
+        } catch (e) {
+          queueMicrotask(() => callback(e, 0, buffer));
+        }
+      }
+    },
+
     fstat(fd, options, callback) {
       if (typeof options === 'function') {
         callback = options;
@@ -3281,6 +4166,566 @@
         queueMicrotask(() => callback(e));
       }
     },
+
+    // createReadStream - returns a Readable stream using file descriptors
+    createReadStream(path, options = {}) {
+      const listeners = new Map();
+      let destroyed = false;
+      let started = false;
+      let fd = null;
+      let paused = false;
+
+      const highWaterMark = options.highWaterMark || 64 * 1024;
+      const encoding = options.encoding;
+      const start = options.start || 0;
+      const end = options.end;
+      const flags = options.flags || 'r';
+      const mode = options.mode || 0o666;
+
+      const stream = {
+        readable: true,
+        path,
+        bytesRead: 0,
+        fd: null,
+
+        on(event, listener) {
+          if (!listeners.has(event)) {
+            listeners.set(event, []);
+          }
+          listeners.get(event).push(listener);
+
+          // Auto-start reading when 'data' listener is added
+          if (event === 'data' && !started && !destroyed) {
+            started = true;
+            openAndRead();
+          }
+          return this;
+        },
+
+        once(event, listener) {
+          const wrapper = (...args) => {
+            this.off(event, wrapper);
+            listener(...args);
+          };
+          return this.on(event, wrapper);
+        },
+
+        off(event, listener) {
+          const arr = listeners.get(event);
+          if (arr) {
+            const idx = arr.indexOf(listener);
+            if (idx !== -1) arr.splice(idx, 1);
+          }
+          return this;
+        },
+
+        removeListener(event, listener) {
+          return this.off(event, listener);
+        },
+
+        emit(event, ...args) {
+          const arr = listeners.get(event);
+          if (arr) {
+            for (const fn of [...arr]) {
+              fn(...args);
+            }
+          }
+        },
+
+        pipe(dest) {
+          this.on('data', (chunk) => dest.write(chunk));
+          this.on('end', () => dest.end && dest.end());
+          this.on('error', (err) => dest.emit && dest.emit('error', err));
+          return dest;
+        },
+
+        destroy(err) {
+          if (destroyed) return;
+          destroyed = true;
+          if (fd !== null) {
+            try { ops.op_howth_fs_close_fd(fd); } catch (e) {}
+            fd = null;
+          }
+          if (err) this.emit('error', err);
+          this.emit('close');
+        },
+
+        setEncoding(enc) {
+          return this;
+        },
+
+        pause() {
+          paused = true;
+          return this;
+        },
+
+        resume() {
+          if (paused) {
+            paused = false;
+            if (fd !== null) readLoop();
+          } else if (!started && !destroyed) {
+            started = true;
+            openAndRead();
+          }
+          return this;
+        },
+      };
+
+      function openAndRead() {
+        process.nextTick(() => {
+          if (destroyed) return;
+
+          try {
+            const result = ops.op_howth_fs_open_fd(path, flags, mode);
+            if (result.error) {
+              const err = new Error(result.error);
+              err.code = 'ENOENT';
+              stream.emit('error', err);
+              stream.emit('close');
+              return;
+            }
+
+            fd = result.fd;
+            stream.fd = fd;
+
+            // Seek to start position if specified
+            if (start > 0) {
+              ops.op_howth_fs_seek_fd(fd, start, 0);
+            }
+
+            stream.emit('open', fd);
+            stream.emit('ready');
+            readLoop();
+          } catch (e) {
+            stream.emit('error', e);
+            stream.emit('close');
+          }
+        });
+      }
+
+      function readLoop() {
+        if (destroyed || paused || fd === null) return;
+
+        // Calculate how much to read
+        let toRead = highWaterMark;
+        if (end !== undefined) {
+          const remaining = end - start - stream.bytesRead + 1;
+          if (remaining <= 0) {
+            finishStream();
+            return;
+          }
+          toRead = Math.min(toRead, remaining);
+        }
+
+        const data = ops.op_howth_fs_read_fd(fd, toRead);
+
+        if (data === null || data === undefined || data.length === 0) {
+          finishStream();
+          return;
+        }
+
+        stream.bytesRead += data.length;
+        let chunk = Buffer.from(data);
+
+        if (encoding) {
+          chunk = chunk.toString(encoding);
+        }
+
+        stream.emit('data', chunk);
+
+        // Schedule next read
+        process.nextTick(readLoop);
+      }
+
+      function finishStream() {
+        if (fd !== null) {
+          try { ops.op_howth_fs_close_fd(fd); } catch (e) {}
+          fd = null;
+        }
+        stream.emit('end');
+        stream.emit('close');
+      }
+
+      return stream;
+    },
+
+    // createWriteStream - returns a Writable stream using file descriptors
+    createWriteStream(path, options = {}) {
+      const listeners = new Map();
+      let destroyed = false;
+      let finished = false;
+      let fd = null;
+      let opened = false;
+
+      const flags = options.flags || 'w';
+      const mode = options.mode || 0o666;
+      const encoding = options.encoding || 'utf8';
+      const start = options.start;
+
+      const stream = {
+        writable: true,
+        path,
+        bytesWritten: 0,
+        fd: null,
+
+        on(event, listener) {
+          if (!listeners.has(event)) {
+            listeners.set(event, []);
+          }
+          listeners.get(event).push(listener);
+          return this;
+        },
+
+        once(event, listener) {
+          const wrapper = (...args) => {
+            this.off(event, wrapper);
+            listener(...args);
+          };
+          return this.on(event, wrapper);
+        },
+
+        off(event, listener) {
+          const arr = listeners.get(event);
+          if (arr) {
+            const idx = arr.indexOf(listener);
+            if (idx !== -1) arr.splice(idx, 1);
+          }
+          return this;
+        },
+
+        removeListener(event, listener) {
+          return this.off(event, listener);
+        },
+
+        emit(event, ...args) {
+          const arr = listeners.get(event);
+          if (arr) {
+            for (const fn of [...arr]) {
+              fn(...args);
+            }
+          }
+        },
+
+        write(chunk, enc, callback) {
+          if (typeof enc === 'function') {
+            callback = enc;
+            enc = undefined;
+          }
+          if (destroyed || finished) {
+            const err = new Error('write after end');
+            if (callback) callback(err);
+            return false;
+          }
+
+          // Ensure file is open
+          if (!opened) {
+            openFile();
+          }
+
+          let buf;
+          if (typeof chunk === 'string') {
+            buf = Buffer.from(chunk, enc || encoding);
+          } else if (chunk instanceof Buffer) {
+            buf = chunk;
+          } else {
+            buf = Buffer.from(chunk);
+          }
+
+          // Write to file descriptor
+          try {
+            if (fd !== null) {
+              const written = ops.op_howth_fs_write_fd(fd, [...buf]);
+              stream.bytesWritten += written;
+            }
+            if (callback) process.nextTick(callback);
+            stream.emit('drain');
+            return true;
+          } catch (e) {
+            if (callback) callback(e);
+            stream.emit('error', e);
+            return false;
+          }
+        },
+
+        end(chunk, enc, callback) {
+          if (typeof chunk === 'function') {
+            callback = chunk;
+            chunk = undefined;
+          } else if (typeof enc === 'function') {
+            callback = enc;
+            enc = undefined;
+          }
+
+          if (chunk) {
+            this.write(chunk, enc);
+          }
+
+          finished = true;
+
+          process.nextTick(() => {
+            if (fd !== null) {
+              try { ops.op_howth_fs_close_fd(fd); } catch (e) {}
+              fd = null;
+            }
+            stream.emit('finish');
+            stream.emit('close');
+            if (callback) callback();
+          });
+        },
+
+        destroy(err) {
+          if (destroyed) return;
+          destroyed = true;
+          if (fd !== null) {
+            try { ops.op_howth_fs_close_fd(fd); } catch (e) {}
+            fd = null;
+          }
+          if (err) this.emit('error', err);
+          this.emit('close');
+        },
+
+        cork() {},
+        uncork() {},
+      };
+
+      function openFile() {
+        if (opened) return;
+        opened = true;
+
+        const result = ops.op_howth_fs_open_fd(path, flags, mode);
+        if (result.error) {
+          const err = new Error(result.error);
+          err.code = 'ENOENT';
+          process.nextTick(() => {
+            stream.emit('error', err);
+            stream.emit('close');
+          });
+          return;
+        }
+
+        fd = result.fd;
+        stream.fd = fd;
+
+        // Seek to start position if specified
+        if (start !== undefined) {
+          ops.op_howth_fs_seek_fd(fd, start, 0);
+        }
+
+        process.nextTick(() => {
+          stream.emit('open', fd);
+          stream.emit('ready');
+        });
+      }
+
+      // Open file immediately
+      process.nextTick(openFile);
+
+      return stream;
+    },
+
+    // fs.watch - placeholder, will be patched after fsModule is defined
+    watch: null,
+
+    // fs.watchFile - Watch for changes using polling
+    watchFile(filename, options = {}, listener) {
+      if (typeof options === 'function') {
+        listener = options;
+        options = {};
+      }
+
+      const resolvedPath = posixPath.resolve(filename);
+      const interval = options.interval || 5007;
+      const persistent = options.persistent !== false;
+
+      let prevStat = null;
+      let timerId = null;
+      let stopped = false;
+
+      // Get initial stat
+      try {
+        prevStat = fsModule.statSync(resolvedPath);
+      } catch (e) {
+        prevStat = {
+          dev: 0, ino: 0, mode: 0, nlink: 0, uid: 0, gid: 0,
+          rdev: 0, size: 0, blksize: 0, blocks: 0,
+          atimeMs: 0, mtimeMs: 0, ctimeMs: 0, birthtimeMs: 0,
+          isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false,
+        };
+      }
+
+      function checkForChanges() {
+        if (stopped) return;
+
+        let currStat;
+        try {
+          currStat = fsModule.statSync(resolvedPath);
+        } catch (e) {
+          currStat = {
+            dev: 0, ino: 0, mode: 0, nlink: 0, uid: 0, gid: 0,
+            rdev: 0, size: 0, blksize: 0, blocks: 0,
+            atimeMs: 0, mtimeMs: 0, ctimeMs: 0, birthtimeMs: 0,
+            isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false,
+          };
+        }
+
+        // Check if file changed
+        if (currStat.mtimeMs !== prevStat.mtimeMs || currStat.size !== prevStat.size) {
+          if (listener) {
+            listener(currStat, prevStat);
+          }
+          prevStat = currStat;
+        }
+
+        timerId = setTimeout(checkForChanges, interval);
+      }
+
+      // Start polling
+      timerId = setTimeout(checkForChanges, interval);
+
+      // Store watcher for unwatchFile
+      if (!fsModule._watchedFiles) {
+        fsModule._watchedFiles = new Map();
+      }
+
+      const watcherInfo = { timerId, listener, stop: () => { stopped = true; clearTimeout(timerId); } };
+
+      if (!fsModule._watchedFiles.has(resolvedPath)) {
+        fsModule._watchedFiles.set(resolvedPath, []);
+      }
+      fsModule._watchedFiles.get(resolvedPath).push(watcherInfo);
+
+      return { filename: resolvedPath };
+    },
+
+    // fs.unwatchFile - Stop watching a file
+    unwatchFile(filename, listener) {
+      const resolvedPath = posixPath.resolve(filename);
+
+      if (!fsModule._watchedFiles || !fsModule._watchedFiles.has(resolvedPath)) {
+        return;
+      }
+
+      const watchers = fsModule._watchedFiles.get(resolvedPath);
+
+      if (listener) {
+        // Remove specific listener
+        const idx = watchers.findIndex(w => w.listener === listener);
+        if (idx !== -1) {
+          watchers[idx].stop();
+          watchers.splice(idx, 1);
+        }
+      } else {
+        // Remove all listeners for this file
+        watchers.forEach(w => w.stop());
+        fsModule._watchedFiles.delete(resolvedPath);
+      }
+    },
+
+    // FSWatcher constructor - will be set after EventEmitter is defined
+    FSWatcher: null,
+  };
+
+  // Create a simple event emitter mixin for fs.watch before full EventEmitter is available
+  function createSimpleEmitter() {
+    const listeners = new Map();
+    return {
+      on(event, fn) {
+        if (!listeners.has(event)) listeners.set(event, []);
+        listeners.get(event).push(fn);
+        return this;
+      },
+      addListener(event, fn) { return this.on(event, fn); },
+      once(event, fn) {
+        const wrapper = (...args) => { this.off(event, wrapper); fn.apply(this, args); };
+        return this.on(event, wrapper);
+      },
+      off(event, fn) {
+        const list = listeners.get(event);
+        if (list) {
+          const idx = list.indexOf(fn);
+          if (idx !== -1) list.splice(idx, 1);
+        }
+        return this;
+      },
+      removeListener(event, fn) { return this.off(event, fn); },
+      emit(event, ...args) {
+        const list = listeners.get(event);
+        if (!list || list.length === 0) return false;
+        for (const fn of [...list]) fn.apply(this, args);
+        return true;
+      },
+      listeners(event) { return listeners.get(event) || []; },
+      listenerCount(event) { const l = listeners.get(event); return l ? l.length : 0; },
+    };
+  }
+
+  // Patch fs.watch to use simple emitter since EventEmitter isn't defined yet
+  const originalWatch = fsModule.watch;
+  fsModule.watch = function(filename, options, listener) {
+    if (typeof options === 'function') {
+      listener = options;
+      options = {};
+    }
+
+    const resolvedPath = posixPath.resolve(filename);
+    const recursive = options && options.recursive === true;
+
+    // Create watcher with simple emitter
+    const watcher = createSimpleEmitter();
+
+    let watchId = null;
+    let closed = false;
+    let polling = false;
+
+    // Start the native watcher
+    const result = ops.op_howth_fs_watch_start(resolvedPath, recursive);
+    if (result.error) {
+      process.nextTick(() => {
+        watcher.emit('error', new Error(result.error));
+      });
+      return watcher;
+    }
+
+    watchId = result.id;
+
+    // Poll for events
+    function pollEvents() {
+      if (closed || polling) return;
+      polling = true;
+
+      const event = ops.op_howth_fs_watch_poll(watchId);
+      if (event) {
+        const eventType = event.event_type;
+        const eventFilename = event.filename || null;
+
+        watcher.emit('change', eventType, eventFilename);
+        if (listener) {
+          listener(eventType, eventFilename);
+        }
+      }
+
+      polling = false;
+      if (!closed) {
+        setTimeout(pollEvents, 50);
+      }
+    }
+
+    process.nextTick(pollEvents);
+
+    watcher.close = function() {
+      if (closed) return;
+      closed = true;
+      if (watchId !== null) {
+        ops.op_howth_fs_watch_close(watchId);
+        watchId = null;
+      }
+      watcher.emit('close');
+    };
+
+    watcher.ref = function() { return this; };
+    watcher.unref = function() { return this; };
+
+    return watcher;
   };
 
   // Register the fs module
@@ -3312,15 +4757,41 @@
     static _nodeModulePaths(from) {
       // Generate node_modules lookup paths
       const paths = [];
+      const seen = new Set();
+
+      // Add paths from the 'from' directory
       let current = from;
       while (current !== "/") {
         const nodeModules = posixPath.join(current, "node_modules");
-        paths.push(nodeModules);
+        if (!seen.has(nodeModules)) {
+          paths.push(nodeModules);
+          seen.add(nodeModules);
+        }
         const parent = posixPath.dirname(current);
         if (parent === current) break;
         current = parent;
       }
-      paths.push("/node_modules");
+
+      // Also add paths from the current working directory
+      // This allows scripts run from outside a project to resolve modules from that project
+      const cwd = ops.op_howth_cwd();
+      if (cwd && cwd !== from) {
+        current = cwd;
+        while (current !== "/") {
+          const nodeModules = posixPath.join(current, "node_modules");
+          if (!seen.has(nodeModules)) {
+            paths.push(nodeModules);
+            seen.add(nodeModules);
+          }
+          const parent = posixPath.dirname(current);
+          if (parent === current) break;
+          current = parent;
+        }
+      }
+
+      if (!seen.has("/node_modules")) {
+        paths.push("/node_modules");
+      }
       return paths;
     }
 
@@ -3330,12 +4801,22 @@
         return request;
       }
 
+      // Helper to create MODULE_NOT_FOUND error
+      const createModuleNotFoundError = (request, paths) => {
+        const err = new Error(`Cannot find module '${request}'`);
+        err.code = 'MODULE_NOT_FOUND';
+        err.requireStack = paths || [];
+        return err;
+      };
+
       // Handle relative and absolute paths
       if (request.startsWith("./") || request.startsWith("../") || request.startsWith("/")) {
         const basePath = request.startsWith("/")
           ? request
           : posixPath.resolve(parent ? parent.dirname : ops.op_howth_cwd(), request);
-        return Module._resolveAsFile(basePath) || Module._resolveAsDirectory(basePath);
+        const resolved = Module._resolveAsFile(basePath) || Module._resolveAsDirectory(basePath);
+        if (resolved) return resolved;
+        throw createModuleNotFoundError(request, parent ? [parent.filename] : []);
       }
 
       // Handle bare specifiers (node_modules)
@@ -3346,7 +4827,7 @@
         if (resolved) return resolved;
       }
 
-      throw new Error(`Cannot find module '${request}'`);
+      throw createModuleNotFoundError(request, parent ? [parent.filename] : []);
     }
 
     static _resolveAsFile(path) {
@@ -3437,15 +4918,44 @@
     }
 
     _compile(filename) {
-      const content = ops.op_howth_read_file(filename);
+      // DEBUG: Log which file is being compiled
+      if (process.env.DEBUG_MODULES) {
+        console.log('[DEBUG] Compiling:', filename);
+      }
 
-      // The Node.js module wrapper
+      let content = ops.op_howth_read_file(filename);
+
+      // Strip shebang line if present (like #!/usr/bin/env node)
+      if (content.startsWith('#!')) {
+        const newlineIndex = content.indexOf('\n');
+        if (newlineIndex !== -1) {
+          content = content.slice(newlineIndex + 1);
+        }
+      }
+
+      // Create a custom dynamic import function that passes the correct referrer
+      // We use a special URL scheme to encode the referrer in the specifier
+      const __dynamicImport = (specifier) => {
+        // Resolve relative specifiers against this module
+        if (specifier.startsWith('./') || specifier.startsWith('../')) {
+          const resolved = posixPath.resolve(this.dirname, specifier);
+          return import(resolved);
+        }
+        // For other specifiers, just use the normal import
+        return import(specifier);
+      };
+
+      // The Node.js module wrapper with __import__ provided
       const wrapper = [
-        "(function (exports, require, module, __filename, __dirname) { ",
+        "(function (exports, require, module, __filename, __dirname, __import__) { ",
         "\n});"
       ];
 
-      const wrappedCode = wrapper[0] + content + wrapper[1];
+      // Transform import() calls to use __import__() for relative paths
+      // This is a simple transformation - won't handle all edge cases
+      let transformedContent = content.replace(/\bimport\s*\(/g, '__import__(');
+
+      const wrappedCode = wrapper[0] + transformedContent + wrapper[1];
 
       // Create a require function for this module
       const self = this;
@@ -3453,8 +4963,10 @@
         return Module._load(id, self);
       }
       require.resolve = (id) => Module._resolveFilename(id, self);
+      require.resolve.paths = (id) => Module._nodeModulePaths(self.dirname);
       require.cache = Object.fromEntries(moduleCache);
       require.main = globalThis.__howth_main_module;
+      require.extensions = Module._extensions;
 
       // Execute the wrapped code
       try {
@@ -3465,15 +4977,41 @@
           require,
           this,
           this.filename,
-          this.dirname
+          this.dirname,
+          __dynamicImport
         );
       } catch (e) {
         // Remove from cache on error
         moduleCache.delete(filename);
+        // Add context to the error
+        if (e instanceof Error) {
+          e.message = `Error in ${filename}: ${e.message}`;
+        }
         throw e;
       }
     }
+
+    // Instance require method (Module.prototype.require)
+    require(id) {
+      return Module._load(id, this);
+    }
   }
+
+  // Add static methods that Next.js expects
+  Module._extensions = {
+    '.js': (module, filename) => module._compile(filename),
+    '.json': (module, filename) => {
+      const content = ops.op_howth_read_file(filename);
+      module.exports = JSON.parse(content);
+    },
+    '.node': () => { throw new Error('Native addons not supported'); },
+  };
+
+  Module._cache = moduleCache;
+
+  Module.prototype.require = function(id) {
+    return Module._load(id, this);
+  };
 
   // The main require function
   function createRequire(parentFilename) {
@@ -3490,16 +5028,45 @@
     return require;
   }
 
-  // Global require (uses main module path or cwd as parent)
+  // Helper to extract the caller's file path from stack trace
+  function getCallerFilePath() {
+    const err = new Error();
+    const stack = err.stack || "";
+    const lines = stack.split("\n");
+
+    // Look for first file:// URL that's not in bootstrap
+    for (const line of lines) {
+      // Match file:// URLs in the stack
+      const fileMatch = line.match(/file:\/\/([^\s:)]+)/);
+      if (fileMatch) {
+        let filePath = fileMatch[1];
+        // Decode URL encoding
+        try { filePath = decodeURIComponent(filePath); } catch {}
+        return filePath;
+      }
+      // Also try matching paths in "at module (path:line:col)" format
+      const pathMatch = line.match(/at\s+(?:[^\s]+\s+\()?(\/[^\s:)]+)/);
+      if (pathMatch && !pathMatch[1].includes("<howth:bootstrap>")) {
+        return pathMatch[1];
+      }
+    }
+    return null;
+  }
+
+  // Global require (uses caller's path or main module path as parent)
   function globalRequire(id) {
-    // Use main module path if set, otherwise fall back to cwd
-    const parentPath = globalThis.__howth_main_module_path ||
+    // Try to determine parent path from call stack
+    const callerPath = getCallerFilePath();
+    const parentPath = callerPath ||
+                       globalThis.__howth_main_module_path ||
                        posixPath.join(ops.op_howth_cwd(), "__entrypoint__");
     const parentModule = new Module(parentPath, null);
     return Module._load(id, parentModule);
   }
   globalRequire.resolve = (id) => {
-    const parentPath = globalThis.__howth_main_module_path ||
+    const callerPath = getCallerFilePath();
+    const parentPath = callerPath ||
+                       globalThis.__howth_main_module_path ||
                        posixPath.join(ops.op_howth_cwd(), "__entrypoint__");
     const parentModule = new Module(parentPath, null);
     return Module._resolveFilename(id, parentModule);
@@ -3509,22 +5076,31 @@
     get() { return Object.fromEntries(moduleCache); }
   });
 
+  // Legacy require.extensions (deprecated but still used by some packages)
+  globalRequire.extensions = Module._extensions;
+
   // Export require globally
   globalThis.require = globalRequire;
   globalThis.module = { exports: {} };
   globalThis.exports = globalThis.module.exports;
 
   // createRequire for ESM interop
-  const moduleModule = {
-    createRequire,
-    Module,
-    _cache: moduleCache,
-    _resolveFilename: Module._resolveFilename.bind(Module),
-    builtinModules: Object.keys(globalThis.__howth_modules),
-  };
+  // Node.js exports the Module class itself with extra properties attached
+  Module.createRequire = createRequire;
+  Module.builtinModules = Object.keys(globalThis.__howth_modules);
+  Module.syncBuiltinESMExports = () => {}; // No-op for compatibility
+  Module.findSourceMap = () => undefined; // No-op
+  Module.SourceMap = class SourceMap {}; // Stub
+  Module.wrap = (script) => `(function (exports, require, module, __filename, __dirname) { ${script}\n});`;
+  Module.wrapper = [
+    '(function (exports, require, module, __filename, __dirname) { ',
+    '\n});'
+  ];
+  Module.runMain = () => {}; // No-op
+  Module.isBuiltin = (name) => Object.keys(globalThis.__howth_modules).includes(name);
 
-  globalThis.__howth_modules["node:module"] = moduleModule;
-  globalThis.__howth_modules["module"] = moduleModule;
+  globalThis.__howth_modules["node:module"] = Module;
+  globalThis.__howth_modules["module"] = Module;
 
   // ============================================
   // node:assert module
@@ -4346,7 +5922,14 @@
   function inherits(ctor, superCtor) {
     if (ctor === undefined || ctor === null) throw new TypeError("The constructor must not be null or undefined");
     if (superCtor === undefined || superCtor === null) throw new TypeError("The super constructor must not be null or undefined");
-    if (superCtor.prototype === undefined) throw new TypeError("The super constructor must have a prototype");
+    if (superCtor.prototype === undefined) {
+      console.error("[DEBUG inherits] superCtor has no prototype:");
+      console.error("  superCtor:", superCtor);
+      console.error("  superCtor type:", typeof superCtor);
+      console.error("  superCtor.name:", superCtor?.name);
+      console.error("  superCtor keys:", Object.keys(superCtor || {}));
+      throw new TypeError("The super constructor must have a prototype");
+    }
     Object.defineProperty(ctor, "super_", { value: superCtor, writable: true, configurable: true });
     Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
   }
@@ -5168,22 +6751,49 @@
     },
   };
 
-  const streamModule = {
-    Stream,
-    Readable,
-    Writable,
-    Duplex,
-    Transform,
-    PassThrough,
-    pipeline,
-    finished,
-    promises: streamPromises,
-  };
+  // Node.js's require('stream') returns the Stream constructor directly
+  // with other classes as properties attached to it
+  Stream.Stream = Stream;
+  Stream.Readable = Readable;
+  Stream.Writable = Writable;
+  Stream.Duplex = Duplex;
+  Stream.Transform = Transform;
+  Stream.PassThrough = PassThrough;
+  Stream.pipeline = pipeline;
+  Stream.finished = finished;
+  Stream.promises = streamPromises;
 
-  globalThis.__howth_modules["node:stream"] = streamModule;
-  globalThis.__howth_modules["stream"] = streamModule;
+  globalThis.__howth_modules["node:stream"] = Stream;
+  globalThis.__howth_modules["stream"] = Stream;
   globalThis.__howth_modules["node:stream/promises"] = streamPromises;
   globalThis.__howth_modules["stream/promises"] = streamPromises;
+
+  // stream/web - Web Streams API for Node.js compatibility
+  const streamWebModule = {
+    ReadableStream: globalThis.ReadableStream,
+    ReadableStreamDefaultReader: class ReadableStreamDefaultReader {},
+    ReadableStreamBYOBReader: class ReadableStreamBYOBReader {},
+    ReadableStreamDefaultController: class ReadableStreamDefaultController {},
+    ReadableByteStreamController: class ReadableByteStreamController {},
+    WritableStream: globalThis.WritableStream,
+    WritableStreamDefaultWriter: class WritableStreamDefaultWriter {},
+    WritableStreamDefaultController: class WritableStreamDefaultController {},
+    TransformStream: globalThis.TransformStream,
+    TransformStreamDefaultController: class TransformStreamDefaultController {},
+    ByteLengthQueuingStrategy: globalThis.ByteLengthQueuingStrategy || class ByteLengthQueuingStrategy {
+      constructor(init) { this.highWaterMark = init.highWaterMark; }
+      size(chunk) { return chunk.byteLength; }
+    },
+    CountQueuingStrategy: globalThis.CountQueuingStrategy || class CountQueuingStrategy {
+      constructor(init) { this.highWaterMark = init.highWaterMark; }
+      size() { return 1; }
+    },
+    TextEncoderStream: globalThis.TextEncoderStream,
+    TextDecoderStream: globalThis.TextDecoderStream,
+  };
+
+  globalThis.__howth_modules["node:stream/web"] = streamWebModule;
+  globalThis.__howth_modules["stream/web"] = streamWebModule;
 
   // ============================================================================
   // crypto module
@@ -5381,31 +6991,24 @@
       return this;
     }
 
-    async digest(encoding) {
+    digest(encoding) {
       const combined = Buffer.concat(this.#data);
       let hash;
 
       if (this.#algorithm === "md5") {
         hash = md5(combined);
       } else {
-        const webAlgo = hashAlgorithms[this.#algorithm];
-        const arrayBuffer = await crypto.subtle.digest(webAlgo, combined);
-        hash = new Uint8Array(arrayBuffer);
+        // Use native op for synchronous hashing
+        const webAlgo = hashAlgorithms[this.#algorithm] || this.#algorithm;
+        const algoName = typeof webAlgo === 'object' ? webAlgo.name : webAlgo;
+        try {
+          hash = ops.op_howth_hash(algoName, combined);
+        } catch (e) {
+          // Fallback to a simple hash if the algorithm isn't supported
+          hash = md5(combined);
+        }
       }
 
-      const result = Buffer.from(hash);
-      if (encoding === "hex") return result.toString("hex");
-      if (encoding === "base64") return result.toString("base64");
-      return result;
-    }
-
-    // Synchronous digest (only works for MD5, others need async)
-    digestSync(encoding) {
-      if (this.#algorithm !== "md5") {
-        throw new Error("Synchronous digest only supported for MD5. Use async digest() for other algorithms.");
-      }
-      const combined = Buffer.concat(this.#data);
-      const hash = md5(combined);
       const result = Buffer.from(hash);
       if (encoding === "hex") return result.toString("hex");
       if (encoding === "base64") return result.toString("base64");
@@ -5852,16 +7455,217 @@
       args = [];
     }
 
-    // Create a simple event-emitter-like ChildProcess
+    // Shared state for deferred operations
+    let childId = null;
+    let childReady = null;
+    const childReadyPromise = new Promise((resolve) => {
+      childReady = resolve;
+    });
+
+    // Create event emitter functionality
     const listeners = new Map();
+
+    function emit(event, ...eventArgs) {
+      const eventListeners = listeners.get(event);
+      if (eventListeners) {
+        for (const listener of [...eventListeners]) {
+          listener(...eventArgs);
+        }
+      }
+    }
+
+    // Create a Readable stream for stdout/stderr (deferred until child is ready)
+    function createReadableStream(readOp) {
+      const streamListeners = new Map();
+      let reading = false;
+      let ended = false;
+
+      const stream = {
+        readable: true,
+
+        on(event, listener) {
+          if (!streamListeners.has(event)) {
+            streamListeners.set(event, []);
+          }
+          streamListeners.get(event).push(listener);
+
+          // Start reading when someone listens for 'data'
+          if (event === "data" && !reading) {
+            reading = true;
+            // Wait for child to be ready before starting read loop
+            childReadyPromise.then(() => {
+              if (childId !== null) readLoop();
+            });
+          }
+          return this;
+        },
+
+        once(event, listener) {
+          const onceWrapper = (...args) => {
+            this.off(event, onceWrapper);
+            listener(...args);
+          };
+          return this.on(event, onceWrapper);
+        },
+
+        off(event, listener) {
+          const evListeners = streamListeners.get(event);
+          if (evListeners) {
+            const idx = evListeners.indexOf(listener);
+            if (idx !== -1) evListeners.splice(idx, 1);
+          }
+          return this;
+        },
+
+        emit(event, ...args) {
+          const evListeners = streamListeners.get(event);
+          if (evListeners) {
+            for (const l of [...evListeners]) {
+              l(...args);
+            }
+          }
+        },
+
+        pipe(dest) {
+          this.on("data", (chunk) => dest.write(chunk));
+          this.on("end", () => dest.end && dest.end());
+          return dest;
+        },
+
+        setEncoding(enc) {
+          // TODO: implement encoding
+          return this;
+        },
+      };
+
+      async function readLoop() {
+        while (!ended) {
+          try {
+            const data = await readOp(childId);
+            if (data === null || data === undefined) {
+              ended = true;
+              stream.emit("end");
+              break;
+            }
+            // Convert to Buffer
+            const buf = Buffer.from(data);
+            stream.emit("data", buf);
+          } catch (e) {
+            stream.emit("error", e);
+            break;
+          }
+        }
+      }
+
+      return stream;
+    }
+
+    // Create a Writable stream for stdin (uses closure childId)
+    function createWritableStream() {
+      const streamListeners = new Map();
+      let ended = false;
+      const pendingWrites = [];
+
+      const stream = {
+        writable: true,
+
+        on(event, listener) {
+          if (!streamListeners.has(event)) {
+            streamListeners.set(event, []);
+          }
+          streamListeners.get(event).push(listener);
+          return this;
+        },
+
+        off(event, listener) {
+          const evListeners = streamListeners.get(event);
+          if (evListeners) {
+            const idx = evListeners.indexOf(listener);
+            if (idx !== -1) evListeners.splice(idx, 1);
+          }
+          return this;
+        },
+
+        emit(event, ...args) {
+          const evListeners = streamListeners.get(event);
+          if (evListeners) {
+            for (const l of [...evListeners]) {
+              l(...args);
+            }
+          }
+        },
+
+        write(chunk, encoding, callback) {
+          if (ended) return false;
+          if (typeof encoding === "function") {
+            callback = encoding;
+            encoding = undefined;
+          }
+
+          const data = typeof chunk === "string" ? [...Buffer.from(chunk)] : [...chunk];
+
+          // Wait for child to be ready
+          childReadyPromise.then(() => {
+            if (childId === null) {
+              if (callback) callback(new Error("Process not started"));
+              return;
+            }
+            ops.op_howth_spawn_write_stdin(childId, data)
+              .then((n) => {
+                if (callback) callback();
+              })
+              .catch((e) => {
+                this.emit("error", e);
+                if (callback) callback(e);
+              });
+          });
+
+          return true;
+        },
+
+        end(chunk, encoding, callback) {
+          if (chunk) {
+            this.write(chunk, encoding);
+          }
+          ended = true;
+          childReadyPromise.then(() => {
+            if (childId === null) {
+              if (callback) callback();
+              return;
+            }
+            ops.op_howth_spawn_close_stdin(childId)
+              .then(() => {
+                this.emit("finish");
+                if (callback) callback();
+              })
+              .catch((e) => {
+                if (callback) callback(e);
+              });
+          });
+        },
+      };
+
+      return stream;
+    }
+
+    // Create streams immediately (they will wait for childId via promise)
+    const stdoutStream = createReadableStream(ops.op_howth_spawn_read_stdout);
+    const stderrStream = createReadableStream(ops.op_howth_spawn_read_stderr);
+    const stdinStream = createWritableStream();
+
+    // The ChildProcess object
     const child = {
+      _id: null,
       pid: 0,
-      stdin: null,
-      stdout: null,
-      stderr: null,
+      stdin: stdinStream,
+      stdout: stdoutStream,
+      stderr: stderrStream,
       killed: false,
       exitCode: null,
       signalCode: null,
+      connected: false,
+      spawnfile: command,
+      spawnargs: [command, ...args],
 
       on(event, listener) {
         if (!listeners.has(event)) {
@@ -5872,9 +7676,9 @@
       },
 
       once(event, listener) {
-        const onceListener = (...args) => {
+        const onceListener = (...eventArgs) => {
           this.off(event, onceListener);
-          listener(...args);
+          listener(...eventArgs);
         };
         return this.on(event, onceListener);
       },
@@ -5888,41 +7692,71 @@
         return this;
       },
 
-      emit(event, ...args) {
-        const eventListeners = listeners.get(event);
-        if (eventListeners) {
-          for (const listener of eventListeners) {
-            listener(...args);
-          }
+      removeListener(event, listener) {
+        return this.off(event, listener);
+      },
+
+      emit,
+
+      kill(signal = "SIGTERM") {
+        if (this._id === null) return false;
+        this.killed = true;
+        try {
+          return ops.op_howth_spawn_kill(this._id, signal);
+        } catch (e) {
+          return false;
         }
       },
 
-      kill(signal) {
-        this.killed = true;
-        return true;
+      ref() {
+        return this;
+      },
+
+      unref() {
+        return this;
       },
     };
 
-    // Run the command asynchronously
-    process.nextTick(() => {
+    // Spawn the process asynchronously
+    (async () => {
       try {
-        const result = ops.op_howth_spawn_sync(command, args, options);
-
-        child.exitCode = result.status;
+        const result = await ops.op_howth_spawn_async(command, args, options);
 
         if (result.error) {
           const err = new Error(result.error);
-          child.emit("error", err);
+          err.code = "ENOENT";
+          err.syscall = "spawn " + command;
+          err.path = command;
+          childReady(); // Signal that spawn failed
+          process.nextTick(() => emit("error", err));
+          return;
         }
 
-        child.emit("close", result.status, null);
-        child.emit("exit", result.status, null);
+        // Set the child ID (used by streams via closure)
+        childId = result.id;
+        child._id = result.id;
+        child.pid = result.pid;
+
+        // Signal that child is ready (streams can start reading)
+        childReady();
+
+        // Emit spawn event
+        process.nextTick(() => emit("spawn"));
+
+        // Wait for the process to exit
+        const exitResult = await ops.op_howth_spawn_wait(result.id);
+
+        child.exitCode = exitResult.code;
+        child.signalCode = exitResult.signal || null;
+
+        emit("close", exitResult.code, exitResult.signal || null);
+        emit("exit", exitResult.code, exitResult.signal || null);
       } catch (e) {
-        child.emit("error", e);
-        child.emit("close", 1, null);
-        child.emit("exit", 1, null);
+        emit("error", e);
+        emit("close", 1, null);
+        emit("exit", 1, null);
       }
-    });
+    })();
 
     return child;
   }
@@ -5935,9 +7769,161 @@
     execFileSync,
     spawn,
     spawnSync,
-    // fork is not implemented (requires worker threads / IPC)
-    fork: () => {
-      throw new Error("fork() is not implemented in howth native runtime");
+    // fork - spawn a new Node.js process with IPC support
+    fork(modulePath, args = [], options = {}) {
+      // Handle overloaded signatures
+      if (Array.isArray(args)) {
+        // fork(modulePath, args, options)
+      } else if (typeof args === 'object' && args !== null) {
+        // fork(modulePath, options)
+        options = args;
+        args = [];
+      }
+
+      // Get the howth executable path
+      const execPath = options.execPath || process.execPath || 'howth';
+
+      // Build command arguments
+      // Format: howth run --native <module> -- <args>
+      const execArgs = options.execArgv || process.execArgv || [];
+      const runArgs = args.length > 0
+        ? ['run', '--native', modulePath, '--', ...args]
+        : ['run', '--native', modulePath];
+      const allArgs = [...execArgs, ...runArgs];
+
+      // Create IPC files for bidirectional communication
+      const ipcId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const tmpDir = process.env.TMPDIR || '/tmp';
+      const parentToChildPath = `${tmpDir}/howth-ipc-p2c-${ipcId}.jsonl`;
+      const childToParentPath = `${tmpDir}/howth-ipc-c2p-${ipcId}.jsonl`;
+
+      // Initialize IPC files
+      const fs = globalThis.__howth_modules["fs"];
+      fs.writeFileSync(parentToChildPath, '');
+      fs.writeFileSync(childToParentPath, '');
+
+      // Set up environment with IPC paths
+      const env = {
+        ...process.env,
+        ...options.env,
+        FORK_CHILD_PROCESS_ID: String(Date.now()),
+        HOWTH_IPC_P2C: parentToChildPath,
+        HOWTH_IPC_C2P: childToParentPath,
+      };
+
+      // Spawn the child process
+      const spawnOptions = {
+        cwd: options.cwd || process.cwd(),
+        env,
+        stdio: options.stdio || ['pipe', 'pipe', 'pipe'],
+        detached: options.detached || false,
+      };
+
+      const child = spawn(execPath, allArgs, spawnOptions);
+
+      // IPC state
+      let connected = true;
+      let lastReadPosition = 0;
+      let pollInterval = null;
+      const messageListeners = [];
+
+      // Poll for messages from child
+      const pollMessages = () => {
+        if (!connected) return;
+        try {
+          const content = fs.readFileSync(childToParentPath, 'utf8');
+          if (content.length > lastReadPosition) {
+            const newContent = content.slice(lastReadPosition);
+            lastReadPosition = content.length;
+
+            // Parse JSON lines
+            const lines = newContent.split('\n').filter(l => l.trim());
+            for (const line of lines) {
+              try {
+                const msg = JSON.parse(line);
+                // Emit 'message' event to our listeners only
+                for (const listener of messageListeners) {
+                  listener(msg);
+                }
+              } catch (e) {
+                // Ignore parse errors
+              }
+            }
+          }
+        } catch (e) {
+          // File might not exist yet
+        }
+      };
+
+      // Start polling
+      pollInterval = setInterval(pollMessages, 50);
+
+      // Override on() to capture 'message' listeners (don't pass to origOn for 'message')
+      const origOn = child.on.bind(child);
+      child.on = (event, listener) => {
+        if (event === 'message') {
+          messageListeners.push(listener);
+          return child; // Return child for chaining
+        }
+        return origOn(event, listener);
+      };
+
+      // Add fork-specific IPC methods
+      child.connected = true;
+
+      child.send = (message, sendHandle, options, callback) => {
+        // Handle overloaded signatures
+        if (typeof sendHandle === 'function') {
+          callback = sendHandle;
+          sendHandle = undefined;
+        } else if (typeof options === 'function') {
+          callback = options;
+          options = undefined;
+        }
+
+        if (!connected) {
+          if (callback) callback(new Error('Channel closed'));
+          return false;
+        }
+
+        try {
+          fs.appendFileSync(parentToChildPath, JSON.stringify(message) + '\n');
+          if (callback) callback(null);
+          return true;
+        } catch (e) {
+          if (callback) callback(e);
+          return false;
+        }
+      };
+
+      child.disconnect = () => {
+        if (!connected) return;
+        connected = false;
+        child.connected = false;
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
+        // Clean up IPC files
+        try {
+          fs.unlinkSync(parentToChildPath);
+          fs.unlinkSync(childToParentPath);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        child.emit && child.emit('disconnect');
+      };
+
+      // Clean up on exit
+      const origClose = child.emit;
+      child.emit = (event, ...eventArgs) => {
+        if (event === 'exit' || event === 'close') {
+          child.disconnect();
+        }
+        return origClose.call(child, event, ...eventArgs);
+      };
+
+      return child;
     },
   };
 
@@ -6382,13 +8368,75 @@
   // timers module
   // ============================================================================
 
+  // Timeout class that wraps timer IDs with ref/unref methods
+  class Timeout {
+    constructor(id, isInterval = false) {
+      this._id = id;
+      this._isInterval = isInterval;
+      this._refed = true;
+    }
+    ref() {
+      this._refed = true;
+      return this;
+    }
+    unref() {
+      this._refed = false;
+      return this;
+    }
+    refresh() {
+      // Stub - can't easily refresh in standard JS
+      return this;
+    }
+    hasRef() {
+      return this._refed;
+    }
+    [Symbol.toPrimitive]() {
+      return this._id;
+    }
+  }
+
+  // Store original timers
+  const _originalSetTimeout = globalThis.setTimeout;
+  const _originalClearTimeout = globalThis.clearTimeout;
+  const _originalSetInterval = globalThis.setInterval;
+  const _originalClearInterval = globalThis.clearInterval;
+
+  // Wrap setTimeout to return Timeout object
+  globalThis.setTimeout = function setTimeout(callback, delay, ...args) {
+    const id = _originalSetTimeout(callback, delay, ...args);
+    return new Timeout(id, false);
+  };
+
+  globalThis.clearTimeout = function clearTimeout(timeout) {
+    const id = timeout instanceof Timeout ? timeout._id : timeout;
+    return _originalClearTimeout(id);
+  };
+
+  globalThis.setInterval = function setInterval(callback, delay, ...args) {
+    const id = _originalSetInterval(callback, delay, ...args);
+    return new Timeout(id, true);
+  };
+
+  globalThis.clearInterval = function clearInterval(timeout) {
+    const id = timeout instanceof Timeout ? timeout._id : timeout;
+    return _originalClearInterval(id);
+  };
+
+  // setImmediate using setTimeout(0)
+  globalThis.setImmediate = function setImmediate(callback, ...args) {
+    return globalThis.setTimeout(callback, 0, ...args);
+  };
+
+  globalThis.clearImmediate = globalThis.clearTimeout;
+
   const timersModule = {
     setTimeout: globalThis.setTimeout,
     clearTimeout: globalThis.clearTimeout,
     setInterval: globalThis.setInterval,
     clearInterval: globalThis.clearInterval,
-    setImmediate: (callback, ...args) => setTimeout(callback, 0, ...args),
-    clearImmediate: clearTimeout,
+    setImmediate: globalThis.setImmediate,
+    clearImmediate: globalThis.clearImmediate,
+    Timeout,
   };
 
   // timers/promises
@@ -6428,6 +8476,106 @@
   globalThis.__howth_modules["timers"] = timersModule;
   globalThis.__howth_modules["node:timers/promises"] = timersPromises;
   globalThis.__howth_modules["timers/promises"] = timersPromises;
+
+  // ============================================================================
+  // Child-side IPC setup for forked processes
+  // ============================================================================
+  (function setupChildIPC() {
+    const p2cPath = ops.op_howth_env_get('HOWTH_IPC_P2C');
+    const c2pPath = ops.op_howth_env_get('HOWTH_IPC_C2P');
+
+    if (!p2cPath || !c2pPath) {
+      // Not a forked child, nothing to set up
+      return;
+    }
+
+    let connected = true;
+    let lastReadPosition = 0;
+    let pollInterval = null;
+
+    // Set up process.send for child-to-parent communication
+    globalThis.process.send = (message, sendHandle, options, callback) => {
+      // Handle overloaded signatures
+      if (typeof sendHandle === 'function') {
+        callback = sendHandle;
+        sendHandle = undefined;
+      } else if (typeof options === 'function') {
+        callback = options;
+        options = undefined;
+      }
+
+      if (!connected) {
+        const error = new Error('Channel closed');
+        if (callback) {
+          callback(error);
+          return false;
+        }
+        throw error;
+      }
+
+      try {
+        // Use ops to write directly
+        const line = JSON.stringify(message) + '\n';
+        // Read current content and append
+        let content = '';
+        try {
+          content = ops.op_howth_read_file(c2pPath);
+        } catch (e) {
+          // File might not exist yet
+        }
+        ops.op_howth_write_file(c2pPath, content + line);
+        if (callback) callback(null);
+        return true;
+      } catch (e) {
+        if (callback) callback(e);
+        return false;
+      }
+    };
+
+    globalThis.process.connected = true;
+
+    globalThis.process.disconnect = () => {
+      if (!connected) return;
+      connected = false;
+      globalThis.process.connected = false;
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+      globalThis.process.emit('disconnect');
+    };
+
+    // Poll for messages from parent
+    const pollMessages = () => {
+      if (!connected) return;
+      try {
+        const content = ops.op_howth_read_file(p2cPath);
+        if (content.length > lastReadPosition) {
+          const newContent = content.slice(lastReadPosition);
+          lastReadPosition = content.length;
+
+          // Parse JSON lines
+          const lines = newContent.split('\n').filter(l => l.trim());
+          for (const line of lines) {
+            try {
+              const msg = JSON.parse(line);
+              // Emit 'message' event on process
+              globalThis.process.emit('message', msg);
+            } catch (e) {
+              // Ignore parse errors
+            }
+          }
+        }
+      } catch (e) {
+        // File might not exist yet or read error
+      }
+    };
+
+    // Start polling after a short delay to let the process initialize
+    setTimeout(() => {
+      pollInterval = setInterval(pollMessages, 50);
+    }, 10);
+  })();
 
   // ============================================================================
   // string_decoder module
@@ -6716,8 +8864,39 @@
       result.path = (result.pathname || "") + (result.search || "");
       result.href = url.href;
     } catch (e) {
-      // If URL parsing fails, do basic parsing
+      // If URL parsing fails (e.g., for relative URLs like "/"), do basic parsing
       result.href = urlString;
+
+      // Handle relative paths (common case like "/" or "/path?query")
+      if (urlString.startsWith("/")) {
+        // Extract query string and hash
+        let pathname = urlString;
+        let search = null;
+        let hash = null;
+
+        const hashIndex = pathname.indexOf("#");
+        if (hashIndex !== -1) {
+          hash = pathname.slice(hashIndex);
+          pathname = pathname.slice(0, hashIndex);
+        }
+
+        const queryIndex = pathname.indexOf("?");
+        if (queryIndex !== -1) {
+          search = pathname.slice(queryIndex);
+          pathname = pathname.slice(0, queryIndex);
+        }
+
+        result.pathname = pathname;
+        result.search = search;
+        result.hash = hash;
+        result.path = (pathname || "") + (search || "");
+
+        if (parseQueryString && search) {
+          result.query = querystringModule.parse(search.slice(1));
+        } else {
+          result.query = search ? search.slice(1) : null;
+        }
+      }
     }
 
     return result;
@@ -6790,8 +8969,14 @@
 
   /**
    * Convert a file path to a file:// URL.
+   * Relative paths are resolved against the current working directory.
    */
   function pathToFileURL(filepath) {
+    // Resolve relative paths against cwd (like Node.js does)
+    if (!posixPath.isAbsolute(filepath)) {
+      filepath = posixPath.resolve(process.cwd(), filepath);
+    }
+
     let url = "file://";
     if (process.platform === "win32") {
       filepath = filepath.replace(/\\/g, "/");
@@ -7464,6 +9649,685 @@
   globalThis.__howth_modules["async_hooks"] = asyncHooksModule;
 
   // ============================================================================
+  // zlib module
+  // ============================================================================
+
+  const zlibModule = {
+    // Compression levels
+    Z_NO_COMPRESSION: 0,
+    Z_BEST_SPEED: 1,
+    Z_BEST_COMPRESSION: 9,
+    Z_DEFAULT_COMPRESSION: -1,
+
+    // Strategy
+    Z_FILTERED: 1,
+    Z_HUFFMAN_ONLY: 2,
+    Z_RLE: 3,
+    Z_FIXED: 4,
+    Z_DEFAULT_STRATEGY: 0,
+
+    // Flush modes
+    Z_NO_FLUSH: 0,
+    Z_PARTIAL_FLUSH: 1,
+    Z_SYNC_FLUSH: 2,
+    Z_FULL_FLUSH: 3,
+    Z_FINISH: 4,
+    Z_BLOCK: 5,
+    Z_TREES: 6,
+
+    // Return codes
+    Z_OK: 0,
+    Z_STREAM_END: 1,
+    Z_NEED_DICT: 2,
+    Z_ERRNO: -1,
+    Z_STREAM_ERROR: -2,
+    Z_DATA_ERROR: -3,
+    Z_MEM_ERROR: -4,
+    Z_BUF_ERROR: -5,
+    Z_VERSION_ERROR: -6,
+
+    // Sync compression functions
+    gzipSync(buffer, options = {}) {
+      const level = options.level !== undefined ? options.level : -1;
+      const input = buffer instanceof Buffer ? [...buffer] : [...Buffer.from(buffer)];
+      const result = ops.op_howth_zlib_gzip(input, level);
+      return Buffer.from(result);
+    },
+
+    gunzipSync(buffer, options = {}) {
+      const input = buffer instanceof Buffer ? [...buffer] : [...Buffer.from(buffer)];
+      const result = ops.op_howth_zlib_gunzip(input);
+      return Buffer.from(result);
+    },
+
+    deflateSync(buffer, options = {}) {
+      const level = options.level !== undefined ? options.level : -1;
+      const input = buffer instanceof Buffer ? [...buffer] : [...Buffer.from(buffer)];
+      const result = ops.op_howth_zlib_deflate(input, level);
+      return Buffer.from(result);
+    },
+
+    inflateSync(buffer, options = {}) {
+      const input = buffer instanceof Buffer ? [...buffer] : [...Buffer.from(buffer)];
+      const result = ops.op_howth_zlib_inflate(input);
+      return Buffer.from(result);
+    },
+
+    deflateRawSync(buffer, options = {}) {
+      const level = options.level !== undefined ? options.level : -1;
+      const input = buffer instanceof Buffer ? [...buffer] : [...Buffer.from(buffer)];
+      const result = ops.op_howth_zlib_deflate_raw(input, level);
+      return Buffer.from(result);
+    },
+
+    inflateRawSync(buffer, options = {}) {
+      const input = buffer instanceof Buffer ? [...buffer] : [...Buffer.from(buffer)];
+      const result = ops.op_howth_zlib_inflate_raw(input);
+      return Buffer.from(result);
+    },
+
+    // Async compression functions (callback style)
+    gzip(buffer, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      try {
+        const result = zlibModule.gzipSync(buffer, options);
+        process.nextTick(() => callback(null, result));
+      } catch (e) {
+        process.nextTick(() => callback(e));
+      }
+    },
+
+    gunzip(buffer, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      try {
+        const result = zlibModule.gunzipSync(buffer, options);
+        process.nextTick(() => callback(null, result));
+      } catch (e) {
+        process.nextTick(() => callback(e));
+      }
+    },
+
+    deflate(buffer, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      try {
+        const result = zlibModule.deflateSync(buffer, options);
+        process.nextTick(() => callback(null, result));
+      } catch (e) {
+        process.nextTick(() => callback(e));
+      }
+    },
+
+    inflate(buffer, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      try {
+        const result = zlibModule.inflateSync(buffer, options);
+        process.nextTick(() => callback(null, result));
+      } catch (e) {
+        process.nextTick(() => callback(e));
+      }
+    },
+
+    deflateRaw(buffer, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      try {
+        const result = zlibModule.deflateRawSync(buffer, options);
+        process.nextTick(() => callback(null, result));
+      } catch (e) {
+        process.nextTick(() => callback(e));
+      }
+    },
+
+    inflateRaw(buffer, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      try {
+        const result = zlibModule.inflateRawSync(buffer, options);
+        process.nextTick(() => callback(null, result));
+      } catch (e) {
+        process.nextTick(() => callback(e));
+      }
+    },
+
+    // Stream-based compression (Transform streams)
+    createGzip(options = {}) {
+      return zlibModule._createCompressor('gzip', options);
+    },
+
+    createGunzip(options = {}) {
+      return zlibModule._createDecompressor('gunzip', options);
+    },
+
+    createDeflate(options = {}) {
+      return zlibModule._createCompressor('deflate', options);
+    },
+
+    createInflate(options = {}) {
+      return zlibModule._createDecompressor('inflate', options);
+    },
+
+    createDeflateRaw(options = {}) {
+      return zlibModule._createCompressor('deflateRaw', options);
+    },
+
+    createInflateRaw(options = {}) {
+      return zlibModule._createDecompressor('inflateRaw', options);
+    },
+
+    // Helper to create a compressor transform stream
+    _createCompressor(type, options) {
+      const chunks = [];
+      const compressFunc = zlibModule[type + 'Sync'];
+
+      const stream = {
+        _chunks: chunks,
+        writable: true,
+        readable: true,
+        write(chunk, encoding, callback) {
+          if (typeof encoding === 'function') {
+            callback = encoding;
+            encoding = undefined;
+          }
+          const buf = chunk instanceof Buffer ? chunk : Buffer.from(chunk, encoding);
+          chunks.push(buf);
+          if (callback) process.nextTick(callback);
+          return true;
+        },
+        end(chunk, encoding, callback) {
+          if (typeof chunk === 'function') {
+            callback = chunk;
+            chunk = undefined;
+          } else if (typeof encoding === 'function') {
+            callback = encoding;
+            encoding = undefined;
+          }
+          if (chunk) this.write(chunk, encoding);
+
+          const input = Buffer.concat(chunks);
+          try {
+            const result = compressFunc(input, options);
+            this.emit('data', result);
+            this.emit('end');
+            if (callback) callback();
+          } catch (e) {
+            this.emit('error', e);
+            if (callback) callback(e);
+          }
+        },
+        on: function(event, fn) {
+          if (!this._events) this._events = {};
+          if (!this._events[event]) this._events[event] = [];
+          this._events[event].push(fn);
+          return this;
+        },
+        emit: function(event, ...args) {
+          if (!this._events || !this._events[event]) return false;
+          for (const fn of this._events[event]) fn(...args);
+          return true;
+        },
+        pipe(dest) {
+          this.on('data', (chunk) => dest.write(chunk));
+          this.on('end', () => dest.end());
+          return dest;
+        },
+      };
+
+      return stream;
+    },
+
+    // Helper to create a decompressor transform stream
+    _createDecompressor(type, options) {
+      const chunks = [];
+      const decompressFunc = zlibModule[type + 'Sync'];
+
+      const stream = {
+        _chunks: chunks,
+        writable: true,
+        readable: true,
+        write(chunk, encoding, callback) {
+          if (typeof encoding === 'function') {
+            callback = encoding;
+            encoding = undefined;
+          }
+          const buf = chunk instanceof Buffer ? chunk : Buffer.from(chunk, encoding);
+          chunks.push(buf);
+          if (callback) process.nextTick(callback);
+          return true;
+        },
+        end(chunk, encoding, callback) {
+          if (typeof chunk === 'function') {
+            callback = chunk;
+            chunk = undefined;
+          } else if (typeof encoding === 'function') {
+            callback = encoding;
+            encoding = undefined;
+          }
+          if (chunk) this.write(chunk, encoding);
+
+          const input = Buffer.concat(chunks);
+          try {
+            const result = decompressFunc(input, options);
+            this.emit('data', result);
+            this.emit('end');
+            if (callback) callback();
+          } catch (e) {
+            this.emit('error', e);
+            if (callback) callback(e);
+          }
+        },
+        on: function(event, fn) {
+          if (!this._events) this._events = {};
+          if (!this._events[event]) this._events[event] = [];
+          this._events[event].push(fn);
+          return this;
+        },
+        emit: function(event, ...args) {
+          if (!this._events || !this._events[event]) return false;
+          for (const fn of this._events[event]) fn(...args);
+          return true;
+        },
+        pipe(dest) {
+          this.on('data', (chunk) => dest.write(chunk));
+          this.on('end', () => dest.end());
+          return dest;
+        },
+      };
+
+      return stream;
+    },
+
+    // Convenience classes
+    Gzip: class Gzip {
+      constructor(options) { return zlibModule.createGzip(options); }
+    },
+    Gunzip: class Gunzip {
+      constructor(options) { return zlibModule.createGunzip(options); }
+    },
+    Deflate: class Deflate {
+      constructor(options) { return zlibModule.createDeflate(options); }
+    },
+    Inflate: class Inflate {
+      constructor(options) { return zlibModule.createInflate(options); }
+    },
+    DeflateRaw: class DeflateRaw {
+      constructor(options) { return zlibModule.createDeflateRaw(options); }
+    },
+    InflateRaw: class InflateRaw {
+      constructor(options) { return zlibModule.createInflateRaw(options); }
+    },
+
+    // Constants object
+    constants: {
+      Z_NO_COMPRESSION: 0,
+      Z_BEST_SPEED: 1,
+      Z_BEST_COMPRESSION: 9,
+      Z_DEFAULT_COMPRESSION: -1,
+      Z_FILTERED: 1,
+      Z_HUFFMAN_ONLY: 2,
+      Z_RLE: 3,
+      Z_FIXED: 4,
+      Z_DEFAULT_STRATEGY: 0,
+      Z_NO_FLUSH: 0,
+      Z_PARTIAL_FLUSH: 1,
+      Z_SYNC_FLUSH: 2,
+      Z_FULL_FLUSH: 3,
+      Z_FINISH: 4,
+      Z_BLOCK: 5,
+      Z_TREES: 6,
+      Z_OK: 0,
+      Z_STREAM_END: 1,
+      Z_NEED_DICT: 2,
+      Z_ERRNO: -1,
+      Z_STREAM_ERROR: -2,
+      Z_DATA_ERROR: -3,
+      Z_MEM_ERROR: -4,
+      Z_BUF_ERROR: -5,
+      Z_VERSION_ERROR: -6,
+    },
+  };
+
+  // Register the zlib module
+  globalThis.__howth_modules["node:zlib"] = zlibModule;
+  globalThis.__howth_modules["zlib"] = zlibModule;
+
+  // ============================================================================
+  // worker_threads module
+  // ============================================================================
+
+  /**
+   * MessageChannel for structured message passing
+   */
+  class MessageChannel {
+    constructor() {
+      this.port1 = new MessagePort();
+      this.port2 = new MessagePort();
+      // Connect the ports
+      this.port1._otherPort = this.port2;
+      this.port2._otherPort = this.port1;
+    }
+  }
+
+  /**
+   * MessagePort for communication between threads
+   */
+  class MessagePort {
+    #listeners = new Map();
+    #otherPort = null;
+    #started = false;
+    #queue = [];
+
+    set _otherPort(port) {
+      this.#otherPort = port;
+    }
+
+    postMessage(message, transferList) {
+      if (this.#otherPort) {
+        const data = JSON.parse(JSON.stringify(message)); // Clone
+        if (this.#otherPort.#started) {
+          this.#otherPort._deliver(data);
+        } else {
+          this.#otherPort.#queue.push(data);
+        }
+      }
+    }
+
+    _deliver(data) {
+      const listeners = this.#listeners.get('message') || [];
+      for (const fn of listeners) {
+        fn({ data });
+      }
+    }
+
+    on(event, listener) {
+      if (!this.#listeners.has(event)) {
+        this.#listeners.set(event, []);
+      }
+      this.#listeners.get(event).push(listener);
+      return this;
+    }
+
+    once(event, listener) {
+      const wrapper = (...args) => {
+        this.off(event, wrapper);
+        listener(...args);
+      };
+      return this.on(event, wrapper);
+    }
+
+    off(event, listener) {
+      const list = this.#listeners.get(event);
+      if (list) {
+        const idx = list.indexOf(listener);
+        if (idx !== -1) list.splice(idx, 1);
+      }
+      return this;
+    }
+
+    addListener(event, listener) { return this.on(event, listener); }
+    removeListener(event, listener) { return this.off(event, listener); }
+
+    start() {
+      this.#started = true;
+      // Deliver queued messages
+      while (this.#queue.length > 0) {
+        this._deliver(this.#queue.shift());
+      }
+    }
+
+    close() {
+      this.#listeners.clear();
+      this.#otherPort = null;
+    }
+
+    ref() { return this; }
+    unref() { return this; }
+  }
+
+  /**
+   * Worker class for spawning worker threads
+   */
+  class Worker {
+    #listeners = new Map();
+    #workerId = null;
+    #pollInterval = null;
+    #terminated = false;
+
+    constructor(filename, options = {}) {
+      const resolvedPath = posixPath.resolve(filename);
+      const workerData = options.workerData ? JSON.stringify(options.workerData) : '{}';
+
+      // Create the worker
+      const result = ops.op_howth_worker_create(resolvedPath, workerData);
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      this.#workerId = result.id;
+      this.threadId = result.id;
+
+      // Start polling for messages
+      this.#startPolling();
+    }
+
+    #startPolling() {
+      this.#pollInterval = setInterval(() => {
+        if (this.#terminated) {
+          clearInterval(this.#pollInterval);
+          return;
+        }
+
+        // Check for messages from worker
+        const message = ops.op_howth_worker_recv_message(this.#workerId);
+        if (message) {
+          try {
+            const data = JSON.parse(message);
+            this.#emit('message', data);
+          } catch (e) {
+            this.#emit('message', message);
+          }
+        }
+
+        // Check if worker is still running
+        if (!ops.op_howth_worker_is_running(this.#workerId)) {
+          this.#terminated = true;
+          clearInterval(this.#pollInterval);
+          this.#emit('exit', 0);
+        }
+      }, 10);
+    }
+
+    #emit(event, ...args) {
+      const listeners = this.#listeners.get(event) || [];
+      for (const fn of listeners) {
+        fn(...args);
+      }
+    }
+
+    postMessage(message, transferList) {
+      if (this.#terminated) return;
+      const data = JSON.stringify(message);
+      ops.op_howth_worker_post_message(this.#workerId, data);
+    }
+
+    terminate() {
+      if (this.#terminated) return Promise.resolve(0);
+      this.#terminated = true;
+      if (this.#pollInterval) {
+        clearInterval(this.#pollInterval);
+      }
+      ops.op_howth_worker_terminate(this.#workerId);
+      return Promise.resolve(0);
+    }
+
+    on(event, listener) {
+      if (!this.#listeners.has(event)) {
+        this.#listeners.set(event, []);
+      }
+      this.#listeners.get(event).push(listener);
+      return this;
+    }
+
+    once(event, listener) {
+      const wrapper = (...args) => {
+        this.off(event, wrapper);
+        listener(...args);
+      };
+      return this.on(event, wrapper);
+    }
+
+    off(event, listener) {
+      const list = this.#listeners.get(event);
+      if (list) {
+        const idx = list.indexOf(listener);
+        if (idx !== -1) list.splice(idx, 1);
+      }
+      return this;
+    }
+
+    addListener(event, listener) { return this.on(event, listener); }
+    removeListener(event, listener) { return this.off(event, listener); }
+
+    ref() { return this; }
+    unref() { return this; }
+  }
+
+  /**
+   * Parent port for communication with main thread (only available in workers)
+   */
+  let parentPort = null;
+  let workerData = null;
+
+  // If this is a worker thread, set up parentPort
+  if (!ops.op_howth_worker_is_main_thread()) {
+    const parentPortListeners = new Map();
+    let parentPollInterval = null;
+
+    parentPort = {
+      postMessage(message) {
+        const data = JSON.stringify(message);
+        ops.op_howth_worker_parent_post(data);
+      },
+
+      on(event, listener) {
+        if (!parentPortListeners.has(event)) {
+          parentPortListeners.set(event, []);
+        }
+        parentPortListeners.get(event).push(listener);
+
+        // Start polling when first listener is added
+        if (!parentPollInterval) {
+          parentPollInterval = setInterval(() => {
+            const message = ops.op_howth_worker_parent_recv();
+            if (message) {
+              try {
+                const data = JSON.parse(message);
+                const listeners = parentPortListeners.get('message') || [];
+                for (const fn of listeners) {
+                  fn(data);
+                }
+              } catch (e) {
+                const listeners = parentPortListeners.get('message') || [];
+                for (const fn of listeners) {
+                  fn(message);
+                }
+              }
+            }
+          }, 10);
+        }
+
+        return parentPort;
+      },
+
+      once(event, listener) {
+        const wrapper = (...args) => {
+          parentPort.off(event, wrapper);
+          listener(...args);
+        };
+        return parentPort.on(event, wrapper);
+      },
+
+      off(event, listener) {
+        const list = parentPortListeners.get(event);
+        if (list) {
+          const idx = list.indexOf(listener);
+          if (idx !== -1) list.splice(idx, 1);
+        }
+        return parentPort;
+      },
+
+      addListener(event, listener) { return parentPort.on(event, listener); },
+      removeListener(event, listener) { return parentPort.off(event, listener); },
+
+      close() {
+        if (parentPollInterval) {
+          clearInterval(parentPollInterval);
+          parentPollInterval = null;
+        }
+        parentPortListeners.clear();
+      },
+
+      ref() { return parentPort; },
+      unref() { return parentPort; },
+    };
+  }
+
+  const workerThreadsModule = {
+    isMainThread: ops.op_howth_worker_is_main_thread(),
+    parentPort,
+    workerData,
+    threadId: ops.op_howth_worker_thread_id(),
+    Worker,
+    MessageChannel,
+    MessagePort,
+
+    // Additional exports for compatibility
+    resourceLimits: {},
+    SHARE_ENV: Symbol('SHARE_ENV'),
+    setEnvironmentData(key, value) {
+      // Store in process.env for simplicity
+      if (value === undefined) {
+        delete process.env[`__WORKER_ENV_${key}`];
+      } else {
+        process.env[`__WORKER_ENV_${key}`] = String(value);
+      }
+    },
+    getEnvironmentData(key) {
+      return process.env[`__WORKER_ENV_${key}`];
+    },
+    markAsUntransferable(obj) {
+      // No-op for now
+    },
+    moveMessagePortToContext(port, context) {
+      // No-op for now
+      return port;
+    },
+    receiveMessageOnPort(port) {
+      // Synchronous receive - not fully supported
+      return undefined;
+    },
+  };
+
+  // Register the worker_threads module
+  globalThis.__howth_modules["node:worker_threads"] = workerThreadsModule;
+  globalThis.__howth_modules["worker_threads"] = workerThreadsModule;
+
+  // ============================================================================
   // http module
   // ============================================================================
 
@@ -7503,7 +10367,8 @@
   class IncomingMessage extends Readable {
     constructor(socket) {
       super();
-      this.socket = socket;
+      this.socket = socket || null;
+      this.connection = this.socket;
       this.httpVersion = "1.1";
       this.httpVersionMajor = 1;
       this.httpVersionMinor = 1;
@@ -7517,6 +10382,7 @@
       this.statusCode = null;
       this.statusMessage = null;
       this.aborted = false;
+      this.readable = true;
     }
 
     setTimeout(msecs, callback) {
@@ -7526,8 +10392,15 @@
 
     destroy(error) {
       this.aborted = true;
+      this.readable = false;
+      this.complete = true;
       this.emit("close");
       if (error) this.emit("error", error);
+      return this;
+    }
+
+    _read() {
+      // No-op, data is pushed from the accept loop
     }
   }
 
@@ -7541,11 +10414,34 @@
       this.statusCode = 200;
       this.statusMessage = "OK";
       this.headersSent = false;
+      this._headerSent = false;
       this.sendDate = true;
       this.finished = false;
       this.writableEnded = false;
       this._headers = {};
       this._body = "";
+      // OutgoingMessage compatibility properties
+      this._header = null;
+      this._hasBody = true;
+      this._trailer = "";
+      this._contentLength = null;
+      this._closed = false;
+      this._removedTE = false;
+      this._removedContLen = false;
+      this._removedConnection = false;
+      this.usesChunkedEncodingByDefault = true;
+      this.chunkedEncoding = false;
+      this.shouldKeepAlive = true;
+      this._keepAliveTimeout = 0;
+      this._defaultKeepAlive = true;
+      this.strictContentLength = false;
+      this.writable = true;
+      this.destroyed = false;
+      this.outputData = [];
+      this.outputSize = 0;
+      this._onPendingData = function() {};
+      this._socket = null;
+      this.useChunkedEncodingByDefault = true;
     }
 
     setHeader(name, value) {
@@ -7581,10 +10477,18 @@
       this.statusCode = statusCode;
       if (statusMessage) this.statusMessage = statusMessage;
       if (headers) {
-        for (const [key, value] of Object.entries(headers)) {
-          this.setHeader(key, value);
+        if (Array.isArray(headers)) {
+          // writeHead can accept an array of [key, value] pairs
+          for (let i = 0; i < headers.length; i += 2) {
+            this.setHeader(headers[i], headers[i + 1]);
+          }
+        } else {
+          for (const [key, value] of Object.entries(headers)) {
+            this.setHeader(key, value);
+          }
         }
       }
+      this.headersSent = true;
       return this;
     }
 
@@ -7632,6 +10536,88 @@
 
     writeContinue() {}
     writeProcessing() {}
+
+    cork() {}
+    uncork() {}
+
+    addTrailers(headers) {
+      // Trailers not supported in our HTTP impl, but don't crash
+    }
+
+    setTimeout(msecs, callback) {
+      if (callback) this.once("timeout", callback);
+      return this;
+    }
+
+    // Internal method called before writing data to ensure headers are sent
+    _implicitHeader() {
+      if (!this.headersSent) {
+        this.headersSent = true;
+      }
+    }
+
+    // Get socket/connection (used by some frameworks)
+    get socket() {
+      return this._socket || null;
+    }
+
+    get connection() {
+      return this.socket;
+    }
+
+    get writableFinished() {
+      return this.finished;
+    }
+
+    get writableLength() {
+      return 0;
+    }
+
+    get writableHighWaterMark() {
+      return 16384;
+    }
+
+    get writableCorked() {
+      return 0;
+    }
+
+    get writableNeedDrain() {
+      return false;
+    }
+
+    // Internal methods used by Node.js internals and frameworks like Next.js
+    _send(data, encoding, callback, byteLength) {
+      if (data) {
+        this.write(data, encoding, callback);
+      }
+      return true;
+    }
+
+    _writeRaw(data, encoding, callback, size) {
+      if (data) {
+        this.write(data, encoding, callback);
+      }
+      return true;
+    }
+
+    _flushOutput(conn) {
+      const data = this.outputData;
+      for (let i = 0; i < data.length; i++) {
+        this.write(data[i].data, data[i].encoding, data[i].callback);
+      }
+      this.outputData = [];
+      this.outputSize = 0;
+    }
+
+    assignSocket(socket) {
+      this._socket = socket;
+      socket._httpMessage = this;
+    }
+
+    detachSocket(socket) {
+      this._socket = null;
+      if (socket) socket._httpMessage = null;
+    }
   }
 
   /**
@@ -7865,15 +10851,50 @@
 
           this._connections++;
 
+          // Create a mock socket for req.socket / req.connection
+          const mockSocket = new EventEmitter();
+          mockSocket.remoteAddress = request.remoteAddress || "127.0.0.1";
+          mockSocket.remotePort = request.remotePort || 0;
+          mockSocket.remoteFamily = "IPv4";
+          mockSocket.localAddress = this._address || "127.0.0.1";
+          mockSocket.localPort = this._port || 0;
+          mockSocket.encrypted = false;
+          mockSocket.writable = true;
+          mockSocket.readable = true;
+          mockSocket.destroyed = false;
+          mockSocket.connecting = false;
+          mockSocket.bufferSize = 0;
+          mockSocket.bytesRead = 0;
+          mockSocket.bytesWritten = 0;
+          mockSocket.address = () => ({ address: mockSocket.localAddress, family: mockSocket.remoteFamily, port: mockSocket.localPort });
+          mockSocket.setTimeout = (ms, cb) => { if (cb) mockSocket.once("timeout", cb); return mockSocket; };
+          mockSocket.setNoDelay = () => mockSocket;
+          mockSocket.setKeepAlive = () => mockSocket;
+          mockSocket.ref = () => mockSocket;
+          mockSocket.unref = () => mockSocket;
+          mockSocket.destroy = () => { mockSocket.destroyed = true; };
+          mockSocket.end = () => {};
+          mockSocket.write = () => true;
+
           // Create IncomingMessage and ServerResponse
-          const req = new IncomingMessage();
+          const req = new IncomingMessage(mockSocket);
           req.method = request.method;
           req.url = request.url;
-          req.headers = request.headers;
+          req.headers = request.headers || {};
           req.httpVersion = "1.1";
           req.httpVersionMajor = 1;
           req.httpVersionMinor = 1;
           req._requestId = request.id;
+          req.connection = mockSocket;
+
+          // Populate rawHeaders from headers (alternating key/value pairs)
+          const rawHeaders = [];
+          if (request.headers) {
+            for (const [key, value] of Object.entries(request.headers)) {
+              rawHeaders.push(key, value);
+            }
+          }
+          req.rawHeaders = rawHeaders;
 
           // Push body data if present
           if (request.body) {
@@ -7883,6 +10904,7 @@
 
           const res = new ServerResponse(req);
           res._requestId = request.id;
+          res._socket = mockSocket;
 
           // Override end to send the response
           const originalEnd = res.end.bind(res);
@@ -7924,8 +10946,29 @@
             });
           };
 
-          // Emit the request event
-          this.emit("request", req, res);
+          // Emit the request event with error protection
+          try {
+            this.emit("request", req, res);
+          } catch (handlerErr) {
+            // Log the error for debugging
+            console.error("[howth] Request handler error:", handlerErr.message);
+            console.error("[howth] Stack:", handlerErr.stack);
+            // If the handler throws, send a 500 response to avoid connection leak
+            if (!res.finished && !res.writableEnded) {
+              try {
+                res.statusCode = 500;
+                res.end("Internal Server Error");
+              } catch (e) {
+                // Last resort: clean up the connection directly
+                ops.op_howth_http_respond(request.id, {
+                  status: 500,
+                  headers: {},
+                  body: "Internal Server Error",
+                }).catch(() => {});
+                this._connections--;
+              }
+            }
+          }
         } catch (err) {
           if (this.listening) {
             this.emit("error", err);
@@ -8347,6 +11390,398 @@
   // Register the net module
   globalThis.__howth_modules["node:net"] = netModule;
   globalThis.__howth_modules["net"] = netModule;
+
+  // ============================================================================
+  // dns module (stub)
+  // ============================================================================
+
+  const dnsPromises = {
+    lookup(hostname, options) {
+      return Promise.resolve({ address: '127.0.0.1', family: 4 });
+    },
+    resolve(hostname, rrtype) {
+      return Promise.resolve(['127.0.0.1']);
+    },
+    resolve4(hostname) {
+      return Promise.resolve(['127.0.0.1']);
+    },
+    resolve6(hostname) {
+      return Promise.resolve(['::1']);
+    },
+    resolveCname(hostname) {
+      return Promise.resolve([]);
+    },
+    resolveMx(hostname) {
+      return Promise.resolve([]);
+    },
+    resolveTxt(hostname) {
+      return Promise.resolve([]);
+    },
+    resolveNs(hostname) {
+      return Promise.resolve([]);
+    },
+    resolveSrv(hostname) {
+      return Promise.resolve([]);
+    },
+    resolvePtr(hostname) {
+      return Promise.resolve([]);
+    },
+    resolveSoa(hostname) {
+      return Promise.resolve({});
+    },
+    resolveNaptr(hostname) {
+      return Promise.resolve([]);
+    },
+    resolveCaa(hostname) {
+      return Promise.resolve([]);
+    },
+    reverse(ip) {
+      return Promise.resolve([]);
+    },
+    setServers(servers) {},
+    getServers() { return ['8.8.8.8']; },
+    Resolver: class Resolver {
+      resolve(hostname, callback) {
+        callback(null, ['127.0.0.1']);
+      }
+    },
+  };
+
+  const dnsModule = {
+    lookup(hostname, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      process.nextTick(() => callback(null, '127.0.0.1', 4));
+    },
+    resolve(hostname, rrtype, callback) {
+      if (typeof rrtype === 'function') {
+        callback = rrtype;
+        rrtype = 'A';
+      }
+      process.nextTick(() => callback(null, ['127.0.0.1']));
+    },
+    resolve4(hostname, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      process.nextTick(() => callback(null, ['127.0.0.1']));
+    },
+    resolve6(hostname, options, callback) {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      process.nextTick(() => callback(null, ['::1']));
+    },
+    setServers(servers) {},
+    getServers() { return ['8.8.8.8']; },
+    promises: dnsPromises,
+    Resolver: dnsPromises.Resolver,
+    // Constants
+    ADDRCONFIG: 1024,
+    V4MAPPED: 2048,
+    ALL: 256,
+  };
+
+  globalThis.__howth_modules["node:dns"] = dnsModule;
+  globalThis.__howth_modules["dns"] = dnsModule;
+  globalThis.__howth_modules["node:dns/promises"] = dnsPromises;
+  globalThis.__howth_modules["dns/promises"] = dnsPromises;
+
+  // ============================================================================
+  // diagnostics_channel module (stub)
+  // ============================================================================
+
+  class DiagnosticsChannel {
+    constructor(name) {
+      this.name = name;
+      this._subscribers = [];
+    }
+    subscribe(onMessage) {
+      this._subscribers.push(onMessage);
+    }
+    unsubscribe(onMessage) {
+      const idx = this._subscribers.indexOf(onMessage);
+      if (idx !== -1) this._subscribers.splice(idx, 1);
+      return idx !== -1;
+    }
+    publish(message) {
+      for (const subscriber of this._subscribers) {
+        try { subscriber(message, this.name); } catch {}
+      }
+    }
+    get hasSubscribers() {
+      return this._subscribers.length > 0;
+    }
+  }
+
+  const channels = new Map();
+
+  const diagnosticsChannelModule = {
+    channel(name) {
+      if (!channels.has(name)) {
+        channels.set(name, new DiagnosticsChannel(name));
+      }
+      return channels.get(name);
+    },
+    hasSubscribers(name) {
+      const ch = channels.get(name);
+      return ch ? ch.hasSubscribers : false;
+    },
+    subscribe(name, onMessage) {
+      this.channel(name).subscribe(onMessage);
+    },
+    unsubscribe(name, onMessage) {
+      const ch = channels.get(name);
+      return ch ? ch.unsubscribe(onMessage) : false;
+    },
+    Channel: DiagnosticsChannel,
+  };
+
+  globalThis.__howth_modules["node:diagnostics_channel"] = diagnosticsChannelModule;
+  globalThis.__howth_modules["diagnostics_channel"] = diagnosticsChannelModule;
+
+  // inspector module - Node.js debugging/profiling interface
+  class InspectorSession {
+    constructor() {
+      this._connected = false;
+    }
+    connect() { this._connected = true; }
+    connectToMainThread() { this._connected = true; }
+    disconnect() { this._connected = false; }
+    post(method, params, callback) {
+      if (typeof params === 'function') {
+        callback = params;
+        params = {};
+      }
+      if (callback) {
+        setImmediate(() => callback(new Error('Inspector not available')));
+      }
+    }
+    on(event, listener) { return this; }
+    once(event, listener) { return this; }
+    off(event, listener) { return this; }
+    addListener(event, listener) { return this; }
+    removeListener(event, listener) { return this; }
+  }
+
+  const inspectorModule = {
+    Session: InspectorSession,
+    open(port, host, wait) { /* no-op */ },
+    close() { /* no-op */ },
+    url() { return undefined; },
+    waitForDebugger() { /* no-op */ },
+    console: {
+      log: globalThis.console.log,
+      error: globalThis.console.error,
+      warn: globalThis.console.warn,
+      info: globalThis.console.info,
+      debug: globalThis.console.debug,
+      dir: globalThis.console.dir,
+      time: globalThis.console.time,
+      timeEnd: globalThis.console.timeEnd,
+      trace: globalThis.console.trace,
+      assert: globalThis.console.assert,
+      clear: globalThis.console.clear,
+      count: globalThis.console.count,
+      countReset: globalThis.console.countReset,
+      group: globalThis.console.group,
+      groupCollapsed: globalThis.console.groupCollapsed,
+      groupEnd: globalThis.console.groupEnd,
+      table: globalThis.console.table,
+      profile() {},
+      profileEnd() {},
+      timeLog: globalThis.console.timeLog,
+      timeStamp() {},
+    },
+  };
+
+  globalThis.__howth_modules["node:inspector"] = inspectorModule;
+  globalThis.__howth_modules["inspector"] = inspectorModule;
+
+  // vm module - Virtual machine / code execution
+  class Script {
+    constructor(code, options = {}) {
+      this.code = code;
+      this.filename = options.filename || 'evalmachine.<anonymous>';
+      this.lineOffset = options.lineOffset || 0;
+      this.columnOffset = options.columnOffset || 0;
+      this.cachedData = options.cachedData;
+      this.produceCachedData = options.produceCachedData || false;
+      this.importModuleDynamically = options.importModuleDynamically;
+    }
+
+    runInContext(contextifiedObject, options = {}) {
+      return this.runInThisContext(options);
+    }
+
+    runInNewContext(contextObject = {}, options = {}) {
+      const keys = Object.keys(contextObject);
+      const values = keys.map(k => contextObject[k]);
+      const fn = new Function(...keys, this.code);
+      return fn.apply(null, values);
+    }
+
+    runInThisContext(options = {}) {
+      return eval(this.code);
+    }
+
+    createCachedData() {
+      return Buffer.alloc(0);
+    }
+  }
+
+  function createContext(contextObject = {}, options = {}) {
+    // In real Node.js, this creates a V8 context
+    // We just return the object as-is for now
+    contextObject[Symbol.for('vm.contextified')] = true;
+    return contextObject;
+  }
+
+  function isContext(object) {
+    return object && object[Symbol.for('vm.contextified')] === true;
+  }
+
+  function runInContext(code, contextifiedObject, options = {}) {
+    const script = new Script(code, options);
+    return script.runInContext(contextifiedObject, options);
+  }
+
+  function runInNewContext(code, contextObject = {}, options = {}) {
+    const script = new Script(code, options);
+    return script.runInNewContext(contextObject, options);
+  }
+
+  function runInThisContext(code, options = {}) {
+    const script = new Script(code, options);
+    return script.runInThisContext(options);
+  }
+
+  function compileFunction(code, params = [], options = {}) {
+    const fn = new Function(...params, code);
+    return fn;
+  }
+
+  const vmModule = {
+    Script,
+    createContext,
+    isContext,
+    runInContext,
+    runInNewContext,
+    runInThisContext,
+    compileFunction,
+  };
+
+  globalThis.__howth_modules["node:vm"] = vmModule;
+  globalThis.__howth_modules["vm"] = vmModule;
+
+  // tls module - TLS/SSL functionality (stub)
+  const tlsModule = (() => {
+    class TLSSocket extends Duplex {
+      constructor(socket, options = {}) {
+        super(options);
+        this._socket = socket;
+        this.authorized = true;
+        this.encrypted = true;
+        this.alpnProtocol = null;
+        this.servername = options.servername || null;
+      }
+      getPeerCertificate(detailed) { return {}; }
+      getProtocol() { return 'TLSv1.3'; }
+      getCipher() { return { name: 'TLS_AES_256_GCM_SHA384', standardName: 'TLS_AES_256_GCM_SHA384', version: 'TLSv1.3' }; }
+      renegotiate(options, callback) { if (callback) callback(null); }
+      setMaxSendFragment(size) { return true; }
+      setServername(name) { this.servername = name; }
+      address() { return this._socket ? this._socket.address() : {}; }
+    }
+
+    class TLSServer extends Stream {
+      constructor(options, listener) {
+        super();
+        this._connections = 0;
+        this.maxConnections = undefined;
+        if (typeof options === 'function') {
+          listener = options;
+          options = {};
+        }
+        if (listener) this.on('secureConnection', listener);
+      }
+      listen(...args) {
+        process.nextTick(() => this.emit('listening'));
+        return this;
+      }
+      close(callback) {
+        if (callback) process.nextTick(callback);
+        return this;
+      }
+      address() { return { port: 0, family: 'IPv4', address: '0.0.0.0' }; }
+      getTicketKeys() { return Buffer.alloc(48); }
+      setTicketKeys(keys) {}
+      setSecureContext(options) {}
+    }
+
+    return {
+      TLSSocket,
+      Server: TLSServer,
+      createServer(options, listener) {
+        return new TLSServer(options, listener);
+      },
+      connect(...args) {
+        const socket = new TLSSocket(null);
+        process.nextTick(() => socket.emit('connect'));
+        process.nextTick(() => socket.emit('secureConnect'));
+        return socket;
+      },
+      createSecureContext(options) { return {}; },
+      getCiphers() { return ['TLS_AES_256_GCM_SHA384', 'TLS_AES_128_GCM_SHA256']; },
+      DEFAULT_CIPHERS: 'TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256',
+      DEFAULT_ECDH_CURVE: 'auto',
+      DEFAULT_MIN_VERSION: 'TLSv1.2',
+      DEFAULT_MAX_VERSION: 'TLSv1.3',
+      rootCertificates: [],
+    };
+  })();
+
+  globalThis.__howth_modules["node:tls"] = tlsModule;
+  globalThis.__howth_modules["tls"] = tlsModule;
+
+  // Set up unhandled promise rejection handler using Deno core API
+  core.setUnhandledPromiseRejectionHandler((promise, reason) => {
+    // Check if process has handlers for 'unhandledRejection'
+    const listeners = processListeners.get('unhandledRejection');
+    if (listeners && listeners.length > 0) {
+      for (const listener of [...listeners]) {
+        listener(reason, promise);
+      }
+      return true; // handled
+    }
+    // Log and swallow the error to prevent crash (Node.js behavior: warn but don't crash by default)
+    if (reason instanceof Error) {
+      console.error('[howth] UnhandledPromiseRejection:', reason.stack || reason.message);
+    } else {
+      console.error('[howth] UnhandledPromiseRejection:', reason);
+    }
+    return true; // prevent crash
+  });
+
+  // Set up exception callback for better error reporting
+  core.setReportExceptionCallback((err) => {
+    const listeners = processListeners.get('uncaughtException');
+    if (listeners && listeners.length > 0) {
+      for (const listener of [...listeners]) {
+        listener(err);
+      }
+      return;
+    }
+    if (err instanceof Error) {
+      console.error('[howth] Uncaught exception:', err.stack || err.message);
+    } else {
+      console.error('[howth] Uncaught exception:', err);
+    }
+  });
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

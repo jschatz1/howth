@@ -4,7 +4,10 @@
 
 use deno_core::error::AnyError;
 use deno_core::futures::FutureExt;
-use deno_core::{ModuleLoadResponse, ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType, RequestedModuleType, ResolutionKind};
+use deno_core::{
+    ModuleLoadResponse, ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
+    RequestedModuleType, ResolutionKind,
+};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -35,12 +38,16 @@ impl HowthModuleLoader {
     }
 
     /// Resolve a module specifier to a file path.
-    fn resolve_path(&self, specifier: &str, referrer: &ModuleSpecifier) -> Result<PathBuf, AnyError> {
+    fn resolve_path(
+        &self,
+        specifier: &str,
+        referrer: &ModuleSpecifier,
+    ) -> Result<PathBuf, AnyError> {
         // Handle relative imports
         if specifier.starts_with("./") || specifier.starts_with("../") {
-            let referrer_path = referrer.to_file_path().map_err(|_| {
-                AnyError::msg(format!("Invalid referrer path: {}", referrer))
-            })?;
+            let referrer_path = referrer
+                .to_file_path()
+                .map_err(|_| AnyError::msg(format!("Invalid referrer path: {}", referrer)))?;
             let referrer_dir = referrer_path.parent().unwrap_or(Path::new("."));
             let resolved = referrer_dir.join(specifier);
             return self.resolve_with_extensions(&resolved);
@@ -55,10 +62,46 @@ impl HowthModuleLoader {
         // Handle file:// URLs
         if specifier.starts_with("file://") {
             let url = ModuleSpecifier::parse(specifier)?;
-            let path = url.to_file_path().map_err(|_| {
-                AnyError::msg(format!("Invalid file URL: {}", specifier))
-            })?;
-            return self.resolve_with_extensions(&path);
+            let path = url
+                .to_file_path()
+                .map_err(|_| AnyError::msg(format!("Invalid file URL: {}", specifier)))?;
+            // Try resolving the file URL path first
+            if let Ok(resolved) = self.resolve_with_extensions(&path) {
+                return Ok(resolved);
+            }
+            // If the file doesn't exist, try extracting a package name and resolving via node_modules
+            // This handles cases like pathToFileURL('@next/swc-wasm-nodejs') which produces
+            // file:///cwd/@next/swc-wasm-nodejs but the actual package is in node_modules
+            let path_str = path.to_string_lossy();
+            // Check if the path looks like it could be a package in cwd (not in node_modules already)
+            if !path_str.contains("node_modules") {
+                // Try to extract the package name from the end of the path
+                // For scoped packages like @next/swc-wasm-nodejs
+                let filename = path.file_name().map(|f| f.to_string_lossy().to_string());
+                let parent_name = path.parent().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().to_string());
+
+                let bare_specifier = if let Some(ref parent) = parent_name {
+                    if parent.starts_with('@') {
+                        // Scoped package: parent is @scope, filename is package name
+                        if let Some(ref name) = filename {
+                            Some(format!("{}/{}", parent, name))
+                        } else {
+                            None
+                        }
+                    } else {
+                        filename.clone()
+                    }
+                } else {
+                    filename.clone()
+                };
+
+                if let Some(specifier_name) = bare_specifier {
+                    if let Ok(resolved) = self.resolve_bare_specifier(&specifier_name, referrer) {
+                        return Ok(resolved);
+                    }
+                }
+            }
+            return Err(AnyError::msg(format!("Cannot find module: '{}'", path.display())));
         }
 
         // Bare specifiers - resolve from node_modules
@@ -106,7 +149,11 @@ impl HowthModuleLoader {
     }
 
     /// Resolve a bare specifier (e.g., 'lodash' or 'lodash/fp') from node_modules.
-    fn resolve_bare_specifier(&self, specifier: &str, referrer: &ModuleSpecifier) -> Result<PathBuf, AnyError> {
+    fn resolve_bare_specifier(
+        &self,
+        specifier: &str,
+        referrer: &ModuleSpecifier,
+    ) -> Result<PathBuf, AnyError> {
         // Parse the specifier into package name and subpath
         let (package_name, subpath) = self.parse_bare_specifier(specifier);
 
@@ -154,10 +201,16 @@ impl HowthModuleLoader {
     }
 
     /// Find a package in node_modules, walking up from the referrer.
-    fn find_package(&self, package_name: &str, referrer: &ModuleSpecifier) -> Result<PathBuf, AnyError> {
+    fn find_package(
+        &self,
+        package_name: &str,
+        referrer: &ModuleSpecifier,
+    ) -> Result<PathBuf, AnyError> {
         // Start from the referrer's directory
         let start_dir = if let Ok(path) = referrer.to_file_path() {
-            path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.cwd.clone())
+            path.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| self.cwd.clone())
         } else {
             self.cwd.clone()
         };
@@ -179,6 +232,27 @@ impl HowthModuleLoader {
             }
         }
 
+        // Also try the current working directory (for scripts that chdir into a project)
+        if let Ok(actual_cwd) = std::env::current_dir() {
+            if actual_cwd != start_dir {
+                let mut current = actual_cwd.as_path();
+                loop {
+                    let node_modules = current.join("node_modules");
+                    let package_dir = node_modules.join(package_name);
+
+                    if package_dir.is_dir() {
+                        return Ok(package_dir);
+                    }
+
+                    // Move up to parent directory
+                    match current.parent() {
+                        Some(parent) => current = parent,
+                        None => break,
+                    }
+                }
+            }
+        }
+
         Err(AnyError::msg(format!(
             "Cannot find package '{}' in node_modules",
             package_name
@@ -186,7 +260,11 @@ impl HowthModuleLoader {
     }
 
     /// Resolve the entry point of a package using package.json.
-    fn resolve_package_entry(&self, package_dir: &Path, package_name: &str) -> Result<PathBuf, AnyError> {
+    fn resolve_package_entry(
+        &self,
+        package_dir: &Path,
+        package_name: &str,
+    ) -> Result<PathBuf, AnyError> {
         let package_json_path = package_dir.join("package.json");
 
         // Read and parse package.json
@@ -235,10 +313,12 @@ impl HowthModuleLoader {
 
         // Default to index.js
         self.resolve_with_extensions(&package_dir.join("index"))
-            .map_err(|_| AnyError::msg(format!(
-                "Cannot find entry point for package '{}'",
-                package_name
-            )))
+            .map_err(|_| {
+                AnyError::msg(format!(
+                    "Cannot find entry point for package '{}'",
+                    package_name
+                ))
+            })
     }
 
     /// Resolve the exports field of package.json.
@@ -309,7 +389,156 @@ impl HowthModuleLoader {
             source
         };
 
-        Ok((code, ModuleType::JavaScript))
+        // Detect if this is a CommonJS module and wrap it for ESM compatibility
+        // CommonJS indicators: module.exports, exports., require(
+        let is_commonjs = code.contains("module.exports")
+            || code.contains("exports.")
+            || (code.contains("require(") && !code.contains("import "));
+
+        if std::env::var("DEBUG_MODULES").is_ok() {
+            eprintln!("[DEBUG] Loading module: {} (is_commonjs={})", path.display(), is_commonjs);
+        }
+
+        let wrapped_code = if is_commonjs {
+            let result = self.wrap_commonjs(&code, path)?;
+            if std::env::var("DEBUG_CJS_WRAPPER").is_ok() {
+                eprintln!("[DEBUG] CJS wrapper length: {}", result.len());
+                // Print line by line with line numbers
+                for (i, line) in result.lines().enumerate() {
+                    eprintln!("[DEBUG] {:4}: {}", i + 1, if line.len() > 100 { &line[..100] } else { line });
+                    if i > 35 { break; } // Stop after line 35
+                }
+            }
+            result
+        } else {
+            code
+        };
+
+        Ok((wrapped_code, ModuleType::JavaScript))
+    }
+
+    /// Wrap a CommonJS module to work as ESM.
+    fn wrap_commonjs(&self, source: &str, path: &Path) -> Result<String, AnyError> {
+        let path_str = path.display().to_string().replace('\\', "/");
+        let dir_str = path
+            .parent()
+            .map(|p| p.display().to_string().replace('\\', "/"))
+            .unwrap_or_else(|| ".".to_string());
+
+        // Use JSON serialization to safely escape the source code
+        let escaped_source = serde_json::to_string(source)
+            .map_err(|e| AnyError::msg(format!("Failed to escape source: {}", e)))?;
+
+        // Scan for named exports in the CJS source
+        let named_exports = self.scan_cjs_exports(source);
+        let export_declarations = self.generate_export_declarations(&named_exports);
+
+        // Wrap the CommonJS module and execute it with proper CJS environment
+        Ok(format!(
+            r#"
+// CommonJS module wrapper
+const __howth_cjs_source__ = {};
+const __howth_cjs_filename__ = "{}";
+const __howth_cjs_dirname__ = "{}";
+
+// Set up CommonJS environment
+const __howth_cjs_module__ = {{ exports: {{}}, id: __howth_cjs_filename__, filename: __howth_cjs_filename__, loaded: false, path: __howth_cjs_dirname__ }};
+const __howth_cjs_exports__ = __howth_cjs_module__.exports;
+
+// Create a require function for this module
+const __howth_cjs_require__ = globalThis.__howth_modules?.["module"]?.createRequire
+    ? globalThis.__howth_modules["module"].createRequire(__howth_cjs_filename__)
+    : globalThis.require;
+
+// Execute the CommonJS module in a function scope
+(function(exports, require, module, __filename, __dirname) {{
+    eval(__howth_cjs_source__);
+}}).call(__howth_cjs_exports__, __howth_cjs_exports__, __howth_cjs_require__, __howth_cjs_module__, __howth_cjs_filename__, __howth_cjs_dirname__);
+
+__howth_cjs_module__.loaded = true;
+
+// The module.exports is the default export
+const __howth_result__ = __howth_cjs_module__.exports;
+
+// Export as ESM default
+export default __howth_result__;
+
+// Named exports extracted from CJS
+{}
+"#,
+            escaped_source, path_str, dir_str, export_declarations
+        ))
+    }
+
+    /// Scan CommonJS source code for exported names.
+    fn scan_cjs_exports(&self, source: &str) -> Vec<String> {
+        use std::collections::HashSet;
+        let mut exports = HashSet::new();
+
+        // Pattern 1: Object.defineProperty(exports, "name", ...)
+        let define_prop_re = regex::Regex::new(r#"Object\.defineProperty\s*\(\s*exports\s*,\s*["'](\w+)["']"#).unwrap();
+        for cap in define_prop_re.captures_iter(source) {
+            if let Some(name) = cap.get(1) {
+                exports.insert(name.as_str().to_string());
+            }
+        }
+
+        // Pattern 2: exports.name = ...
+        let exports_dot_re = regex::Regex::new(r#"exports\.(\w+)\s*="#).unwrap();
+        for cap in exports_dot_re.captures_iter(source) {
+            if let Some(name) = cap.get(1) {
+                exports.insert(name.as_str().to_string());
+            }
+        }
+
+        // Pattern 3: module.exports = { name1, name2 } or module.exports = { name1: ..., name2: ... }
+        // This is harder to parse statically, so we look for simple patterns
+        let module_exports_re = regex::Regex::new(r#"module\.exports\s*=\s*\{([^}]+)\}"#).unwrap();
+        for cap in module_exports_re.captures_iter(source) {
+            if let Some(body) = cap.get(1) {
+                // Parse the object body for property names
+                let prop_re = regex::Regex::new(r#"(\w+)\s*[,:]"#).unwrap();
+                for prop_cap in prop_re.captures_iter(body.as_str()) {
+                    if let Some(name) = prop_cap.get(1) {
+                        exports.insert(name.as_str().to_string());
+                    }
+                }
+            }
+        }
+
+        exports.into_iter().collect()
+    }
+
+    /// Generate ESM export declarations for the scanned CJS exports.
+    fn generate_export_declarations(&self, exports: &[String]) -> String {
+        if exports.is_empty() {
+            return String::new();
+        }
+
+        // JavaScript reserved keywords that cannot be used as export names
+        const RESERVED_KEYWORDS: &[&str] = &[
+            "break", "case", "catch", "continue", "debugger", "default", "delete",
+            "do", "else", "export", "extends", "finally", "for", "function", "if",
+            "import", "in", "instanceof", "new", "return", "super", "switch", "this",
+            "throw", "try", "typeof", "var", "void", "while", "with", "yield",
+            "class", "const", "enum", "let", "static", "implements", "interface",
+            "package", "private", "protected", "public", "await", "null", "true",
+            "false", "undefined", "__esModule",
+        ];
+
+        let mut declarations = String::new();
+        for name in exports {
+            // Skip reserved keywords and __esModule
+            if RESERVED_KEYWORDS.contains(&name.as_str()) {
+                continue;
+            }
+            // Generate a live getter export
+            declarations.push_str(&format!(
+                "export const {} = __howth_result__.{};\n",
+                name, name
+            ));
+        }
+        declarations
     }
 
     /// Transpile TypeScript/JSX to JavaScript using SWC.
@@ -346,7 +575,16 @@ impl ModuleLoader for HowthModuleLoader {
             ModuleSpecifier::from_file_path(&self.cwd.join("__entry__"))
                 .map_err(|_| AnyError::msg("Invalid cwd"))?
         } else {
-            ModuleSpecifier::parse(referrer)?
+            // Try to parse the referrer as a URL
+            match ModuleSpecifier::parse(referrer) {
+                Ok(url) => url,
+                Err(_) => {
+                    // Fall back to cwd for unknown referrers (like eval'd code)
+                    let actual_cwd = std::env::current_dir().unwrap_or_else(|_| self.cwd.clone());
+                    ModuleSpecifier::from_file_path(&actual_cwd.join("__eval__"))
+                        .map_err(|_| AnyError::msg("Invalid cwd"))?
+                }
+            }
         };
 
         // Resolve the specifier to a path
@@ -455,13 +693,19 @@ mod tests {
         let with_main = temp.path().join("node_modules/with-main");
         fs::create_dir_all(&with_main).unwrap();
         fs::write(with_main.join("lib.js"), "export const y = 2;").unwrap();
-        fs::write(with_main.join("package.json"), r#"{"name": "with-main", "main": "lib.js"}"#).unwrap();
+        fs::write(
+            with_main.join("package.json"),
+            r#"{"name": "with-main", "main": "lib.js"}"#,
+        )
+        .unwrap();
 
         // Create node_modules/with-exports with exports field
         let with_exports = temp.path().join("node_modules/with-exports");
         fs::create_dir_all(with_exports.join("dist")).unwrap();
         fs::write(with_exports.join("dist/index.mjs"), "export const z = 3;").unwrap();
-        fs::write(with_exports.join("package.json"), r#"{
+        fs::write(
+            with_exports.join("package.json"),
+            r#"{
             "name": "with-exports",
             "exports": {
                 ".": {
@@ -469,14 +713,20 @@ mod tests {
                     "require": "./dist/index.cjs"
                 }
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         // Create node_modules/with-subpath with subpath exports
         let with_subpath = temp.path().join("node_modules/with-subpath");
         fs::create_dir_all(with_subpath.join("utils")).unwrap();
         fs::write(with_subpath.join("index.js"), "export const a = 1;").unwrap();
         fs::write(with_subpath.join("utils/helper.js"), "export const b = 2;").unwrap();
-        fs::write(with_subpath.join("package.json"), r#"{"name": "with-subpath"}"#).unwrap();
+        fs::write(
+            with_subpath.join("package.json"),
+            r#"{"name": "with-subpath"}"#,
+        )
+        .unwrap();
 
         // Create node_modules/@scope/pkg (scoped package)
         let scoped = temp.path().join("node_modules/@scope/pkg");
@@ -518,7 +768,9 @@ mod tests {
         let loader = HowthModuleLoader::new(temp.path().to_path_buf());
         let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
 
-        let resolved = loader.resolve_bare_specifier("simple-pkg", &referrer).unwrap();
+        let resolved = loader
+            .resolve_bare_specifier("simple-pkg", &referrer)
+            .unwrap();
         assert!(resolved.ends_with("simple-pkg/index.js"));
     }
 
@@ -530,7 +782,9 @@ mod tests {
         let loader = HowthModuleLoader::new(temp.path().to_path_buf());
         let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
 
-        let resolved = loader.resolve_bare_specifier("with-main", &referrer).unwrap();
+        let resolved = loader
+            .resolve_bare_specifier("with-main", &referrer)
+            .unwrap();
         assert!(resolved.ends_with("with-main/lib.js"));
     }
 
@@ -542,7 +796,9 @@ mod tests {
         let loader = HowthModuleLoader::new(temp.path().to_path_buf());
         let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
 
-        let resolved = loader.resolve_bare_specifier("with-exports", &referrer).unwrap();
+        let resolved = loader
+            .resolve_bare_specifier("with-exports", &referrer)
+            .unwrap();
         assert!(resolved.ends_with("with-exports/dist/index.mjs"));
     }
 
@@ -554,7 +810,9 @@ mod tests {
         let loader = HowthModuleLoader::new(temp.path().to_path_buf());
         let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
 
-        let resolved = loader.resolve_bare_specifier("with-subpath/utils/helper", &referrer).unwrap();
+        let resolved = loader
+            .resolve_bare_specifier("with-subpath/utils/helper", &referrer)
+            .unwrap();
         assert!(resolved.ends_with("with-subpath/utils/helper.js"));
     }
 
@@ -566,7 +824,9 @@ mod tests {
         let loader = HowthModuleLoader::new(temp.path().to_path_buf());
         let referrer = ModuleSpecifier::from_file_path(temp.path().join("index.js")).unwrap();
 
-        let resolved = loader.resolve_bare_specifier("@scope/pkg", &referrer).unwrap();
+        let resolved = loader
+            .resolve_bare_specifier("@scope/pkg", &referrer)
+            .unwrap();
         assert!(resolved.ends_with("@scope/pkg/index.js"));
     }
 
@@ -578,6 +838,9 @@ mod tests {
 
         let result = loader.resolve_bare_specifier("nonexistent-pkg", &referrer);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Cannot find package"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot find package"));
     }
 }

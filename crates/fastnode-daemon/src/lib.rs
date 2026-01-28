@@ -235,6 +235,8 @@ pub fn handle_request(
         Request::PkgAdd { .. }
         | Request::PkgRemove { .. }
         | Request::PkgUpdate { .. }
+        | Request::PkgOutdated { .. }
+        | Request::PkgPublish { .. }
         | Request::PkgCacheList { .. }
         | Request::PkgCachePrune { .. }
         | Request::PkgInstall { .. } => (
@@ -297,6 +299,28 @@ pub async fn handle_request_async(
             include_optional,
         } => (
             pkg::handle_pkg_install(cwd, channel, *frozen, *include_dev, *include_optional).await,
+            false,
+        ),
+        Request::PkgOutdated { cwd, channel } => {
+            (pkg::handle_pkg_outdated(cwd, channel).await, false)
+        }
+        Request::PkgPublish {
+            cwd,
+            registry,
+            token,
+            dry_run,
+            tag,
+            access,
+        } => (
+            pkg::handle_pkg_publish(
+                cwd,
+                registry.as_deref(),
+                token.as_deref(),
+                *dry_run,
+                tag.as_deref(),
+                access.as_deref(),
+            )
+            .await,
             false,
         ),
         // Non-async operations - should not reach here, but handle gracefully

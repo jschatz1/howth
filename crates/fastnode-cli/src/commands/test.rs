@@ -19,7 +19,14 @@ const EXIT_VALIDATION_ERROR: i32 = 2;
 const EXIT_INTERNAL_ERROR: i32 = 1;
 
 /// Directories to exclude from test discovery.
-const EXCLUDE_DIRS: &[&str] = &["node_modules", ".git", "dist", "build", "target", "coverage"];
+const EXCLUDE_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    "target",
+    "coverage",
+];
 
 /// Run the test command.
 ///
@@ -45,9 +52,8 @@ pub fn run(config: &Config) -> Result<()> {
     println!("Found {} test file(s)", test_files.len());
 
     // Separate files by type
-    let (ts_files, js_files): (Vec<_>, Vec<_>) = test_files
-        .into_iter()
-        .partition(|f| needs_transpilation(f));
+    let (ts_files, js_files): (Vec<_>, Vec<_>) =
+        test_files.into_iter().partition(|f| needs_transpilation(f));
 
     // Transpile TypeScript files
     let mut files_to_run: Vec<PathBuf> = js_files;
@@ -107,14 +113,10 @@ fn is_excluded_dir(entry: &walkdir::DirEntry) -> bool {
 
 /// Check if a file matches test file patterns (*.test.* or *.spec.*).
 fn is_test_file(path: &Path) -> bool {
-    let file_name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     // Check for .test. or .spec. pattern before extension
-    (file_name.ends_with(".test") || file_name.ends_with(".spec"))
-        && is_supported_extension(path)
+    (file_name.ends_with(".test") || file_name.ends_with(".spec")) && is_supported_extension(path)
 }
 
 /// Check if file has a supported extension.
@@ -158,16 +160,13 @@ fn needs_transpilation(path: &Path) -> bool {
 
 /// Transpile a TypeScript test file to JavaScript.
 fn transpile_test_file(path: &Path) -> Result<PathBuf> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| miette::miette!("Failed to read file: {}", e))?;
+    let source =
+        std::fs::read_to_string(path).map_err(|e| miette::miette!("Failed to read file: {}", e))?;
 
     let backend = SwcBackend::new();
 
     // Create output path in temp directory
-    let file_name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("test");
+    let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("test");
     let temp_dir = std::env::temp_dir();
     let output_path = temp_dir.join(format!(
         "howth-test-{}-{}.mjs",
@@ -262,9 +261,9 @@ fn run_test_script(cwd: &Path, script: &str) -> Result<()> {
         cmd.env("PATH", new_path);
     }
 
-    let status = cmd.status().map_err(|e| {
-        miette::miette!("Failed to execute test script: {}", e)
-    })?;
+    let status = cmd
+        .status()
+        .map_err(|e| miette::miette!("Failed to execute test script: {}", e))?;
 
     std::process::exit(status.code().unwrap_or(EXIT_INTERNAL_ERROR));
 }

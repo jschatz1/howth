@@ -96,6 +96,8 @@ fn is_pkg_request(request: &Request) -> bool {
         Request::PkgAdd { .. }
             | Request::PkgRemove { .. }
             | Request::PkgUpdate { .. }
+            | Request::PkgOutdated { .. }
+            | Request::PkgPublish { .. }
             | Request::PkgCacheList { .. }
             | Request::PkgCachePrune { .. }
             | Request::PkgInstall { .. }

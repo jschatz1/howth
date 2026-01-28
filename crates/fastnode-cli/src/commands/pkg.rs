@@ -7,8 +7,8 @@ use fastnode_core::VERSION;
 use fastnode_daemon::ipc::{IpcStream, MAX_FRAME_SIZE};
 use fastnode_proto::{
     encode_frame, CachedPackage, DoctorFinding, Frame, FrameResponse, GraphDepEdge,
-    GraphPackageNode, InstalledPackage, PackageGraph, PkgDoctorReport, PkgErrorInfo,
-    PkgExplainResult, PkgInstallResult, PkgWhyChain, PkgWhyResult, Request, Response,
+    GraphPackageNode, InstalledPackage, OutdatedPackage, PackageGraph, PkgDoctorReport,
+    PkgErrorInfo, PkgExplainResult, PkgInstallResult, PkgWhyChain, PkgWhyResult, Request, Response,
     UpdatedPackage,
 };
 use miette::{IntoDiagnostic, Result};
@@ -77,6 +77,16 @@ pub enum PkgAction {
         frozen: bool,
         include_dev: bool,
         include_optional: bool,
+    },
+    Outdated {
+        cwd: PathBuf,
+    },
+    Publish {
+        cwd: PathBuf,
+        dry_run: bool,
+        tag: String,
+        access: Option<String>,
+        registry: Option<String>,
     },
     CacheList,
     CachePrune,
@@ -175,6 +185,30 @@ struct PkgDoctorJsonResult {
 struct PkgInstallJsonResult {
     ok: bool,
     install: Option<PkgInstallResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Outdated result for JSON output.
+#[derive(Serialize)]
+struct PkgOutdatedJsonResult {
+    ok: bool,
+    outdated: Vec<OutdatedPackage>,
+    up_to_date_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Publish result for JSON output.
+#[derive(Serialize)]
+struct PkgPublishJsonResult {
+    ok: bool,
+    name: Option<String>,
+    version: Option<String>,
+    registry: Option<String>,
+    tag: Option<String>,
+    tarball_size: Option<u64>,
+    files_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -376,6 +410,28 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
                         let result = PkgInstallJsonResult {
                             ok: false,
                             install: None,
+                            error: Some(format!("Failed to connect: {e}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Outdated { .. } => {
+                        let result = PkgOutdatedJsonResult {
+                            ok: false,
+                            outdated: Vec::new(),
+                            up_to_date_count: 0,
+                            error: Some(format!("Failed to connect: {e}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Publish { .. } => {
+                        let result = PkgPublishJsonResult {
+                            ok: false,
+                            name: None,
+                            version: None,
+                            registry: None,
+                            tag: None,
+                            tarball_size: None,
+                            files_count: None,
                             error: Some(format!("Failed to connect: {e}")),
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -711,6 +767,76 @@ fn handle_response(
             }
             Ok(())
         }
+        Response::PkgOutdatedResult {
+            outdated,
+            up_to_date_count,
+        } => {
+            if json {
+                let result = PkgOutdatedJsonResult {
+                    ok: true,
+                    outdated,
+                    up_to_date_count,
+                    error: None,
+                };
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if outdated.is_empty() {
+                println!("All packages are up to date.");
+            } else {
+                // Print table header
+                println!(
+                    "{:<30} {:>12} {:>12} {:>12} {:>8}",
+                    "Package", "Current", "Wanted", "Latest", "Type"
+                );
+                println!("{}", "-".repeat(78));
+                for pkg in &outdated {
+                    println!(
+                        "{:<30} {:>12} {:>12} {:>12} {:>8}",
+                        pkg.name, pkg.current, pkg.wanted, pkg.latest, pkg.dep_type
+                    );
+                }
+                println!();
+                println!(
+                    "{} outdated, {} up to date",
+                    outdated.len(),
+                    up_to_date_count
+                );
+            }
+            Ok(())
+        }
+        Response::PkgPublishResult {
+            ok,
+            name,
+            version,
+            registry,
+            tag,
+            tarball_size,
+            files_count,
+            error,
+        } => {
+            if json {
+                let result = PkgPublishJsonResult {
+                    ok,
+                    name: Some(name.clone()),
+                    version: Some(version.clone()),
+                    registry: Some(registry.clone()),
+                    tag: Some(tag.clone()),
+                    tarball_size: Some(tarball_size),
+                    files_count: Some(files_count),
+                    error,
+                };
+                println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if ok {
+                let size_kb = tarball_size / 1024;
+                println!("+ {name}@{version}");
+                println!("  registry: {registry}");
+                println!("  tag: {tag}");
+                println!("  size: {size_kb} KB ({files_count} files)");
+            } else if let Some(err) = error {
+                eprintln!("error: {err}");
+                std::process::exit(2);
+            }
+            Ok(())
+        }
         Response::Error { code, message } => {
             if json {
                 match action {
@@ -797,6 +923,28 @@ fn handle_response(
                         let result = PkgInstallJsonResult {
                             ok: false,
                             install: None,
+                            error: Some(format!("{code}: {message}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Outdated { .. } => {
+                        let result = PkgOutdatedJsonResult {
+                            ok: false,
+                            outdated: Vec::new(),
+                            up_to_date_count: 0,
+                            error: Some(format!("{code}: {message}")),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Publish { .. } => {
+                        let result = PkgPublishJsonResult {
+                            ok: false,
+                            name: None,
+                            version: None,
+                            registry: None,
+                            tag: None,
+                            tarball_size: None,
+                            files_count: None,
                             error: Some(format!("{code}: {message}")),
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -893,6 +1041,28 @@ fn handle_response(
                         let result = PkgInstallJsonResult {
                             ok: false,
                             install: None,
+                            error: Some("Unexpected response type".to_string()),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Outdated { .. } => {
+                        let result = PkgOutdatedJsonResult {
+                            ok: false,
+                            outdated: Vec::new(),
+                            up_to_date_count: 0,
+                            error: Some("Unexpected response type".to_string()),
+                        };
+                        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                    }
+                    PkgAction::Publish { .. } => {
+                        let result = PkgPublishJsonResult {
+                            ok: false,
+                            name: None,
+                            version: None,
+                            registry: None,
+                            tag: None,
+                            tarball_size: None,
+                            files_count: None,
                             error: Some("Unexpected response type".to_string()),
                         };
                         println!("{}", serde_json::to_string_pretty(&result).unwrap());
@@ -1527,6 +1697,24 @@ async fn send_pkg_request(
             frozen: *frozen,
             include_dev: *include_dev,
             include_optional: *include_optional,
+        },
+        PkgAction::Outdated { cwd } => Request::PkgOutdated {
+            cwd: cwd.to_string_lossy().into_owned(),
+            channel: channel.as_str().to_string(),
+        },
+        PkgAction::Publish {
+            cwd,
+            dry_run,
+            tag,
+            access,
+            registry,
+        } => Request::PkgPublish {
+            cwd: cwd.to_string_lossy().into_owned(),
+            registry: registry.clone(),
+            token: std::env::var("NPM_TOKEN").ok(),
+            dry_run: *dry_run,
+            tag: Some(tag.clone()),
+            access: access.clone(),
         },
     };
 

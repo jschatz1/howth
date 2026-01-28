@@ -198,7 +198,9 @@ fn create_package_json(name: &str, entry: &str) -> String {
 /// Prompt the user for input
 fn prompt(message: &str) -> Result<Option<String>> {
     print!("{}", message);
-    io::stdout().flush().map_err(|e| miette::miette!("Failed to flush stdout: {}", e))?;
+    io::stdout()
+        .flush()
+        .map_err(|e| miette::miette!("Failed to flush stdout: {}", e))?;
 
     let mut input = String::new();
     io::stdin()
@@ -206,5 +208,9 @@ fn prompt(message: &str) -> Result<Option<String>> {
         .map_err(|e| miette::miette!("Failed to read input: {}", e))?;
 
     let trimmed = input.trim().to_string();
-    Ok(if trimmed.is_empty() { None } else { Some(trimmed) })
+    Ok(if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    })
 }

@@ -314,11 +314,7 @@ pub fn extract_re_exports(source: &str) -> Vec<(String, String, String)> {
                             if parts.len() == 2 {
                                 let source_name = parts[0].trim().to_string();
                                 let export_name = parts[1].trim().to_string();
-                                re_exports.push((
-                                    export_name,
-                                    specifier.to_string(),
-                                    source_name,
-                                ));
+                                re_exports.push((export_name, specifier.to_string(), source_name));
                             }
                         } else {
                             // Same name for import and export
@@ -366,11 +362,14 @@ pub fn extract_re_exports(source: &str) -> Vec<(String, String, String)> {
 
 /// Extract variable name from an export const/let/var declaration.
 fn extract_var_name(line: &str) -> Option<String> {
-    let decl = line.strip_prefix("export ")?.strip_prefix("const ").or_else(|| {
-        line.strip_prefix("export ")?
-            .strip_prefix("let ")
-            .or_else(|| line.strip_prefix("export ")?.strip_prefix("var "))
-    })?;
+    let decl = line
+        .strip_prefix("export ")?
+        .strip_prefix("const ")
+        .or_else(|| {
+            line.strip_prefix("export ")?
+                .strip_prefix("let ")
+                .or_else(|| line.strip_prefix("export ")?.strip_prefix("var "))
+        })?;
 
     // Handle destructuring: export const { a, b } = ...
     if decl.starts_with('{') {
@@ -384,7 +383,9 @@ fn extract_var_name(line: &str) -> Option<String> {
     }
 
     // Regular declaration: export const foo = ...
-    let parts: Vec<&str> = decl.splitn(2, |c: char| c == '=' || c == ':' || c == ' ').collect();
+    let parts: Vec<&str> = decl
+        .splitn(2, |c: char| c == '=' || c == ':' || c == ' ')
+        .collect();
     if !parts.is_empty() {
         let name = parts[0].trim();
         if !name.is_empty() {

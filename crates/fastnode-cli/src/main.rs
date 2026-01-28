@@ -61,6 +61,15 @@ enum Commands {
         yes: bool,
     },
 
+    /// Create a new project from a template
+    Create {
+        /// Template to use (e.g., "react", "next", "vite", or a GitHub repo like "user/repo")
+        template: String,
+
+        /// Project name / directory name
+        name: Option<String>,
+    },
+
     /// Register or link a local package
     Link {
         /// Package name to link (omit to register current package)
@@ -392,6 +401,28 @@ enum PkgCommands {
         latest: bool,
     },
 
+    /// Show outdated packages
+    Outdated,
+
+    /// Publish package to npm registry
+    Publish {
+        /// Dry run (don't actually publish)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// npm tag (defaults to "latest")
+        #[arg(long, default_value = "latest")]
+        tag: String,
+
+        /// Access level for scoped packages: "public" or "restricted"
+        #[arg(long)]
+        access: Option<String>,
+
+        /// Custom registry URL
+        #[arg(long)]
+        registry: Option<String>,
+    },
+
     /// Show the dependency graph
     Graph {
         /// Include devDependencies from root package.json
@@ -517,6 +548,10 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Init { yes }) = &cli.command {
         return commands::init::run(&cwd, *yes, cli.json);
+    }
+
+    if let Some(Commands::Create { template, name }) = &cli.command {
+        return commands::create::run(&cwd, template, name.as_deref(), cli.json);
     }
 
     if let Some(Commands::Link {
@@ -683,6 +718,19 @@ fn main() -> Result<()> {
                     latest: *latest,
                 }
             }
+            PkgCommands::Outdated => commands::pkg::PkgAction::Outdated { cwd: cwd.clone() },
+            PkgCommands::Publish {
+                dry_run,
+                tag,
+                access,
+                registry,
+            } => commands::pkg::PkgAction::Publish {
+                cwd: cwd.clone(),
+                dry_run: *dry_run,
+                tag: tag.clone(),
+                access: access.clone(),
+                registry: registry.clone(),
+            },
             PkgCommands::Graph {
                 dev,
                 no_optional,
@@ -906,6 +954,7 @@ fn main() -> Result<()> {
             Commands::Doctor
             | Commands::Bench { .. }
             | Commands::Bundle { .. }
+            | Commands::Create { .. }
             | Commands::Daemon
             | Commands::Dev { .. }
             | Commands::Init { .. }

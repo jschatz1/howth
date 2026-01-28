@@ -3,9 +3,14 @@
 use crate::module_loader::HowthModuleLoader;
 use deno_core::{extension, op2, JsRuntime, ModuleSpecifier, RuntimeOptions as DenoRuntimeOptions};
 use std::cell::RefCell;
-use std::io::ErrorKind;
+use std::collections::HashMap;
+use std::io::{ErrorKind, Read, Write, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::sync::mpsc;
+use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event};
 
 /// Format an IO error in Node.js style.
 /// Node.js format: `CODE: message, syscall 'path'`
@@ -111,6 +116,7 @@ extension!(
         op_howth_read_file,
         op_howth_write_file,
         op_howth_cwd,
+        op_howth_chdir,
         op_howth_platform,
         op_howth_arch,
         op_howth_env_get,
@@ -139,11 +145,49 @@ extension!(
         op_howth_fs_read_bytes,
         op_howth_fs_write_bytes,
         op_howth_fs_realpath,
+        op_howth_fs_readlink,
+        op_howth_fs_symlink,
+        op_howth_fs_chown,
         op_howth_fs_chmod,
         op_howth_fs_access,
-        // Child process ops
+        // File descriptor ops (for streaming)
+        op_howth_fs_open_fd,
+        op_howth_fs_read_fd,
+        op_howth_fs_write_fd,
+        op_howth_fs_close_fd,
+        op_howth_fs_seek_fd,
+        // File watching ops
+        op_howth_fs_watch_start,
+        op_howth_fs_watch_poll,
+        op_howth_fs_watch_close,
+        // Zlib compression ops
+        op_howth_zlib_gzip,
+        op_howth_zlib_gunzip,
+        op_howth_zlib_deflate,
+        op_howth_zlib_inflate,
+        op_howth_zlib_deflate_raw,
+        op_howth_zlib_inflate_raw,
+        // Worker thread ops
+        op_howth_worker_is_main_thread,
+        op_howth_worker_thread_id,
+        op_howth_worker_create,
+        op_howth_worker_post_message,
+        op_howth_worker_recv_message,
+        op_howth_worker_parent_post,
+        op_howth_worker_parent_recv,
+        op_howth_worker_terminate,
+        op_howth_worker_is_running,
+        // Child process ops (sync)
         op_howth_spawn_sync,
         op_howth_exec_sync,
+        // Child process ops (async with streams)
+        op_howth_spawn_async,
+        op_howth_spawn_read_stdout,
+        op_howth_spawn_read_stderr,
+        op_howth_spawn_write_stdin,
+        op_howth_spawn_close_stdin,
+        op_howth_spawn_wait,
+        op_howth_spawn_kill,
         // HTTP server ops
         op_howth_http_listen,
         op_howth_http_accept,
@@ -220,11 +264,24 @@ fn op_howth_fs_readdir(#[string] path: &str) -> Result<Vec<DirEntry>, deno_core:
         .filter_map(|entry| entry.ok())
         .map(|entry| {
             let file_type = entry.file_type().ok();
+            let is_symlink = file_type.map(|ft| ft.is_symlink()).unwrap_or(false);
+            // For symlinks, follow the link to determine the target type
+            let (is_file, is_directory) = if is_symlink {
+                match std::fs::metadata(entry.path()) {
+                    Ok(meta) => (meta.is_file(), meta.is_dir()),
+                    Err(_) => (false, false), // broken symlink
+                }
+            } else {
+                (
+                    file_type.map(|ft| ft.is_file()).unwrap_or(false),
+                    file_type.map(|ft| ft.is_dir()).unwrap_or(false),
+                )
+            };
             DirEntry {
                 name: entry.file_name().to_string_lossy().to_string(),
-                is_file: file_type.map(|ft| ft.is_file()).unwrap_or(false),
-                is_directory: file_type.map(|ft| ft.is_dir()).unwrap_or(false),
-                is_symlink: file_type.map(|ft| ft.is_symlink()).unwrap_or(false),
+                is_file,
+                is_directory,
+                is_symlink,
             }
         })
         .collect();
@@ -419,6 +476,69 @@ fn op_howth_fs_realpath(#[string] path: &str) -> Result<String, deno_core::error
         .map_err(|e| e.into())
 }
 
+/// Read the target of a symbolic link.
+#[op2]
+#[string]
+fn op_howth_fs_readlink(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
+    std::fs::read_link(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| format_fs_error(e, "readlink", path))
+}
+
+/// Create a symbolic link.
+#[op2(fast)]
+fn op_howth_fs_symlink(
+    #[string] target: &str,
+    #[string] path: &str,
+    #[string] link_type: &str,
+) -> Result<(), deno_core::error::AnyError> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, path)
+            .map_err(|e| format_fs_error(e, "symlink", path))
+    }
+    #[cfg(windows)]
+    {
+        if link_type == "dir" || std::path::Path::new(target).is_dir() {
+            std::os::windows::fs::symlink_dir(target, path)
+                .map_err(|e| format_fs_error(e, "symlink", path))
+        } else {
+            std::os::windows::fs::symlink_file(target, path)
+                .map_err(|e| format_fs_error(e, "symlink", path))
+        }
+    }
+}
+
+/// Change ownership of a file (Unix only).
+#[op2(fast)]
+fn op_howth_fs_chown(
+    #[string] path: &str,
+    uid: u32,
+    gid: u32,
+) -> Result<(), deno_core::error::AnyError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = std::ffi::CString::new(std::path::Path::new(path).as_os_str().as_bytes())
+            .map_err(|e| deno_core::error::AnyError::msg(format!("Invalid path: {}", e)))?;
+        let result = unsafe { libc::chown(c_path.as_ptr(), uid, gid as libc::gid_t) };
+        if result != 0 {
+            return Err(format_fs_error(
+                std::io::Error::last_os_error(),
+                "chown",
+                path,
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        // chown is a no-op on Windows
+        let _ = (path, uid, gid);
+        Ok(())
+    }
+}
+
 /// Change file permissions (Unix only).
 #[op2(fast)]
 fn op_howth_fs_chmod(#[string] path: &str, mode: u32) -> Result<(), deno_core::error::AnyError> {
@@ -468,6 +588,613 @@ fn op_howth_fs_access(#[string] path: &str, mode: u32) -> Result<(), deno_core::
     }
 
     Ok(())
+}
+
+// ============================================================================
+// File Descriptor Operations (for streaming)
+// ============================================================================
+
+/// Global file handle ID counter
+static NEXT_FILE_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Storage for open file handles
+lazy_static::lazy_static! {
+    static ref FILE_HANDLES: Arc<std::sync::Mutex<HashMap<u32, std::fs::File>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+}
+
+/// Result of opening a file
+#[derive(serde::Serialize)]
+pub struct FileOpenResult {
+    pub fd: u32,
+    pub error: Option<String>,
+}
+
+/// Open a file and return a handle ID
+#[op2]
+#[serde]
+fn op_howth_fs_open_fd(
+    #[string] path: &str,
+    #[string] flags: &str,
+    mode: u32,
+) -> FileOpenResult {
+    use std::fs::OpenOptions;
+
+    let mut opts = OpenOptions::new();
+
+    // Parse flags like Node.js: r, r+, w, w+, a, a+, etc.
+    match flags {
+        "r" => { opts.read(true); }
+        "r+" | "rs+" => { opts.read(true).write(true); }
+        "w" => { opts.write(true).create(true).truncate(true); }
+        "w+" | "wx+" => { opts.read(true).write(true).create(true).truncate(true); }
+        "a" => { opts.write(true).create(true).append(true); }
+        "a+" | "ax+" => { opts.read(true).write(true).create(true).append(true); }
+        _ => { opts.read(true); } // Default to read
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(mode);
+    }
+
+    match opts.open(path) {
+        Ok(file) => {
+            let id = NEXT_FILE_ID.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut handles) = FILE_HANDLES.lock() {
+                handles.insert(id, file);
+            }
+            FileOpenResult {
+                fd: id,
+                error: None,
+            }
+        }
+        Err(e) => FileOpenResult {
+            fd: 0,
+            error: Some(format!("{}", e)),
+        },
+    }
+}
+
+/// Read bytes from a file handle
+#[op2]
+#[serde]
+fn op_howth_fs_read_fd(fd: u32, length: u32) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
+    let mut handles = FILE_HANDLES.lock()
+        .map_err(|_| deno_core::error::AnyError::msg("lock error"))?;
+
+    if let Some(file) = handles.get_mut(&fd) {
+        let mut buf = vec![0u8; length as usize];
+        match file.read(&mut buf) {
+            Ok(0) => Ok(None), // EOF
+            Ok(n) => {
+                buf.truncate(n);
+                Ok(Some(buf))
+            }
+            Err(e) => Err(deno_core::error::AnyError::msg(format!("read error: {}", e))),
+        }
+    } else {
+        Err(deno_core::error::AnyError::msg("EBADF: bad file descriptor"))
+    }
+}
+
+/// Write bytes to a file handle (accepts serde Vec<u8>)
+#[op2]
+fn op_howth_fs_write_fd(fd: u32, #[serde] data: Vec<u8>) -> Result<u32, deno_core::error::AnyError> {
+    let mut handles = FILE_HANDLES.lock()
+        .map_err(|_| deno_core::error::AnyError::msg("lock error"))?;
+
+    if let Some(file) = handles.get_mut(&fd) {
+        match file.write(&data) {
+            Ok(n) => {
+                // Flush to ensure data is written
+                let _ = file.flush();
+                Ok(n as u32)
+            }
+            Err(e) => Err(deno_core::error::AnyError::msg(format!("write error: {}", e))),
+        }
+    } else {
+        Err(deno_core::error::AnyError::msg("EBADF: bad file descriptor"))
+    }
+}
+
+/// Seek in a file handle (returns new position or -1 on error)
+#[op2(fast)]
+fn op_howth_fs_seek_fd(fd: u32, offset: f64, whence: u32) -> f64 {
+    let mut handles = match FILE_HANDLES.lock() {
+        Ok(h) => h,
+        Err(_) => return -1.0,
+    };
+
+    if let Some(file) = handles.get_mut(&fd) {
+        let pos = match whence {
+            0 => SeekFrom::Start(offset as u64),       // SEEK_SET
+            1 => SeekFrom::Current(offset as i64),     // SEEK_CUR
+            2 => SeekFrom::End(offset as i64),         // SEEK_END
+            _ => return -1.0,
+        };
+        match file.seek(pos) {
+            Ok(p) => p as f64,
+            Err(_) => -1.0,
+        }
+    } else {
+        -1.0
+    }
+}
+
+/// Close a file handle
+#[op2(fast)]
+fn op_howth_fs_close_fd(fd: u32) -> Result<(), deno_core::error::AnyError> {
+    let mut handles = FILE_HANDLES.lock()
+        .map_err(|_| deno_core::error::AnyError::msg("lock error"))?;
+
+    if handles.remove(&fd).is_some() {
+        Ok(())
+    } else {
+        Err(deno_core::error::AnyError::msg("EBADF: bad file descriptor"))
+    }
+}
+
+// ============================================================================
+// File System Watch Operations
+// ============================================================================
+
+static NEXT_WATCHER_ID: AtomicU32 = AtomicU32::new(1);
+
+struct WatcherHandle {
+    _watcher: RecommendedWatcher,
+    receiver: mpsc::Receiver<Result<Event, notify::Error>>,
+    path: String,
+}
+
+lazy_static::lazy_static! {
+    static ref WATCHERS: Arc<std::sync::Mutex<HashMap<u32, WatcherHandle>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+}
+
+#[derive(serde::Serialize)]
+pub struct WatchStartResult {
+    pub id: u32,
+    pub error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct WatchEvent {
+    pub event_type: String,
+    pub filename: Option<String>,
+}
+
+/// Start watching a file or directory
+#[op2]
+#[serde]
+fn op_howth_fs_watch_start(
+    #[string] path: &str,
+    recursive: bool,
+) -> WatchStartResult {
+    let (tx, rx) = mpsc::channel();
+
+    let watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    });
+
+    match watcher {
+        Ok(mut w) => {
+            let watch_path = std::path::Path::new(path);
+            let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+
+            if let Err(e) = w.watch(watch_path, mode) {
+                return WatchStartResult {
+                    id: 0,
+                    error: Some(format!("{}", e)),
+                };
+            }
+
+            let id = NEXT_WATCHER_ID.fetch_add(1, Ordering::SeqCst);
+
+            if let Ok(mut watchers) = WATCHERS.lock() {
+                watchers.insert(id, WatcherHandle {
+                    _watcher: w,
+                    receiver: rx,
+                    path: path.to_string(),
+                });
+            }
+
+            WatchStartResult { id, error: None }
+        }
+        Err(e) => WatchStartResult {
+            id: 0,
+            error: Some(format!("{}", e)),
+        },
+    }
+}
+
+/// Poll for watch events (non-blocking, returns None if no events)
+#[op2]
+#[serde]
+fn op_howth_fs_watch_poll(id: u32) -> Option<WatchEvent> {
+    let watchers = match WATCHERS.lock() {
+        Ok(w) => w,
+        Err(_) => return None,
+    };
+
+    if let Some(handle) = watchers.get(&id) {
+        // Non-blocking poll
+        match handle.receiver.try_recv() {
+            Ok(Ok(event)) => {
+                // Map notify event kind to Node.js event type
+                let event_type = match event.kind {
+                    notify::EventKind::Create(_) => "rename",
+                    notify::EventKind::Remove(_) => "rename",
+                    notify::EventKind::Modify(_) => "change",
+                    notify::EventKind::Access(_) => "change",
+                    _ => "change",
+                };
+
+                // Get filename relative to watched path
+                let filename = event.paths.first().and_then(|p| {
+                    let watched = std::path::Path::new(&handle.path);
+                    p.strip_prefix(watched)
+                        .ok()
+                        .map(|rel| rel.to_string_lossy().to_string())
+                        .or_else(|| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                });
+
+                Some(WatchEvent { event_type: event_type.to_string(), filename })
+            }
+            Ok(Err(_)) => None, // Watcher error
+            Err(mpsc::TryRecvError::Empty) => None, // No events
+            Err(mpsc::TryRecvError::Disconnected) => None, // Channel closed
+        }
+    } else {
+        None
+    }
+}
+
+/// Stop watching
+#[op2(fast)]
+fn op_howth_fs_watch_close(id: u32) -> bool {
+    if let Ok(mut watchers) = WATCHERS.lock() {
+        watchers.remove(&id).is_some()
+    } else {
+        false
+    }
+}
+
+// ============================================================================
+// Zlib Compression Operations
+// ============================================================================
+
+/// Gzip compress data
+#[op2]
+#[serde]
+fn op_howth_zlib_gzip(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let compression = match level {
+        -1 => Compression::default(),
+        0..=9 => Compression::new(level as u32),
+        _ => Compression::default(),
+    };
+
+    let mut encoder = GzEncoder::new(Vec::new(), compression);
+    encoder.write_all(&data)?;
+    encoder.finish().map_err(|e| deno_core::error::AnyError::msg(format!("gzip error: {}", e)))
+}
+
+/// Gzip decompress data
+#[op2]
+#[serde]
+fn op_howth_zlib_gunzip(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let mut decoder = GzDecoder::new(&data[..]);
+    let mut result = Vec::new();
+    decoder.read_to_end(&mut result)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("gunzip error: {}", e)))?;
+    Ok(result)
+}
+
+/// Deflate compress data
+#[op2]
+#[serde]
+fn op_howth_zlib_deflate(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    use std::io::Write;
+
+    let compression = match level {
+        -1 => Compression::default(),
+        0..=9 => Compression::new(level as u32),
+        _ => Compression::default(),
+    };
+
+    let mut encoder = DeflateEncoder::new(Vec::new(), compression);
+    encoder.write_all(&data)?;
+    encoder.finish().map_err(|e| deno_core::error::AnyError::msg(format!("deflate error: {}", e)))
+}
+
+/// Inflate decompress data
+#[op2]
+#[serde]
+fn op_howth_zlib_inflate(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use flate2::read::DeflateDecoder;
+    use std::io::Read;
+
+    let mut decoder = DeflateDecoder::new(&data[..]);
+    let mut result = Vec::new();
+    decoder.read_to_end(&mut result)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("inflate error: {}", e)))?;
+    Ok(result)
+}
+
+/// Deflate raw compress data (no zlib header)
+#[op2]
+#[serde]
+fn op_howth_zlib_deflate_raw(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    use std::io::Write;
+
+    let compression = match level {
+        -1 => Compression::default(),
+        0..=9 => Compression::new(level as u32),
+        _ => Compression::default(),
+    };
+
+    let mut encoder = DeflateEncoder::new(Vec::new(), compression);
+    encoder.write_all(&data)?;
+    encoder.finish().map_err(|e| deno_core::error::AnyError::msg(format!("deflate error: {}", e)))
+}
+
+/// Inflate raw decompress data (no zlib header)
+#[op2]
+#[serde]
+fn op_howth_zlib_inflate_raw(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use flate2::read::DeflateDecoder;
+    use std::io::Read;
+
+    let mut decoder = DeflateDecoder::new(&data[..]);
+    let mut result = Vec::new();
+    decoder.read_to_end(&mut result)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("inflate error: {}", e)))?;
+    Ok(result)
+}
+
+// ============================================================================
+// Worker Threads Operations
+// ============================================================================
+
+static NEXT_WORKER_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Thread-local storage for worker context (set when running as a worker)
+thread_local! {
+    static WORKER_CONTEXT: RefCell<Option<WorkerContext>> = RefCell::new(None);
+}
+
+struct WorkerContext {
+    worker_id: u32,
+    parent_tx: mpsc::Sender<String>,
+    parent_rx: mpsc::Receiver<String>,
+}
+
+struct WorkerHandle {
+    thread: Option<std::thread::JoinHandle<()>>,
+    tx: mpsc::Sender<String>,
+    rx: mpsc::Receiver<String>,
+    terminated: bool,
+}
+
+lazy_static::lazy_static! {
+    static ref WORKERS: Arc<std::sync::Mutex<HashMap<u32, WorkerHandle>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+    /// Flag indicating if this is the main thread
+    static ref IS_MAIN_THREAD: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(true);
+
+    /// Storage for messages from parent (when running as worker)
+    static ref WORKER_INBOX: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    /// Storage for messages to parent (when running as worker)
+    static ref WORKER_OUTBOX: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+}
+
+#[derive(serde::Serialize)]
+pub struct WorkerCreateResult {
+    pub id: u32,
+    pub error: Option<String>,
+}
+
+/// Check if this is the main thread
+#[op2(fast)]
+fn op_howth_worker_is_main_thread() -> bool {
+    IS_MAIN_THREAD.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Get the current worker's thread ID (0 if main thread)
+#[op2(fast)]
+fn op_howth_worker_thread_id() -> u32 {
+    WORKER_CONTEXT.with(|ctx| {
+        ctx.borrow().as_ref().map(|c| c.worker_id).unwrap_or(0)
+    })
+}
+
+/// Create a new worker thread
+#[op2]
+#[serde]
+fn op_howth_worker_create(
+    #[string] filename: &str,
+    #[string] worker_data: &str,
+) -> WorkerCreateResult {
+    let worker_id = NEXT_WORKER_ID.fetch_add(1, Ordering::SeqCst);
+    let filename = filename.to_string();
+    let worker_data = worker_data.to_string();
+
+    // Create message channels: main -> worker and worker -> main
+    let (main_tx, worker_rx) = mpsc::channel::<String>();
+    let (worker_tx, main_rx) = mpsc::channel::<String>();
+
+    // Clone for the thread
+    let worker_tx_clone = worker_tx.clone();
+
+    // Spawn the worker thread
+    let handle = std::thread::spawn(move || {
+        // Mark this as a worker thread
+        IS_MAIN_THREAD.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // Set up worker context
+        WORKER_CONTEXT.with(|ctx| {
+            *ctx.borrow_mut() = Some(WorkerContext {
+                worker_id,
+                parent_tx: worker_tx_clone,
+                parent_rx: worker_rx,
+            });
+        });
+
+        // Create a new runtime for this worker
+        if let Err(e) = run_worker_script(&filename, &worker_data) {
+            eprintln!("Worker {} error: {}", worker_id, e);
+        }
+    });
+
+    // Store the worker handle
+    if let Ok(mut workers) = WORKERS.lock() {
+        workers.insert(worker_id, WorkerHandle {
+            thread: Some(handle),
+            tx: main_tx,
+            rx: main_rx,
+            terminated: false,
+        });
+    }
+
+    WorkerCreateResult { id: worker_id, error: None }
+}
+
+/// Run a script in a worker context
+fn run_worker_script(filename: &str, _worker_data: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::runtime::Runtime;
+
+    // Create a new tokio runtime for this thread
+    let rt = Runtime::new()?;
+
+    rt.block_on(async {
+        // Create the extension
+        let ext = howth_runtime::init_ops();
+
+        // Create module loader
+        let module_loader = Rc::new(HowthModuleLoader::new(
+            std::path::PathBuf::from(filename).parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
+        ));
+
+        // Create runtime options
+        let options = DenoRuntimeOptions {
+            module_loader: Some(module_loader),
+            extensions: vec![ext],
+            ..Default::default()
+        };
+
+        // Create the JS runtime
+        let mut runtime = JsRuntime::new(options);
+
+        // Execute bootstrap
+        let bootstrap_code = include_str!("bootstrap.js");
+        runtime.execute_script("<howth:bootstrap>", bootstrap_code)?;
+
+        // Read and execute the worker script
+        let script_content = std::fs::read_to_string(filename)?;
+        let specifier = ModuleSpecifier::from_file_path(filename)
+            .map_err(|_| deno_core::error::AnyError::msg("Invalid file path"))?;
+
+        let module_id = runtime.load_main_es_module(&specifier).await?;
+        let result = runtime.mod_evaluate(module_id);
+        runtime.run_event_loop(Default::default()).await?;
+        result.await?;
+
+        Ok::<(), deno_core::error::AnyError>(())
+    })?;
+
+    Ok(())
+}
+
+/// Post a message to a worker
+#[op2(fast)]
+fn op_howth_worker_post_message(worker_id: u32, #[string] message: &str) -> bool {
+    if let Ok(workers) = WORKERS.lock() {
+        if let Some(worker) = workers.get(&worker_id) {
+            if !worker.terminated {
+                return worker.tx.send(message.to_string()).is_ok();
+            }
+        }
+    }
+    false
+}
+
+/// Receive a message from a worker (non-blocking)
+#[op2]
+#[string]
+fn op_howth_worker_recv_message(worker_id: u32) -> Option<String> {
+    if let Ok(workers) = WORKERS.lock() {
+        if let Some(worker) = workers.get(&worker_id) {
+            return worker.rx.try_recv().ok();
+        }
+    }
+    None
+}
+
+/// Post a message to the parent (from worker)
+#[op2(fast)]
+fn op_howth_worker_parent_post(#[string] message: &str) -> bool {
+    WORKER_CONTEXT.with(|ctx| {
+        if let Some(ref context) = *ctx.borrow() {
+            return context.parent_tx.send(message.to_string()).is_ok();
+        }
+        false
+    })
+}
+
+/// Receive a message from the parent (from worker, non-blocking)
+#[op2]
+#[string]
+fn op_howth_worker_parent_recv() -> Option<String> {
+    WORKER_CONTEXT.with(|ctx| {
+        if let Some(ref context) = *ctx.borrow() {
+            return context.parent_rx.try_recv().ok();
+        }
+        None
+    })
+}
+
+/// Terminate a worker
+#[op2(fast)]
+fn op_howth_worker_terminate(worker_id: u32) -> bool {
+    if let Ok(mut workers) = WORKERS.lock() {
+        if let Some(worker) = workers.get_mut(&worker_id) {
+            worker.terminated = true;
+            // Note: We can't forcefully kill a thread in Rust
+            // The worker should check for termination and exit gracefully
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if a worker is still running
+#[op2(fast)]
+fn op_howth_worker_is_running(worker_id: u32) -> bool {
+    if let Ok(workers) = WORKERS.lock() {
+        if let Some(worker) = workers.get(&worker_id) {
+            if let Some(ref handle) = worker.thread {
+                return !handle.is_finished();
+            }
+        }
+    }
+    false
 }
 
 // ============================================================================
@@ -644,11 +1371,291 @@ fn op_howth_exec_sync(
     }
 }
 
-// HTTP Server implementation using hyper
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
-use std::collections::HashMap;
+// ============================================================================
+// Async Child Process Operations (for proper spawn with streams)
+// ============================================================================
+
 use tokio::sync::Mutex;
+use tokio::process::{Child, ChildStdout, ChildStderr, ChildStdin, Command as TokioCommand};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Global child process ID counter
+static NEXT_CHILD_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Storage for spawned child processes (just the Child for wait/kill)
+lazy_static::lazy_static! {
+    static ref CHILD_PROCESSES: Arc<Mutex<HashMap<u32, Child>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    static ref CHILD_STDOUTS: Arc<Mutex<HashMap<u32, ChildStdout>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    static ref CHILD_STDERRS: Arc<Mutex<HashMap<u32, ChildStderr>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    static ref CHILD_STDINS: Arc<Mutex<HashMap<u32, ChildStdin>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    // Store PIDs separately for sync kill operation
+    static ref CHILD_PIDS: Arc<std::sync::Mutex<HashMap<u32, u32>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+}
+
+/// Result of spawning a process asynchronously
+#[derive(serde::Serialize)]
+pub struct SpawnAsyncResult {
+    pub id: u32,
+    pub pid: u32,
+    pub error: Option<String>,
+}
+
+/// Spawn a process asynchronously (returns immediately with handle)
+#[op2(async)]
+#[serde]
+async fn op_howth_spawn_async(
+    #[string] command: String,
+    #[serde] args: Vec<String>,
+    #[serde] options: Option<SpawnOptions>,
+) -> SpawnAsyncResult {
+    use std::process::Stdio;
+
+    let opts = options.unwrap_or_default();
+    let use_shell = opts.shell.unwrap_or(false);
+
+    let mut cmd = if use_shell {
+        #[cfg(windows)]
+        {
+            let mut c = TokioCommand::new("cmd");
+            c.arg("/C").arg(&command);
+            for arg in &args {
+                c.arg(arg);
+            }
+            c
+        }
+        #[cfg(not(windows))]
+        {
+            let mut c = TokioCommand::new("/bin/sh");
+            let full_cmd = if args.is_empty() {
+                command.clone()
+            } else {
+                format!("{} {}", command, args.join(" "))
+            };
+            c.arg("-c").arg(full_cmd);
+            c
+        }
+    } else {
+        let mut c = TokioCommand::new(&command);
+        c.args(&args);
+        c
+    };
+
+    // Set working directory
+    if let Some(cwd) = opts.cwd {
+        cmd.current_dir(cwd);
+    }
+
+    // Set environment variables
+    if let Some(env) = opts.env {
+        cmd.envs(env);
+    }
+
+    // Configure stdio for piping
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let pid = child.id().unwrap_or(0);
+            let id = NEXT_CHILD_ID.fetch_add(1, Ordering::SeqCst);
+
+            // Store PID for sync kill operation
+            if let Ok(mut pids) = CHILD_PIDS.lock() {
+                pids.insert(id, pid);
+            }
+
+            // Take ownership of stdio streams and store separately
+            if let Some(stdout) = child.stdout.take() {
+                CHILD_STDOUTS.lock().await.insert(id, stdout);
+            }
+            if let Some(stderr) = child.stderr.take() {
+                CHILD_STDERRS.lock().await.insert(id, stderr);
+            }
+            if let Some(stdin) = child.stdin.take() {
+                CHILD_STDINS.lock().await.insert(id, stdin);
+            }
+
+            CHILD_PROCESSES.lock().await.insert(id, child);
+
+            SpawnAsyncResult {
+                id,
+                pid,
+                error: None,
+            }
+        }
+        Err(e) => SpawnAsyncResult {
+            id: 0,
+            pid: 0,
+            error: Some(format!("ENOENT: spawn error: {}", e)),
+        },
+    }
+}
+
+/// Read from a child process's stdout
+#[op2(async)]
+#[serde]
+async fn op_howth_spawn_read_stdout(id: u32) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
+    // Take the stdout temporarily
+    let stdout_opt = CHILD_STDOUTS.lock().await.remove(&id);
+
+    if let Some(mut stdout) = stdout_opt {
+        let mut buf = vec![0u8; 8192];
+        let result = stdout.read(&mut buf).await;
+
+        // Put it back
+        CHILD_STDOUTS.lock().await.insert(id, stdout);
+
+        match result {
+            Ok(0) => Ok(None), // EOF
+            Ok(n) => {
+                buf.truncate(n);
+                Ok(Some(buf))
+            }
+            Err(e) => Err(deno_core::error::AnyError::msg(format!("read error: {}", e))),
+        }
+    } else {
+        Ok(None) // stdout not available or already consumed
+    }
+}
+
+/// Read from a child process's stderr
+#[op2(async)]
+#[serde]
+async fn op_howth_spawn_read_stderr(id: u32) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
+    // Take the stderr temporarily
+    let stderr_opt = CHILD_STDERRS.lock().await.remove(&id);
+
+    if let Some(mut stderr) = stderr_opt {
+        let mut buf = vec![0u8; 8192];
+        let result = stderr.read(&mut buf).await;
+
+        // Put it back
+        CHILD_STDERRS.lock().await.insert(id, stderr);
+
+        match result {
+            Ok(0) => Ok(None), // EOF
+            Ok(n) => {
+                buf.truncate(n);
+                Ok(Some(buf))
+            }
+            Err(e) => Err(deno_core::error::AnyError::msg(format!("read error: {}", e))),
+        }
+    } else {
+        Ok(None) // stderr not available or already consumed
+    }
+}
+
+/// Write to a child process's stdin
+#[op2(async)]
+async fn op_howth_spawn_write_stdin(id: u32, #[buffer(copy)] data: Vec<u8>) -> Result<u32, deno_core::error::AnyError> {
+    // Take the stdin temporarily
+    let stdin_opt = CHILD_STDINS.lock().await.remove(&id);
+
+    if let Some(mut stdin) = stdin_opt {
+        let result = stdin.write(&data).await;
+
+        // Put it back
+        CHILD_STDINS.lock().await.insert(id, stdin);
+
+        match result {
+            Ok(n) => Ok(n as u32),
+            Err(e) => Err(deno_core::error::AnyError::msg(format!("write error: {}", e))),
+        }
+    } else {
+        Err(deno_core::error::AnyError::msg("stdin not available"))
+    }
+}
+
+/// Close a child process's stdin
+#[op2(async)]
+async fn op_howth_spawn_close_stdin(id: u32) -> Result<(), deno_core::error::AnyError> {
+    // Remove and drop stdin to close it
+    CHILD_STDINS.lock().await.remove(&id);
+    Ok(())
+}
+
+/// Result of waiting for a child process
+#[derive(serde::Serialize)]
+pub struct SpawnWaitResult {
+    pub code: Option<i32>,
+    pub signal: Option<String>,
+}
+
+/// Wait for a child process to exit
+#[op2(async)]
+#[serde]
+async fn op_howth_spawn_wait(id: u32) -> Result<SpawnWaitResult, deno_core::error::AnyError> {
+    // Take ownership of the child from the map
+    let child_opt = CHILD_PROCESSES.lock().await.remove(&id);
+
+    if let Some(mut child) = child_opt {
+        match child.wait().await {
+            Ok(status) => {
+                // Clean up stdio
+                CHILD_STDOUTS.lock().await.remove(&id);
+                CHILD_STDERRS.lock().await.remove(&id);
+                CHILD_STDINS.lock().await.remove(&id);
+
+                let code = status.code();
+                #[cfg(unix)]
+                let signal = {
+                    use std::os::unix::process::ExitStatusExt;
+                    status.signal().map(|s| format!("{}", s))
+                };
+                #[cfg(not(unix))]
+                let signal = None;
+
+                Ok(SpawnWaitResult { code, signal })
+            }
+            Err(e) => Err(deno_core::error::AnyError::msg(format!("wait error: {}", e))),
+        }
+    } else {
+        Err(deno_core::error::AnyError::msg("child process not found"))
+    }
+}
+
+/// Kill a child process
+#[op2]
+fn op_howth_spawn_kill(id: u32, #[string] signal: Option<String>) -> Result<bool, deno_core::error::AnyError> {
+    // Use the sync PID storage to avoid async mutex issues
+    let pid_opt = CHILD_PIDS.lock().ok().and_then(|pids| pids.get(&id).copied());
+
+    let result = if let Some(pid) = pid_opt {
+        if pid == 0 {
+            return Ok(false);
+        }
+
+        #[cfg(unix)]
+        {
+            let sig = match signal.as_deref() {
+                Some("SIGTERM") | None => libc::SIGTERM,
+                Some("SIGKILL") => libc::SIGKILL,
+                Some("SIGINT") => libc::SIGINT,
+                Some("SIGHUP") => libc::SIGHUP,
+                _ => libc::SIGTERM,
+            };
+            let ret = unsafe { libc::kill(pid as i32, sig) };
+            ret == 0
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = signal;
+            false // Windows: would need different implementation
+        }
+    } else {
+        false
+    };
+
+    Ok(result)
+}
+
+// HTTP Server implementation using hyper
 
 /// Global server ID counter
 static NEXT_SERVER_ID: AtomicU32 = AtomicU32::new(1);
@@ -741,7 +1748,22 @@ async fn op_howth_http_accept(server_id: u32) -> Result<Option<HttpRequest>, den
         .map_err(|e| deno_core::error::AnyError::msg(format!("Read failed: {}", e)))?;
 
     if n == 0 {
+        // Connection closed, stream drops here (no leak)
         return Ok(None);
+    }
+
+    // Clean up any stale connections (older than 60 seconds)
+    {
+        let mut connections = get_connections().lock().await;
+        if connections.len() > 100 {
+            // If we have too many pending connections, something is wrong
+            // Drop the oldest ones to prevent FD exhaustion
+            let ids_to_remove: Vec<u32> = connections.keys().copied().collect();
+            let remove_count = connections.len().saturating_sub(50);
+            for id in ids_to_remove.into_iter().take(remove_count) {
+                connections.remove(&id);
+            }
+        }
     }
 
     buffer.truncate(n);
@@ -952,6 +1974,12 @@ fn op_howth_cwd() -> Result<String, deno_core::error::AnyError> {
     std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| e.into())
+}
+
+/// Change current working directory.
+#[op2(fast)]
+fn op_howth_chdir(#[string] path: &str) -> Result<(), deno_core::error::AnyError> {
+    std::env::set_current_dir(path).map_err(|e| e.into())
 }
 
 /// Get the operating system platform (Node.js style).
@@ -2767,3 +3795,4 @@ mod tests {
         runtime.execute_module(&main_file).await.unwrap();
     }
 }
+// Force rebuild Wed Jan 28 13:43:43 IST 2026

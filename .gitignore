@@ -20,3 +20,7 @@ Thumbs.db
 # Test artifacts
 *.profraw
 *.profdata
+
+# Node.js
+node_modules/
+.next/

@@ -67,6 +67,7 @@ pub mod codes {
     pub const PKG_SPEC_INVALID: &str = "PKG_SPEC_INVALID";
     pub const PKG_NOT_FOUND: &str = "PKG_NOT_FOUND";
     pub const PKG_VERSION_NOT_FOUND: &str = "PKG_VERSION_NOT_FOUND";
+    pub const PKG_LOCKFILE_NOT_FOUND: &str = "PKG_LOCKFILE_NOT_FOUND";
     pub const PKG_REGISTRY_ERROR: &str = "PKG_REGISTRY_ERROR";
     pub const PKG_DOWNLOAD_FAILED: &str = "PKG_DOWNLOAD_FAILED";
     pub const PKG_EXTRACT_FAILED: &str = "PKG_EXTRACT_FAILED";
@@ -244,6 +245,30 @@ pub enum Request {
         channel: String,
         /// Update to latest version, ignoring semver ranges.
         latest: bool,
+    },
+
+    /// Check for outdated packages.
+    PkgOutdated {
+        /// Working directory (project root).
+        cwd: String,
+        /// Channel for cache directory.
+        channel: String,
+    },
+
+    /// Publish a package to npm registry.
+    PkgPublish {
+        /// Working directory (package root).
+        cwd: String,
+        /// npm registry URL (defaults to https://registry.npmjs.org).
+        registry: Option<String>,
+        /// Auth token for publishing.
+        token: Option<String>,
+        /// Dry run (don't actually publish).
+        dry_run: bool,
+        /// npm tag (defaults to "latest").
+        tag: Option<String>,
+        /// Allow publishing with public access for scoped packages.
+        access: Option<String>,
     },
 
     /// List cached packages.
@@ -639,6 +664,21 @@ pub struct UpdatedPackage {
     pub from_version: String,
     /// New version.
     pub to_version: String,
+}
+
+/// Information about an outdated package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutdatedPackage {
+    /// Package name.
+    pub name: String,
+    /// Current installed version.
+    pub current: String,
+    /// Latest version matching semver range.
+    pub wanted: String,
+    /// Latest version available.
+    pub latest: String,
+    /// Dependency type: "dep", "dev", "optional".
+    pub dep_type: String,
 }
 
 /// Information about a cached package.
@@ -1259,6 +1299,34 @@ pub enum Response {
         up_to_date: Vec<String>,
         /// Packages that failed to update.
         errors: Vec<PkgErrorInfo>,
+    },
+
+    /// Result of package outdated check.
+    PkgOutdatedResult {
+        /// Outdated packages.
+        outdated: Vec<OutdatedPackage>,
+        /// Packages that are up to date (count only).
+        up_to_date_count: u32,
+    },
+
+    /// Result of package publish operation.
+    PkgPublishResult {
+        /// Whether publish succeeded.
+        ok: bool,
+        /// Package name.
+        name: String,
+        /// Published version.
+        version: String,
+        /// npm registry URL.
+        registry: String,
+        /// npm tag.
+        tag: String,
+        /// Tarball size in bytes.
+        tarball_size: u64,
+        /// Files included in tarball.
+        files_count: u32,
+        /// Error message if failed.
+        error: Option<String>,
     },
 
     /// Result of cache list operation.
