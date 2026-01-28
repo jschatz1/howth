@@ -145,6 +145,11 @@ howth run --node script.ts
 | `node:punycode` | ✅ | toASCII, toUnicode, ucs2 encode/decode |
 | `node:console` | ✅ | Global console exported as module |
 | `node:constants` | ✅ | Deprecated constants module |
+| `node:perf_hooks` | ✅ | performance.mark/measure, PerformanceObserver |
+| `node:tty` | ✅ | isatty, ReadStream, WriteStream |
+| `node:v8` | ✅ | Heap statistics, serialize/deserialize |
+| `node:domain` | ✅ | Deprecated domain module for error handling |
+| `node:async_hooks` | ✅ | AsyncLocalStorage, AsyncResource |
 | `node:worker_threads` | ❌ | Not yet implemented |
 | `require()` | ✅ | Full CommonJS support |
 
@@ -178,11 +183,15 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | Timers | 1 | 0 | 1 |
 | String decoder | 1 | 0 | 1 |
 | Punycode | 1 | 0 | 1 |
+| Perf hooks | 1 | 0 | 1 |
+| TTY | 1 | 0 | 1 |
+| V8 | 1 | 0 | 1 |
+| Async hooks | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
 | FS module | 9 | 4 | 13 |
-| **Total** | **30** | **6** | **36** |
+| **Total** | **34** | **6** | **40** |
 
-**Pass Rate: 83%**
+**Pass Rate: 85%**
 
 **Passing Tests:**
 - `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
@@ -215,6 +224,10 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 - `test-string-decoder-basic.js` - StringDecoder for buffer to string conversion
 - `test-url-module-basic.js` - URL module (parse, format, resolve, file URLs)
 - `test-punycode-basic.js` - Punycode for internationalized domain names
+- `test-perf-hooks-basic.js` - Performance hooks (mark, measure, observer)
+- `test-tty-basic.js` - TTY detection and streams
+- `test-v8-basic.js` - V8 module (heap stats, serialize/deserialize)
+- `test-async-hooks-basic.js` - Async hooks (AsyncLocalStorage, AsyncResource)
 
 **Skipped Tests (known limitations):**
 | Test | Reason |

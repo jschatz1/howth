@@ -6985,6 +6985,484 @@
   globalThis.__howth_modules["node:constants"] = constantsModule;
   globalThis.__howth_modules["constants"] = constantsModule;
 
+  // ============================================================================
+  // perf_hooks module
+  // ============================================================================
+
+  /**
+   * PerformanceObserver for observing performance entries.
+   */
+  class PerformanceObserver {
+    #callback;
+    #entryTypes = [];
+
+    constructor(callback) {
+      this.#callback = callback;
+    }
+
+    observe(options) {
+      this.#entryTypes = options.entryTypes || [];
+      // In a full implementation, this would register with the performance timeline
+    }
+
+    disconnect() {
+      this.#entryTypes = [];
+    }
+
+    takeRecords() {
+      return [];
+    }
+  }
+
+  /**
+   * PerformanceEntry base class.
+   */
+  class PerformanceEntry {
+    constructor(name, entryType, startTime, duration) {
+      this.name = name;
+      this.entryType = entryType;
+      this.startTime = startTime;
+      this.duration = duration;
+    }
+
+    toJSON() {
+      return {
+        name: this.name,
+        entryType: this.entryType,
+        startTime: this.startTime,
+        duration: this.duration,
+      };
+    }
+  }
+
+  /**
+   * PerformanceMark for user timing marks.
+   */
+  class PerformanceMark extends PerformanceEntry {
+    constructor(name, startTime) {
+      super(name, "mark", startTime, 0);
+    }
+  }
+
+  /**
+   * PerformanceMeasure for user timing measures.
+   */
+  class PerformanceMeasure extends PerformanceEntry {
+    constructor(name, startTime, duration) {
+      super(name, "measure", startTime, duration);
+    }
+  }
+
+  const perfMarks = new Map();
+  const perfMeasures = [];
+
+  const perfHooksPerformance = {
+    now: () => globalThis.performance.now(),
+    timeOrigin: Date.now() - globalThis.performance.now(),
+
+    mark(name, options = {}) {
+      const startTime = options.startTime ?? this.now();
+      const mark = new PerformanceMark(name, startTime);
+      perfMarks.set(name, mark);
+      return mark;
+    },
+
+    measure(name, startMarkOrOptions, endMark) {
+      let startTime = 0;
+      let endTime = this.now();
+
+      if (typeof startMarkOrOptions === "string") {
+        const startMarkEntry = perfMarks.get(startMarkOrOptions);
+        if (startMarkEntry) startTime = startMarkEntry.startTime;
+        if (endMark) {
+          const endMarkEntry = perfMarks.get(endMark);
+          if (endMarkEntry) endTime = endMarkEntry.startTime;
+        }
+      } else if (startMarkOrOptions) {
+        if (startMarkOrOptions.start !== undefined) {
+          if (typeof startMarkOrOptions.start === "string") {
+            const m = perfMarks.get(startMarkOrOptions.start);
+            startTime = m ? m.startTime : 0;
+          } else {
+            startTime = startMarkOrOptions.start;
+          }
+        }
+        if (startMarkOrOptions.end !== undefined) {
+          if (typeof startMarkOrOptions.end === "string") {
+            const m = perfMarks.get(startMarkOrOptions.end);
+            endTime = m ? m.startTime : this.now();
+          } else {
+            endTime = startMarkOrOptions.end;
+          }
+        }
+        if (startMarkOrOptions.duration !== undefined) {
+          endTime = startTime + startMarkOrOptions.duration;
+        }
+      }
+
+      const measure = new PerformanceMeasure(name, startTime, endTime - startTime);
+      perfMeasures.push(measure);
+      return measure;
+    },
+
+    clearMarks(name) {
+      if (name) {
+        perfMarks.delete(name);
+      } else {
+        perfMarks.clear();
+      }
+    },
+
+    clearMeasures(name) {
+      if (name) {
+        const idx = perfMeasures.findIndex((m) => m.name === name);
+        if (idx !== -1) perfMeasures.splice(idx, 1);
+      } else {
+        perfMeasures.length = 0;
+      }
+    },
+
+    getEntries() {
+      return [...perfMarks.values(), ...perfMeasures];
+    },
+
+    getEntriesByName(name, type) {
+      return this.getEntries().filter(
+        (e) => e.name === name && (!type || e.entryType === type)
+      );
+    },
+
+    getEntriesByType(type) {
+      return this.getEntries().filter((e) => e.entryType === type);
+    },
+
+    toJSON() {
+      return {
+        timeOrigin: this.timeOrigin,
+      };
+    },
+  };
+
+  const perfHooksModule = {
+    performance: perfHooksPerformance,
+    PerformanceObserver,
+    PerformanceEntry,
+    monitorEventLoopDelay: () => ({
+      enable: () => {},
+      disable: () => {},
+      reset: () => {},
+      percentile: () => 0,
+      percentiles: new Map(),
+      min: 0,
+      max: 0,
+      mean: 0,
+      stddev: 0,
+      exceeds: 0,
+    }),
+    createHistogram: () => ({
+      record: () => {},
+      reset: () => {},
+      percentile: () => 0,
+      percentiles: new Map(),
+      min: 0,
+      max: 0,
+      mean: 0,
+      stddev: 0,
+      exceeds: 0,
+    }),
+  };
+
+  // Register the perf_hooks module
+  globalThis.__howth_modules["node:perf_hooks"] = perfHooksModule;
+  globalThis.__howth_modules["perf_hooks"] = perfHooksModule;
+
+  // ============================================================================
+  // tty module
+  // ============================================================================
+
+  /**
+   * Check if a file descriptor refers to a TTY.
+   */
+  function isatty(fd) {
+    // In a native runtime, we'd check the actual fd
+    // For now, assume stdin/stdout/stderr might be TTYs
+    return fd >= 0 && fd <= 2;
+  }
+
+  /**
+   * ReadStream class for TTY input.
+   */
+  class ReadStream extends EventEmitter {
+    constructor(fd) {
+      super();
+      this.fd = fd;
+      this.isTTY = isatty(fd);
+      this.isRaw = false;
+    }
+
+    setRawMode(mode) {
+      this.isRaw = mode;
+      return this;
+    }
+  }
+
+  /**
+   * WriteStream class for TTY output.
+   */
+  class WriteStream extends EventEmitter {
+    constructor(fd) {
+      super();
+      this.fd = fd;
+      this.isTTY = isatty(fd);
+      this.columns = 80;
+      this.rows = 24;
+    }
+
+    clearLine(dir, callback) {
+      if (callback) callback();
+    }
+
+    clearScreenDown(callback) {
+      if (callback) callback();
+    }
+
+    cursorTo(x, y, callback) {
+      if (callback) callback();
+    }
+
+    moveCursor(dx, dy, callback) {
+      if (callback) callback();
+    }
+
+    getColorDepth() {
+      return 8;
+    }
+
+    hasColors(count = 16) {
+      return count <= 256;
+    }
+
+    getWindowSize() {
+      return [this.columns, this.rows];
+    }
+  }
+
+  const ttyModule = {
+    isatty,
+    ReadStream,
+    WriteStream,
+  };
+
+  // Register the tty module
+  globalThis.__howth_modules["node:tty"] = ttyModule;
+  globalThis.__howth_modules["tty"] = ttyModule;
+
+  // ============================================================================
+  // v8 module
+  // ============================================================================
+
+  const v8Module = {
+    getHeapStatistics: () => ({
+      total_heap_size: 0,
+      total_heap_size_executable: 0,
+      total_physical_size: 0,
+      total_available_size: 0,
+      used_heap_size: 0,
+      heap_size_limit: 0,
+      malloced_memory: 0,
+      peak_malloced_memory: 0,
+      does_zap_garbage: 0,
+      number_of_native_contexts: 0,
+      number_of_detached_contexts: 0,
+    }),
+    getHeapSpaceStatistics: () => [],
+    getHeapCodeStatistics: () => ({
+      code_and_metadata_size: 0,
+      bytecode_and_metadata_size: 0,
+      external_script_source_size: 0,
+    }),
+    setFlagsFromString: () => {},
+    serialize: (value) => {
+      // Simple serialization using JSON
+      return Buffer.from(JSON.stringify(value));
+    },
+    deserialize: (buffer) => {
+      return JSON.parse(buffer.toString());
+    },
+    cachedDataVersionTag: () => 0,
+    writeHeapSnapshot: () => "",
+    takeCoverage: () => {},
+    stopCoverage: () => {},
+  };
+
+  // Register the v8 module
+  globalThis.__howth_modules["node:v8"] = v8Module;
+  globalThis.__howth_modules["v8"] = v8Module;
+
+  // ============================================================================
+  // domain module (deprecated but still used)
+  // ============================================================================
+
+  /**
+   * Domain class for error handling.
+   */
+  class Domain extends EventEmitter {
+    constructor() {
+      super();
+      this.members = [];
+    }
+
+    add(emitter) {
+      this.members.push(emitter);
+      emitter.domain = this;
+    }
+
+    remove(emitter) {
+      const idx = this.members.indexOf(emitter);
+      if (idx !== -1) {
+        this.members.splice(idx, 1);
+        emitter.domain = null;
+      }
+    }
+
+    bind(callback) {
+      return (...args) => {
+        try {
+          return callback(...args);
+        } catch (err) {
+          this.emit("error", err);
+        }
+      };
+    }
+
+    intercept(callback) {
+      return (err, ...args) => {
+        if (err) {
+          this.emit("error", err);
+        } else {
+          try {
+            return callback(...args);
+          } catch (e) {
+            this.emit("error", e);
+          }
+        }
+      };
+    }
+
+    run(fn) {
+      try {
+        return fn();
+      } catch (err) {
+        this.emit("error", err);
+      }
+    }
+
+    dispose() {
+      this.members = [];
+      this.removeAllListeners();
+    }
+
+    enter() {}
+    exit() {}
+  }
+
+  const domainModule = {
+    create: () => new Domain(),
+    Domain,
+  };
+
+  // Register the domain module
+  globalThis.__howth_modules["node:domain"] = domainModule;
+  globalThis.__howth_modules["domain"] = domainModule;
+
+  // ============================================================================
+  // async_hooks module (basic stub)
+  // ============================================================================
+
+  let asyncIdCounter = 1;
+
+  class AsyncResource {
+    constructor(type, options = {}) {
+      this.type = type;
+      this.asyncId = asyncIdCounter++;
+      this.triggerAsyncId = options.triggerAsyncId ?? 0;
+    }
+
+    runInAsyncScope(fn, thisArg, ...args) {
+      return fn.apply(thisArg, args);
+    }
+
+    emitDestroy() {
+      return this;
+    }
+
+    asyncId() {
+      return this.asyncId;
+    }
+
+    triggerAsyncId() {
+      return this.triggerAsyncId;
+    }
+
+    bind(fn, thisArg) {
+      return fn.bind(thisArg ?? this);
+    }
+
+    static bind(fn, type, thisArg) {
+      return fn.bind(thisArg);
+    }
+  }
+
+  const asyncHooksModule = {
+    createHook: (callbacks) => ({
+      enable: () => {},
+      disable: () => {},
+    }),
+    executionAsyncId: () => 0,
+    executionAsyncResource: () => ({}),
+    triggerAsyncId: () => 0,
+    AsyncResource,
+    AsyncLocalStorage: class AsyncLocalStorage {
+      #store;
+
+      disable() {
+        this.#store = undefined;
+      }
+
+      getStore() {
+        return this.#store;
+      }
+
+      run(store, callback, ...args) {
+        const prev = this.#store;
+        this.#store = store;
+        try {
+          return callback(...args);
+        } finally {
+          this.#store = prev;
+        }
+      }
+
+      exit(callback, ...args) {
+        const prev = this.#store;
+        this.#store = undefined;
+        try {
+          return callback(...args);
+        } finally {
+          this.#store = prev;
+        }
+      }
+
+      enterWith(store) {
+        this.#store = store;
+      }
+    },
+  };
+
+  // Register the async_hooks module
+  globalThis.__howth_modules["node:async_hooks"] = asyncHooksModule;
+  globalThis.__howth_modules["async_hooks"] = asyncHooksModule;
+
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;
 

@@ -51,6 +51,18 @@ const TESTS = [
   // Punycode tests
   'test-punycode-basic.js',
 
+  // Perf hooks tests
+  'test-perf-hooks-basic.js',
+
+  // TTY tests
+  'test-tty-basic.js',
+
+  // V8 tests
+  'test-v8-basic.js',
+
+  // Async hooks tests
+  'test-async-hooks-basic.js',
+
   // Path tests
   'test-path.js',
   'test-path-parse-format.js',
