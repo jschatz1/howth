@@ -5587,13 +5587,24 @@
   // ============================================================================
 
   class EventEmitter {
-    #listeners = new Map();
+    constructor() {
+      if (!this._events) {
+        this._events = new Map();
+      }
+    }
+
+    _initEvents() {
+      if (!this._events) {
+        this._events = new Map();
+      }
+    }
 
     on(event, listener) {
-      if (!this.#listeners.has(event)) {
-        this.#listeners.set(event, []);
+      this._initEvents();
+      if (!this._events.has(event)) {
+        this._events.set(event, []);
       }
-      this.#listeners.get(event).push(listener);
+      this._events.get(event).push(listener);
       return this;
     }
 
@@ -5611,7 +5622,8 @@
     }
 
     off(event, listener) {
-      const listeners = this.#listeners.get(event);
+      this._initEvents();
+      const listeners = this._events.get(event);
       if (listeners) {
         const index = listeners.findIndex(
           (l) => l === listener || l.listener === listener
@@ -5628,16 +5640,18 @@
     }
 
     removeAllListeners(event) {
+      this._initEvents();
       if (event !== undefined) {
-        this.#listeners.delete(event);
+        this._events.delete(event);
       } else {
-        this.#listeners.clear();
+        this._events.clear();
       }
       return this;
     }
 
     emit(event, ...args) {
-      const listeners = this.#listeners.get(event);
+      this._initEvents();
+      const listeners = this._events.get(event);
       if (!listeners || listeners.length === 0) return false;
       for (const listener of [...listeners]) {
         listener.apply(this, args);
@@ -5646,25 +5660,29 @@
     }
 
     listeners(event) {
-      const list = this.#listeners.get(event);
+      this._initEvents();
+      const list = this._events.get(event);
       if (!list) return [];
       return list.map((l) => l.listener || l);
     }
 
     listenerCount(event) {
-      const list = this.#listeners.get(event);
+      this._initEvents();
+      const list = this._events.get(event);
       return list ? list.length : 0;
     }
 
     eventNames() {
-      return [...this.#listeners.keys()];
+      this._initEvents();
+      return [...this._events.keys()];
     }
 
     prependListener(event, listener) {
-      if (!this.#listeners.has(event)) {
-        this.#listeners.set(event, []);
+      this._initEvents();
+      if (!this._events.has(event)) {
+        this._events.set(event, []);
       }
-      this.#listeners.get(event).unshift(listener);
+      this._events.get(event).unshift(listener);
       return this;
     }
 
@@ -5687,7 +5705,8 @@
     }
 
     rawListeners(event) {
-      return this.#listeners.get(event) || [];
+      this._initEvents();
+      return this._events.get(event) || [];
     }
   }
 
