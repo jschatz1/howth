@@ -3,7 +3,7 @@
 //! Resolves dependencies from package.json and generates a lockfile.
 //! Uses parallel resolution with packument caching for performance.
 
-use super::deps::read_package_deps;
+use super::deps::{parse_npm_alias, read_package_deps};
 use super::error::PkgError;
 use super::lockfile::{
     LockDep, LockMeta, LockPackage, LockResolution, LockRoot, Lockfile, LOCKFILE_NAME,
@@ -73,7 +73,10 @@ impl ResolveState {
 /// A dependency to resolve.
 #[derive(Debug, Clone)]
 struct PendingDep {
+    /// Real package name (used for registry fetch).
     name: String,
+    /// Local alias name, if this dep uses `npm:` protocol.
+    alias: Option<String>,
     range: String,
     depth: usize,
 }
@@ -125,10 +128,22 @@ pub async fn resolve_dependencies(
     let mut pending: VecDeque<PendingDep> = pkg_deps
         .deps
         .iter()
-        .map(|(name, range)| PendingDep {
-            name: name.clone(),
-            range: range.clone(),
-            depth: 0,
+        .map(|(name, range)| {
+            if let Some(real_name) = pkg_deps.aliases.get(name) {
+                PendingDep {
+                    name: real_name.clone(),
+                    alias: Some(name.clone()),
+                    range: range.clone(),
+                    depth: 0,
+                }
+            } else {
+                PendingDep {
+                    name: name.clone(),
+                    alias: None,
+                    range: range.clone(),
+                    depth: 0,
+                }
+            }
         })
         .collect();
 
@@ -155,8 +170,16 @@ pub async fn resolve_dependencies(
     for (name, range) in &pkg_deps.deps {
         let kind = get_dep_kind(&pkg_json, name);
 
+        // For npm: aliases, the original range in package.json uses npm: prefix
+        // Reconstruct it for the lockfile dep entry
+        let original_range = if let Some(real_name) = pkg_deps.aliases.get(name) {
+            format!("npm:{}@{}", real_name, range)
+        } else {
+            range.clone()
+        };
+
         // Find the resolved version for this root dependency
-        // We need to look through packages to find name@version
+        // Lockfile key uses the alias name (or real name if no alias)
         let version = packages
             .keys()
             .find(|key| key.starts_with(&format!("{}@", name)))
@@ -166,7 +189,7 @@ pub async fn resolve_dependencies(
 
         if !version.is_empty() {
             let key = format!("{}@{}", name, version);
-            dependencies.insert(name.clone(), LockDep::new(range.clone(), kind, key));
+            dependencies.insert(name.clone(), LockDep::new(original_range, kind, key));
         }
     }
 
@@ -272,7 +295,9 @@ async fn resolve_single_dep(
 
     // Resolve version
     let version = resolve_version(&packument, Some(&dep.range))?;
-    let key = format!("{}@{}", dep.name, version);
+    // Use alias name for the lockfile key so node_modules uses the alias
+    let key_name = dep.alias.as_deref().unwrap_or(&dep.name);
+    let key = format!("{}@{}", key_name, version);
 
     // Check if already resolved
     {
@@ -324,6 +349,7 @@ async fn resolve_single_dep(
         resolution: LockResolution::Registry {
             registry: String::new(),
         },
+        alias_for: dep.alias.as_ref().map(|_| dep.name.clone()),
         dependencies: deps.clone(),
         optional_dependencies: BTreeMap::new(),
         has_scripts: version_data
@@ -344,10 +370,23 @@ async fn resolve_single_dep(
     // Return transitive dependencies for next wave
     let new_deps: Vec<PendingDep> = deps
         .into_iter()
-        .map(|(name, range)| PendingDep {
-            name,
-            range,
-            depth: dep.depth + 1,
+        .map(|(name, range)| {
+            // Transitive deps can also use npm: aliases
+            if let Some((real_name, real_range)) = parse_npm_alias(&range) {
+                PendingDep {
+                    name: real_name.to_string(),
+                    alias: Some(name),
+                    range: real_range.to_string(),
+                    depth: dep.depth + 1,
+                }
+            } else {
+                PendingDep {
+                    name,
+                    alias: None,
+                    range,
+                    depth: dep.depth + 1,
+                }
+            }
         })
         .collect();
 

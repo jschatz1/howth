@@ -213,6 +213,12 @@ struct PkgPublishJsonResult {
     error: Option<String>,
 }
 
+/// Check if stdout is a TTY (for interactive progress display).
+fn is_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
+}
+
 /// Run the pkg command.
 pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
     // Handle AddDeps by converting to Add with specs from package.json
@@ -314,6 +320,32 @@ pub fn run(action: PkgAction, channel: Channel, json: bool) -> Result<()> {
     }
 
     let endpoint = paths::ipc_endpoint(channel);
+
+    // For PkgInstall, use streaming path to show per-package progress
+    if matches!(effective_action, PkgAction::Install { .. }) {
+        let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
+        let result = runtime.block_on(async {
+            send_pkg_install_streaming(&endpoint, &effective_action, channel, json).await
+        });
+
+        return match result {
+            Ok(response) => handle_response(response, &effective_action, json, dep_errors),
+            Err(e) => {
+                if json {
+                    let result = PkgInstallJsonResult {
+                        ok: false,
+                        install: None,
+                        error: Some(format!("Failed to connect: {e}")),
+                    };
+                    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+                } else {
+                    eprintln!("error: daemon not running");
+                    eprintln!("hint: start with `howth daemon`");
+                }
+                std::process::exit(1);
+            }
+        };
+    }
 
     // Run the async client
     let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
@@ -1574,6 +1606,114 @@ fn print_finding(finding: &DoctorFinding, indent: &str) {
     }
     if let Some(ref detail) = finding.detail {
         println!("{indent}      {detail}");
+    }
+}
+
+/// Send a PkgInstall request and read streaming progress events.
+///
+/// Returns the final `PkgInstallResult` response.
+async fn send_pkg_install_streaming(
+    endpoint: &str,
+    action: &PkgAction,
+    channel: Channel,
+    json: bool,
+) -> io::Result<Response> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = IpcStream::connect(endpoint).await?;
+
+    // Build the request
+    let request = match action {
+        PkgAction::Install {
+            cwd,
+            frozen,
+            include_dev,
+            include_optional,
+        } => Request::PkgInstall {
+            cwd: cwd.to_string_lossy().into_owned(),
+            channel: channel.as_str().to_string(),
+            frozen: *frozen,
+            include_dev: *include_dev,
+            include_optional: *include_optional,
+        },
+        _ => unreachable!("send_pkg_install_streaming called with non-Install action"),
+    };
+
+    // Send request frame
+    let frame = Frame::new(VERSION, request);
+    let encoded = encode_frame(&frame)?;
+    stream.write_all(&encoded).await?;
+    stream.flush().await?;
+
+    // Print header for human mode
+    if !json {
+        println!("howth install");
+    }
+
+    let tty = is_tty();
+
+    // Read streaming responses
+    loop {
+        // Read length prefix
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await?;
+        let len = u32::from_le_bytes(len_buf) as usize;
+
+        if len > MAX_FRAME_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("response frame too large: {len} bytes"),
+            ));
+        }
+
+        let mut buf = vec![0u8; len];
+        stream.read_exact(&mut buf).await?;
+
+        let response_frame: FrameResponse = serde_json::from_slice(&buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        match response_frame.response {
+            Response::PkgInstallProgress {
+                ref name,
+                ref version,
+                ref status,
+                completed,
+                total,
+            } => {
+                // In JSON mode, skip progress display
+                if !json {
+                    // Print each package on its own line (permanent)
+                    if tty {
+                        // Clear the progress counter line, print package, then reprint counter
+                        eprint!("\r\x1b[2K");
+                    }
+                    println!(
+                        "  + {}@{} ({})",
+                        name, version, status,
+                    );
+                    if tty {
+                        // Show running progress counter on a transient line
+                        eprint!("  Progress: {completed}/{total}");
+                    }
+                }
+            }
+            Response::PkgInstallResult { .. } => {
+                // Clear the progress counter line on TTY
+                if !json && tty {
+                    eprint!("\r\x1b[2K");
+                }
+                return Ok(response_frame.response);
+            }
+            Response::Error { .. } => {
+                if !json && tty {
+                    eprint!("\r\x1b[2K");
+                }
+                return Ok(response_frame.response);
+            }
+            _ => {
+                // Unexpected response type, skip
+            }
+        }
     }
 }
 

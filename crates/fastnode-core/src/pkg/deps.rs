@@ -12,7 +12,11 @@ use std::path::Path;
 #[derive(Debug, Clone, Default)]
 pub struct PackageDeps {
     /// Valid dependencies as (name, range) pairs, sorted by name.
+    /// For `npm:` aliases, name is the alias and range is the resolved version range.
     pub deps: Vec<(String, String)>,
+    /// Alias mappings: alias_name -> real_package_name.
+    /// Only populated for dependencies using `npm:` protocol aliases.
+    pub aliases: HashMap<String, String>,
     /// Errors encountered during extraction.
     pub errors: Vec<PkgDepError>,
 }
@@ -99,6 +103,7 @@ pub fn read_package_deps(
 
     // Use HashMap for deduplication; dependencies takes precedence
     let mut deps_map: HashMap<String, String> = HashMap::new();
+    let mut aliases: HashMap<String, String> = HashMap::new();
 
     // Extract optionalDependencies first (lowest precedence)
     if include_optional {
@@ -106,22 +111,36 @@ pub fn read_package_deps(
             root,
             "optionalDependencies",
             &mut deps_map,
+            &mut aliases,
             &mut result.errors,
         );
     }
 
     // Extract devDependencies (middle precedence)
     if include_dev {
-        extract_section(root, "devDependencies", &mut deps_map, &mut result.errors);
+        extract_section(
+            root,
+            "devDependencies",
+            &mut deps_map,
+            &mut aliases,
+            &mut result.errors,
+        );
     }
 
     // Extract dependencies last (highest precedence - overwrites others)
-    extract_section(root, "dependencies", &mut deps_map, &mut result.errors);
+    extract_section(
+        root,
+        "dependencies",
+        &mut deps_map,
+        &mut aliases,
+        &mut result.errors,
+    );
 
     // Convert to sorted vec
     let mut deps_vec: Vec<(String, String)> = deps_map.into_iter().collect();
     deps_vec.sort_by(|a, b| a.0.cmp(&b.0));
     result.deps = deps_vec;
+    result.aliases = aliases;
 
     Ok(result)
 }
@@ -131,6 +150,7 @@ fn extract_section(
     root: &serde_json::Map<String, Value>,
     section: &str,
     deps_map: &mut HashMap<String, String>,
+    aliases: &mut HashMap<String, String>,
     errors: &mut Vec<PkgDepError>,
 ) {
     let Some(section_value) = root.get(section) else {
@@ -148,8 +168,16 @@ fn extract_section(
 
     for (name, range_value) in section_obj {
         if let Some(range) = range_value.as_str() {
-            // Valid string range - insert (may overwrite from lower-precedence section)
-            deps_map.insert(name.clone(), range.to_string());
+            // Check for npm: protocol alias (e.g., "npm:string-width@^4.2.0")
+            if let Some((real_name, real_range)) = parse_npm_alias(range) {
+                // Store under the alias name with the resolved range
+                deps_map.insert(name.clone(), real_range.to_string());
+                // Track the alias -> real package name mapping
+                aliases.insert(name.clone(), real_name.to_string());
+            } else {
+                // Valid string range - insert (may overwrite from lower-precedence section)
+                deps_map.insert(name.clone(), range.to_string());
+            }
         } else {
             // Invalid range type
             errors.push(PkgDepError::invalid_range(
@@ -157,6 +185,25 @@ fn extract_section(
                 json_type_name(range_value),
             ));
         }
+    }
+}
+
+/// Parse an npm alias range like `"npm:string-width@^4.2.0"`.
+///
+/// Returns `(real_package_name, version_range)` if the range uses the `npm:` protocol,
+/// or `None` for regular version ranges.
+///
+/// Handles scoped packages like `"npm:@scope/pkg@^1.0.0"`.
+pub fn parse_npm_alias(range: &str) -> Option<(&str, &str)> {
+    let rest = range.strip_prefix("npm:")?;
+    if rest.starts_with('@') {
+        // Scoped package: npm:@scope/name@range
+        let slash_pos = rest.find('/')?;
+        let at_pos = rest[slash_pos..].find('@')? + slash_pos;
+        Some((&rest[..at_pos], &rest[at_pos + 1..]))
+    } else {
+        let at_pos = rest.find('@')?;
+        Some((&rest[..at_pos], &rest[at_pos + 1..]))
     }
 }
 
@@ -643,5 +690,91 @@ mod tests {
 
         // Three errors for invalid ranges
         assert_eq!(result.errors.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_npm_alias_basic() {
+        let result = parse_npm_alias("npm:string-width@^4.2.0");
+        assert_eq!(result, Some(("string-width", "^4.2.0")));
+    }
+
+    #[test]
+    fn test_parse_npm_alias_scoped() {
+        let result = parse_npm_alias("npm:@scope/pkg@^1.0.0");
+        assert_eq!(result, Some(("@scope/pkg", "^1.0.0")));
+    }
+
+    #[test]
+    fn test_parse_npm_alias_exact_version() {
+        let result = parse_npm_alias("npm:lodash@4.17.21");
+        assert_eq!(result, Some(("lodash", "4.17.21")));
+    }
+
+    #[test]
+    fn test_parse_npm_alias_not_alias() {
+        assert_eq!(parse_npm_alias("^1.0.0"), None);
+        assert_eq!(parse_npm_alias("1.0.0"), None);
+        assert_eq!(parse_npm_alias("~2.0.0"), None);
+        assert_eq!(parse_npm_alias("*"), None);
+    }
+
+    #[test]
+    fn test_parse_npm_alias_no_version() {
+        // npm:package without @version is invalid
+        assert_eq!(parse_npm_alias("npm:lodash"), None);
+    }
+
+    #[test]
+    fn test_npm_alias_in_package_json() {
+        let dir = tempdir().unwrap();
+        let path = write_package_json(
+            dir.path(),
+            r#"{
+                "dependencies": {
+                    "string-width-cjs": "npm:string-width@^4.2.0",
+                    "regular": "^1.0.0"
+                }
+            }"#,
+        );
+
+        let result = read_package_deps(&path, false, false).unwrap();
+
+        assert_eq!(result.deps.len(), 2);
+        // Alias dep should have the alias name as key and resolved range as value
+        assert!(result.deps.iter().any(|(n, r)| n == "regular" && r == "^1.0.0"));
+        assert!(result
+            .deps
+            .iter()
+            .any(|(n, r)| n == "string-width-cjs" && r == "^4.2.0"));
+
+        // Alias mapping should be recorded
+        assert_eq!(
+            result.aliases.get("string-width-cjs"),
+            Some(&"string-width".to_string())
+        );
+        assert!(!result.aliases.contains_key("regular"));
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_npm_alias_scoped_in_package_json() {
+        let dir = tempdir().unwrap();
+        let path = write_package_json(
+            dir.path(),
+            r#"{
+                "dependencies": {
+                    "my-alias": "npm:@babel/core@^7.0.0"
+                }
+            }"#,
+        );
+
+        let result = read_package_deps(&path, false, false).unwrap();
+
+        assert_eq!(result.deps.len(), 1);
+        assert_eq!(result.deps[0], ("my-alias".to_string(), "^7.0.0".to_string()));
+        assert_eq!(
+            result.aliases.get("my-alias"),
+            Some(&"@babel/core".to_string())
+        );
     }
 }

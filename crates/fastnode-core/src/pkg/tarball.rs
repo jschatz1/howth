@@ -101,14 +101,10 @@ pub fn extract_tgz_atomic(bytes: &[u8], dest_package_dir: &Path) -> Result<(), P
         return Err(e);
     }
 
-    // The extracted contents should have a `package/` subdirectory
-    let extracted_package = temp_dir.join("package");
-    if !extracted_package.exists() {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Err(PkgError::extract_failed(
-            "Tarball does not contain expected 'package/' directory",
-        ));
-    }
+    // The extracted contents should have a single top-level directory.
+    // Most npm packages use `package/`, but some (e.g., @types/*) use the bare
+    // package name (e.g., `node/`, `estree/`). Find the actual directory.
+    let extracted_package = find_extracted_root(&temp_dir)?;
 
     // Atomically move package/ to final destination
     match fs::rename(&extracted_package, dest_package_dir) {
@@ -135,6 +131,45 @@ pub fn extract_tgz_atomic(bytes: &[u8], dest_package_dir: &Path) -> Result<(), P
             let _ = fs::remove_dir_all(&temp_dir);
             Ok(())
         }
+    }
+}
+
+/// Find the single top-level directory in an extracted tarball.
+///
+/// npm tarballs typically contain a single root directory (usually `package/`,
+/// but some packages like `@types/*` use the bare package name). This function
+/// finds that directory, returning an error if the tarball structure is unexpected.
+fn find_extracted_root(temp_dir: &Path) -> Result<std::path::PathBuf, PkgError> {
+    // Try `package/` first (most common)
+    let package_dir = temp_dir.join("package");
+    if package_dir.exists() && package_dir.is_dir() {
+        return Ok(package_dir);
+    }
+
+    // Otherwise, look for a single top-level directory
+    let entries: Vec<_> = fs::read_dir(temp_dir)
+        .map_err(|e| PkgError::extract_failed(format!("Failed to read extracted dir: {e}")))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_type()
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+                // Skip hidden/temp directories
+                && !e
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with('.')
+        })
+        .collect();
+
+    match entries.len() {
+        1 => Ok(entries[0].path()),
+        0 => Err(PkgError::extract_failed(
+            "Tarball does not contain any top-level directory",
+        )),
+        n => Err(PkgError::extract_failed(format!(
+            "Tarball contains {n} top-level directories, expected 1"
+        ))),
     }
 }
 
@@ -318,21 +353,15 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_absolute_path() {
-        // The tar crate itself rejects absolute paths in set_path(),
-        // so we test that our extract function handles the case where
-        // a path is_absolute() by manually constructing a header.
-        // Since the tar crate won't allow us to create such tarballs
-        // in normal usage, we verify our defense-in-depth check exists
-        // by checking that path.is_absolute() is checked in extract_tgz_to.
-
-        // For now, we verify that a valid tarball without package/ dir fails
+    fn test_non_package_prefix() {
+        // Some npm packages (e.g., @types/*) use a non-standard prefix
+        // like the bare package name instead of "package/".
         let mut tar_bytes = Vec::new();
         {
             let mut builder = Builder::new(&mut tar_bytes);
             let data = b"test";
             let mut header = tar::Header::new_gnu();
-            header.set_path("notpackage/file.txt").unwrap();
+            header.set_path("node/index.d.ts").unwrap();
             header.set_size(data.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
@@ -347,10 +376,30 @@ mod tests {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("1.0.0").join("package");
 
-        // Should fail because there's no "package/" directory
+        // Should succeed — single top-level directory is accepted
+        let result = extract_tgz_atomic(&tgz, &dest);
+        assert!(result.is_ok());
+        assert!(dest.join("index.d.ts").exists());
+    }
+
+    #[test]
+    fn test_reject_empty_tarball() {
+        // A tarball with no top-level directory should fail
+        let mut tar_bytes = Vec::new();
+        {
+            let builder = Builder::new(&mut tar_bytes);
+            builder.into_inner().unwrap();
+        }
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar_bytes).unwrap();
+        let tgz = encoder.finish().unwrap();
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("1.0.0").join("package");
+
         let result = extract_tgz_atomic(&tgz, &dest);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("package/"));
     }
 
     #[test]

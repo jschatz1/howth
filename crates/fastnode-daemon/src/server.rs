@@ -100,13 +100,17 @@ fn is_pkg_request(request: &Request) -> bool {
             | Request::PkgPublish { .. }
             | Request::PkgCacheList { .. }
             | Request::PkgCachePrune { .. }
-            | Request::PkgInstall { .. }
     )
 }
 
 /// Check if a request is a watch build (requires streaming).
 fn is_watch_build(request: &Request) -> bool {
     matches!(request, Request::WatchBuild { .. })
+}
+
+/// Check if a request is a pkg install (requires streaming for progress).
+fn is_pkg_install(request: &Request) -> bool {
+    matches!(request, Request::PkgInstall { .. })
 }
 
 /// Handle watch build with streaming responses (v3.0).
@@ -267,6 +271,79 @@ async fn handle_watch_build_streaming(
     Ok(())
 }
 
+/// Handle pkg install with streaming progress responses.
+async fn handle_pkg_install_streaming(
+    mut stream: IpcStream,
+    frame: Frame,
+    _state: Arc<DaemonState>,
+) -> io::Result<()> {
+    // Extract install parameters
+    let (cwd, channel, frozen, include_dev, include_optional) = match &frame.request {
+        Request::PkgInstall {
+            cwd,
+            channel,
+            frozen,
+            include_dev,
+            include_optional,
+        } => (
+            cwd.clone(),
+            channel.clone(),
+            *frozen,
+            *include_dev,
+            *include_optional,
+        ),
+        _ => {
+            let response = make_response_frame(Response::error(
+                codes::INTERNAL_ERROR,
+                "Expected PkgInstall request",
+            ));
+            let encoded = encode_frame(&response)?;
+            stream.write_all(&encoded).await?;
+            return Ok(());
+        }
+    };
+
+    info!(cwd = %cwd, frozen, "starting streaming pkg install");
+
+    // Create progress channel
+    let (tx, mut rx) = mpsc::channel::<Response>(64);
+
+    // Spawn install task
+    let install_handle = tokio::spawn(async move {
+        crate::pkg::handle_pkg_install_with_progress(
+            &cwd,
+            &channel,
+            frozen,
+            include_dev,
+            include_optional,
+            Some(tx),
+        )
+        .await
+    });
+
+    // Stream progress events as they arrive
+    while let Some(progress) = rx.recv().await {
+        let response_frame = make_response_frame(progress);
+        let encoded = encode_frame(&response_frame)?;
+        stream.write_all(&encoded).await?;
+        stream.flush().await?;
+    }
+
+    // Channel closed — install task is done, get the final result
+    let final_response = match install_handle.await {
+        Ok(response) => response,
+        Err(e) => Response::error(codes::INTERNAL_ERROR, format!("Install task panicked: {e}")),
+    };
+
+    // Send final result
+    let response_frame = make_response_frame(final_response);
+    let encoded = encode_frame(&response_frame)?;
+    stream.write_all(&encoded).await?;
+    stream.flush().await?;
+
+    Ok(())
+}
+
 /// Handle a single connection.
 async fn handle_connection(
     mut stream: IpcStream,
@@ -318,6 +395,11 @@ async fn handle_connection(
     // v3.0: Watch build requires streaming handler
     if is_watch_build(&frame.request) {
         return handle_watch_build_streaming(stream, frame, state).await;
+    }
+
+    // Streaming progress for pkg install
+    if is_pkg_install(&frame.request) {
+        return handle_pkg_install_streaming(stream, frame, state).await;
     }
 
     // Handle request - use async handler for pkg operations

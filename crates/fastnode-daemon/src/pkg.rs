@@ -6,9 +6,9 @@
 use fastnode_core::config::Channel;
 use fastnode_core::pkg::{
     add_dependency_to_package_json, build_doctor_report, build_pkg_graph, detect_workspaces,
-    download_tarball, extract_tgz_atomic, find_workspace_root, get_tarball_url,
+    download_tarball, extract_tgz_atomic, find_workspace_root, format_pnpm_key, get_tarball_url,
     link_into_node_modules, link_into_node_modules_direct, link_into_node_modules_with_version,
-    link_package_binaries, link_package_dependencies, read_package_deps,
+    link_package_binaries, link_package_dependencies, lockfile_content_hash, read_package_deps,
     remove_dependency_from_package_json, resolve_dependencies, resolve_version, why_from_graph,
     write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions, LockPackage, Lockfile,
     PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult, RegistryClient,
@@ -193,8 +193,15 @@ async fn add_single_package(
 
     debug!(link = %link_path.display(), "Linked into node_modules");
 
+    // Derive the .pnpm content path so binary symlinks resolve transitive deps
+    let pnpm_pkg_dir = project_root
+        .join("node_modules/.pnpm")
+        .join(format_pnpm_key(&spec.name, &version))
+        .join("node_modules")
+        .join(&spec.name);
+
     // Link binaries into .bin
-    if let Ok(binaries) = link_package_binaries(project_root, &spec.name, &package_dir) {
+    if let Ok(binaries) = link_package_binaries(project_root, &spec.name, &package_dir, Some(&pnpm_pkg_dir)) {
         for bin in &binaries {
             debug!(bin = %bin.display(), "Linked binary");
         }
@@ -816,12 +823,29 @@ pub fn handle_pkg_cache_prune(channel: &str) -> Response {
 /// Handle a PkgInstall request (v1.9).
 ///
 /// Installs packages from the lockfile (`howth.lock`).
+/// If `progress_tx` is provided, sends `PkgInstallProgress` events per package.
 pub async fn handle_pkg_install(
     cwd: &str,
     channel: &str,
     frozen: bool,
     include_dev: bool,
     include_optional: bool,
+) -> Response {
+    handle_pkg_install_with_progress(cwd, channel, frozen, include_dev, include_optional, None)
+        .await
+}
+
+/// Handle a PkgInstall request with optional streaming progress.
+///
+/// When `progress_tx` is `Some`, sends `PkgInstallProgress` events as each
+/// package completes. The final `PkgInstallResult` is always returned.
+pub async fn handle_pkg_install_with_progress(
+    cwd: &str,
+    channel: &str,
+    frozen: bool,
+    include_dev: bool,
+    include_optional: bool,
+    progress_tx: Option<tokio::sync::mpsc::Sender<Response>>,
 ) -> Response {
     use std::path::PathBuf;
 
@@ -910,6 +934,37 @@ pub async fn handle_pkg_install(
         "Using lockfile"
     );
 
+    // Check if node_modules is already up-to-date with the lockfile
+    let content_hash = lockfile_content_hash(&lockfile);
+    let state_file = project_root.join("node_modules/.howth-state");
+    let pnpm_dir = project_root.join("node_modules/.pnpm");
+
+    if pnpm_dir.is_dir() {
+        if let Ok(stored_hash) = std::fs::read_to_string(&state_file) {
+            if stored_hash.trim() == content_hash {
+                debug!("node_modules is up-to-date, skipping install");
+                return Response::PkgInstallResult {
+                    result: PkgInstallResult {
+                        schema_version: PKG_INSTALL_SCHEMA_VERSION,
+                        cwd: project_root.to_string_lossy().into_owned(),
+                        ok: true,
+                        summary: InstallSummary {
+                            total_packages: 0,
+                            downloaded: 0,
+                            cached: 0,
+                            linked: 0,
+                            failed: 0,
+                            workspace_linked: 0,
+                        },
+                        installed: Vec::new(),
+                        errors: Vec::new(),
+                        notes: vec!["already up-to-date".to_string()],
+                    },
+                };
+            }
+        }
+    }
+
     // Detect workspaces for local package linking
     let workspace_root = find_workspace_root(&project_root);
     let workspace_config = workspace_root
@@ -932,6 +987,10 @@ pub async fn handle_pkg_install(
     let mut cached = 0u32;
     let mut linked = 0u32;
     let mut workspace_linked = 0u32;
+    let mut completed = 0u32;
+
+    // Count total packages to install (for progress reporting)
+    let total_packages = lockfile.packages.len() as u32;
 
     // Separate workspace packages from registry packages
     // Workspace packages are linked locally (fast), registry packages need download (parallelized)
@@ -963,14 +1022,15 @@ pub async fn handle_pkg_install(
                 // Use direct linking for workspace packages (not pnpm layout)
                 match link_into_node_modules_direct(&project_root, name, &ws_pkg.path) {
                     Ok(link_path) => {
-                        // Link binaries for workspace package
-                        if let Ok(binaries) = link_package_binaries(&project_root, name, &ws_pkg.path) {
+                        // Link binaries for workspace package (no pnpm layout)
+                        if let Ok(binaries) = link_package_binaries(&project_root, name, &ws_pkg.path, None) {
                             for bin in &binaries {
                                 debug!(bin = %bin.display(), "Linked workspace binary");
                             }
                         }
                         workspace_linked += 1;
                         linked += 1;
+                        completed += 1;
                         installed.push(InstallPackageInfo {
                             name: name.to_string(),
                             version: ws_pkg.version.clone(),
@@ -979,6 +1039,18 @@ pub async fn handle_pkg_install(
                             cache_path: ws_pkg.path.to_string_lossy().into_owned(),
                             is_workspace: true,
                         });
+
+                        // Send progress event
+                        if let Some(ref tx) = progress_tx {
+                            let _ = tx.send(Response::PkgInstallProgress {
+                                name: name.to_string(),
+                                version: ws_pkg.version.clone(),
+                                status: "workspace".to_string(),
+                                completed,
+                                total: total_packages,
+                            }).await;
+                        }
+
                         continue;
                     }
                     Err(e) => {
@@ -1001,7 +1073,7 @@ pub async fn handle_pkg_install(
     // Install registry packages in parallel (max 16 concurrent downloads)
     const MAX_CONCURRENT_DOWNLOADS: usize = 16;
 
-    let results: Vec<_> = stream::iter(registry_packages)
+    let mut stream = stream::iter(registry_packages)
         .map(|(name, lock_pkg)| {
             let project_root = project_root.clone();
             let cache = cache.clone();
@@ -1011,23 +1083,36 @@ pub async fn handle_pkg_install(
                 (name, lock_pkg.version.clone(), result)
             }
         })
-        .buffer_unordered(MAX_CONCURRENT_DOWNLOADS)
-        .collect()
-        .await;
+        .buffer_unordered(MAX_CONCURRENT_DOWNLOADS);
 
-    // Process results
-    for (name, version, result) in results {
+    // Process results one at a time, sending progress for each
+    while let Some((name, version, result)) = stream.next().await {
         match result {
             Ok((pkg_info, from_cache)) => {
+                let status = if from_cache { "cached" } else { "downloaded" };
                 if from_cache {
                     cached += 1;
                 } else {
                     downloaded += 1;
                 }
                 linked += 1;
+                completed += 1;
+
+                // Send progress event
+                if let Some(ref tx) = progress_tx {
+                    let _ = tx.send(Response::PkgInstallProgress {
+                        name: name.clone(),
+                        version: version.clone(),
+                        status: status.to_string(),
+                        completed,
+                        total: total_packages,
+                    }).await;
+                }
+
                 installed.push(pkg_info);
             }
             Err(e) => {
+                completed += 1;
                 errors.push(InstallPackageError {
                     name,
                     version,
@@ -1055,6 +1140,7 @@ pub async fn handle_pkg_install(
         for (dep_name, dep_range) in &lock_pkg.dependencies {
             // Find the resolved version for this dependency in the lockfile
             // The lockfile packages map uses "name@version" as keys
+            // For npm: aliases, the key uses the alias name (dep_name), which matches
             if let Some((_, dep_pkg)) = lockfile.packages.iter().find(|(k, _)| {
                 k.rsplit_once('@')
                     .map_or(false, |(n, _)| n == dep_name)
@@ -1084,7 +1170,6 @@ pub async fn handle_pkg_install(
     }
 
     let ok = errors.is_empty();
-    let total_packages = lockfile.packages.len() as u32;
 
     debug!(
         total = total_packages,
@@ -1095,6 +1180,13 @@ pub async fn handle_pkg_install(
         failed = errors.len(),
         "Install completed"
     );
+
+    // Write sentinel so the next install can skip if nothing changed
+    if ok {
+        if let Err(e) = std::fs::write(&state_file, &content_hash) {
+            warn!(error = %e, "Failed to write .howth-state sentinel");
+        }
+    }
 
     let mut notes = vec![];
     if workspace_linked > 0 {
@@ -1133,22 +1225,24 @@ async fn install_from_lockfile(
     registry: &RegistryClient,
 ) -> Result<(InstallPackageInfo, bool), PkgError> {
     let version = &lock_pkg.version;
+    // For npm: aliases, use the real package name for registry/cache operations
+    let fetch_name = lock_pkg.alias_for.as_deref().unwrap_or(name);
 
-    debug!(name = %name, version = %version, "Installing package from lockfile");
+    debug!(name = %name, fetch_name = %fetch_name, version = %version, "Installing package from lockfile");
 
-    // Check if already cached
-    let package_dir = cache.package_dir(name, version);
-    let was_cached = cache.is_cached(name, version);
+    // Check if already cached (use real package name for cache)
+    let package_dir = cache.package_dir(fetch_name, version);
+    let was_cached = cache.is_cached(fetch_name, version);
 
     if was_cached {
         debug!(path = %package_dir.display(), "Using cached package");
     } else {
-        // Fetch packument to get tarball URL
-        let packument = registry.fetch_packument(name).await?;
+        // Fetch packument to get tarball URL (use real package name)
+        let packument = registry.fetch_packument(fetch_name).await?;
 
         // Get tarball URL
         let tarball_url = get_tarball_url(&packument, version).ok_or_else(|| {
-            PkgError::download_failed(format!("No tarball URL for {}@{}", name, version))
+            PkgError::download_failed(format!("No tarball URL for {}@{}", fetch_name, version))
         })?;
 
         debug!(url = %tarball_url, "Downloading tarball");
@@ -1168,12 +1262,20 @@ async fn install_from_lockfile(
     }
 
     // Link into node_modules using pnpm-style layout
+    // Use the alias name so the module is accessible under the alias
     let link_path = link_into_node_modules_with_version(project_root, name, version, &package_dir)?;
 
     debug!(link = %link_path.display(), "Linked into node_modules (pnpm layout)");
 
+    // Derive the .pnpm content path so binary symlinks resolve transitive deps
+    let pnpm_pkg_dir = project_root
+        .join("node_modules/.pnpm")
+        .join(format_pnpm_key(name, version))
+        .join("node_modules")
+        .join(name);
+
     // Link binaries into .bin
-    if let Ok(binaries) = link_package_binaries(project_root, name, &package_dir) {
+    if let Ok(binaries) = link_package_binaries(project_root, name, &package_dir, Some(&pnpm_pkg_dir)) {
         for bin in &binaries {
             debug!(bin = %bin.display(), "Linked binary");
         }

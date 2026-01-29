@@ -48,12 +48,12 @@ pub use graph::{
     PackageId, PackageNode, PKG_GRAPH_SCHEMA_VERSION,
 };
 pub use link::{
-    link_into_node_modules, link_into_node_modules_direct, link_into_node_modules_with_version,
-    link_package_binaries, link_package_dependencies,
+    format_pnpm_key, link_into_node_modules, link_into_node_modules_direct,
+    link_into_node_modules_with_version, link_package_binaries, link_package_dependencies,
 };
 pub use lockfile::{
-    codes as lockfile_codes, LockDep, LockDepEdge, LockMeta, LockPackage, LockResolution, LockRoot,
-    Lockfile, LockfileError, LOCKFILE_NAME, PKG_LOCK_SCHEMA_VERSION,
+    codes as lockfile_codes, lockfile_content_hash, LockDep, LockDepEdge, LockMeta, LockPackage,
+    LockResolution, LockRoot, Lockfile, LockfileError, LOCKFILE_NAME, PKG_LOCK_SCHEMA_VERSION,
 };
 pub use registry::{get_tarball_url, RegistryClient, DEFAULT_REGISTRY, REGISTRY_ENV};
 pub use spec::PackageSpec;

@@ -189,6 +189,11 @@ pub struct LockPackage {
     /// How this package was resolved.
     #[serde(default, skip_serializing_if = "is_default_resolution")]
     pub resolution: LockResolution,
+    /// Real package name when this is an `npm:` alias.
+    /// E.g., if the dep is `"string-width-cjs": "npm:string-width@^4.2.0"`,
+    /// then the lockfile key is `string-width-cjs@4.2.3` and `alias_for` is `"string-width"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias_for: Option<String>,
     /// Dependencies of this package (name -> version range).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, String>,
@@ -223,6 +228,7 @@ impl LockPackage {
             version: version.into(),
             integrity: integrity.into(),
             resolution: LockResolution::default(),
+            alias_for: None,
             dependencies: BTreeMap::new(),
             optional_dependencies: BTreeMap::new(),
             has_scripts: false,
@@ -484,6 +490,17 @@ impl fmt::Display for LockfileError {
 }
 
 impl std::error::Error for LockfileError {}
+
+/// Compute a deterministic hash of a lockfile's content.
+///
+/// Serializes the lockfile to JSON (BTreeMap guarantees deterministic order)
+/// and returns a BLAKE3 hex digest. This is used to detect whether
+/// `node_modules` is already up-to-date with the lockfile.
+#[must_use]
+pub fn lockfile_content_hash(lockfile: &Lockfile) -> String {
+    let json = serde_json::to_string(lockfile).expect("Lockfile serialization should not fail");
+    blake3::hash(json.as_bytes()).to_hex().to_string()
+}
 
 #[cfg(test)]
 mod tests {

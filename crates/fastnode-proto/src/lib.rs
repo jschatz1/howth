@@ -1369,6 +1369,20 @@ pub enum Response {
         report: PkgDoctorReport,
     },
 
+    /// Progress event during package install (streamed before final result).
+    PkgInstallProgress {
+        /// Package name.
+        name: String,
+        /// Package version.
+        version: String,
+        /// How it was obtained: "cached", "downloaded", or "workspace".
+        status: String,
+        /// Running count of completed packages.
+        completed: u32,
+        /// Total packages to install.
+        total: u32,
+    },
+
     /// Result of package install request (v1.9).
     PkgInstallResult {
         /// The install result.

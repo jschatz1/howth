@@ -29,12 +29,18 @@ use std::path::{Path, PathBuf};
 /// Reads the package's `package.json` to find the `bin` field and creates
 /// symlinks for each binary in `node_modules/.bin/`.
 ///
+/// When `pnpm_pkg_dir` is `Some`, binary symlinks target that path (inside
+/// `.pnpm/<name>@<version>/node_modules/<name>`) so that Node.js resolves
+/// transitive dependencies through the pnpm layout. When `None` (e.g. for
+/// workspace packages), the symlinks point directly at `cached_pkg_dir`.
+///
 /// # Errors
 /// Returns an error if the binaries cannot be linked.
 pub fn link_package_binaries(
     project_root: &Path,
     pkg_name: &str,
     cached_pkg_dir: &Path,
+    pnpm_pkg_dir: Option<&Path>,
 ) -> Result<Vec<PathBuf>, PkgError> {
     let package_json_path = cached_pkg_dir.join("package.json");
 
@@ -69,19 +75,23 @@ pub fn link_package_binaries(
 
     let mut linked_binaries = Vec::new();
 
+    // Use the pnpm layout path when available so that binaries resolve
+    // transitive deps via .pnpm/<name>@<version>/node_modules/.
+    let target_base = pnpm_pkg_dir.unwrap_or(cached_pkg_dir);
+
     // Handle both string and object forms of bin field
     match bin_field {
         Value::String(bin_path) => {
             // Single binary: use package name as binary name
             let binary_name = pkg_name.split('/').last().unwrap_or(pkg_name);
-            let link_path = link_binary(&bin_dir, binary_name, cached_pkg_dir, bin_path)?;
+            let link_path = link_binary(&bin_dir, binary_name, target_base, bin_path)?;
             linked_binaries.push(link_path);
         }
         Value::Object(bins) => {
             // Multiple binaries: each key is a binary name
             for (bin_name, bin_path) in bins {
                 if let Value::String(path) = bin_path {
-                    let link_path = link_binary(&bin_dir, bin_name, cached_pkg_dir, path)?;
+                    let link_path = link_binary(&bin_dir, bin_name, target_base, path)?;
                     linked_binaries.push(link_path);
                 }
             }
@@ -350,7 +360,7 @@ pub fn link_package_dependencies(
 
 /// Format a pnpm directory key for a package.
 /// Handles scoped packages by replacing '/' with '+'.
-fn format_pnpm_key(name: &str, version: &str) -> String {
+pub fn format_pnpm_key(name: &str, version: &str) -> String {
     if name.starts_with('@') {
         // @scope/name@version -> @scope+name@version
         format!("{}@{}", name.replace('/', "+"), version)
@@ -687,7 +697,7 @@ mod tests {
         link_into_node_modules(project.path(), "prettier", &cached_pkg).unwrap();
 
         // Link binaries
-        let binaries = link_package_binaries(project.path(), "prettier", &cached_pkg).unwrap();
+        let binaries = link_package_binaries(project.path(), "prettier", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 1);
         assert!(project.path().join("node_modules/.bin/prettier").exists());
@@ -722,7 +732,7 @@ mod tests {
         link_into_node_modules(project.path(), "typescript", &cached_pkg).unwrap();
 
         // Link binaries
-        let binaries = link_package_binaries(project.path(), "typescript", &cached_pkg).unwrap();
+        let binaries = link_package_binaries(project.path(), "typescript", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 2);
         assert!(project.path().join("node_modules/.bin/tsc").exists());
@@ -743,7 +753,7 @@ mod tests {
         link_into_node_modules(project.path(), "lodash", &cached_pkg).unwrap();
 
         // Link binaries - should return empty vec
-        let binaries = link_package_binaries(project.path(), "lodash", &cached_pkg).unwrap();
+        let binaries = link_package_binaries(project.path(), "lodash", &cached_pkg, None).unwrap();
 
         assert!(binaries.is_empty());
         // .bin directory might exist from pnpm setup, that's ok
