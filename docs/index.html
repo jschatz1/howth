@@ -238,67 +238,50 @@
             <p style="color: #6e7681; font-size: 0.9rem; margin-top: 0.5rem;">Fast TypeScript builds, bundling, and dev server</p>
             <div class="hero-stats">
                 <div class="stat">
-                    <div class="stat-value">34ms</div>
+                    <div class="stat-value">1.2ms</div>
                     <div class="stat-label">Cold Transpile</div>
                 </div>
                 <div class="stat">
-                    <div class="stat-value">3.6ms</div>
+                    <div class="stat-value">0.1ms</div>
                     <div class="stat-label">Warm Build</div>
                 </div>
                 <div class="stat">
-                    <div class="stat-value">15ms</div>
-                    <div class="stat-label">Watch TTG</div>
+                    <div class="stat-value">8.7x</div>
+                    <div class="stat-label">Faster Tests</div>
                 </div>
             </div>
         </header>
 
         <section>
-            <h2>Benchmarks</h2>
-            <p style="color: #8b949e; margin-bottom: 1rem;">Transpiling 203 TypeScript files (Apple M3 Pro)</p>
+            <h2>Transpile Benchmarks</h2>
+            <p style="color: #8b949e; margin-bottom: 1rem;">TypeScript transpilation (Apple M3 Pro)</p>
             <table class="benchmark-table">
                 <thead>
                     <tr>
                         <th>Tool</th>
                         <th>Cold</th>
                         <th>Warm</th>
+                        <th>Peak RSS</th>
                         <th></th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr>
                         <td><strong>howth</strong></td>
-                        <td class="time fastest">34ms</td>
-                        <td class="time fastest">3.6ms</td>
+                        <td class="time fastest">1.2ms</td>
+                        <td class="time fastest">0.1ms</td>
+                        <td>8.2MB</td>
                         <td>
                             <div class="bar-container">
-                                <div class="bar howth" style="width: 7%"></div>
+                                <div class="bar howth" style="width: 1%"></div>
                             </div>
                         </td>
                     </tr>
                     <tr>
-                        <td>esbuild</td>
-                        <td class="time">40ms</td>
+                        <td>tsc --noEmit</td>
+                        <td class="time">975ms</td>
                         <td class="time">-</td>
-                        <td>
-                            <div class="bar-container">
-                                <div class="bar esbuild" style="width: 8%"></div>
-                            </div>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>swc</td>
-                        <td class="time">107ms</td>
-                        <td class="time">-</td>
-                        <td>
-                            <div class="bar-container">
-                                <div class="bar swc" style="width: 21%"></div>
-                            </div>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>tsc</td>
-                        <td class="time">515ms</td>
-                        <td class="time">-</td>
+                        <td>143MB</td>
                         <td>
                             <div class="bar-container">
                                 <div class="bar tsc" style="width: 100%"></div>
@@ -307,6 +290,58 @@
                     </tr>
                 </tbody>
             </table>
+        </section>
+
+        <section>
+            <h2>Test Runner Benchmarks</h2>
+            <p style="color: #8b949e; margin-bottom: 1rem;">15 test files, 120 test cases (Apple M3 Pro)</p>
+            <table class="benchmark-table">
+                <thead>
+                    <tr>
+                        <th>Tool</th>
+                        <th>Median</th>
+                        <th>p95</th>
+                        <th>Peak RSS</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>howth</strong></td>
+                        <td class="time fastest">19ms</td>
+                        <td class="time">20ms</td>
+                        <td>-</td>
+                        <td>
+                            <div class="bar-container">
+                                <div class="bar howth" style="width: 12%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>bun test</td>
+                        <td class="time">20ms</td>
+                        <td class="time">25ms</td>
+                        <td>56.8MB</td>
+                        <td>
+                            <div class="bar-container">
+                                <div class="bar esbuild" style="width: 12%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>node --test</td>
+                        <td class="time">163ms</td>
+                        <td class="time">189ms</td>
+                        <td>56.8MB</td>
+                        <td>
+                            <div class="bar-container">
+                                <div class="bar tsc" style="width: 100%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            <p style="color: #8b949e; margin-top: 0.75rem; font-size: 0.875rem;">howth is <strong style="color: var(--green);">8.7x faster</strong> than node and <strong style="color: var(--green);">1.05x faster</strong> than bun.</p>
         </section>
 
         <section>

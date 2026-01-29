@@ -9,10 +9,11 @@ use fastnode_core::config::Channel;
 use fastnode_core::paths;
 use fastnode_core::Config;
 use fastnode_core::VERSION;
-use fastnode_daemon::ipc::{IpcStream, MAX_FRAME_SIZE};
+use fastnode_daemon::ipc::MAX_FRAME_SIZE;
 use fastnode_proto::{encode_frame, Frame, FrameResponse, Request, Response};
 use miette::Result;
 use serde_json::Value;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use walkdir::WalkDir;
@@ -70,6 +71,8 @@ pub fn run(config: &Config) -> Result<()> {
 
 /// Try to run tests via the daemon's warm Node worker pool.
 /// Returns Some(exit_code) on success, None if daemon is unavailable.
+///
+/// Uses a blocking Unix socket to avoid tokio runtime startup overhead.
 fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
     let endpoint = paths::ipc_endpoint(Channel::Stable);
 
@@ -78,10 +81,7 @@ fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
         .map(|f| f.to_string_lossy().into_owned())
         .collect();
 
-    let runtime = tokio::runtime::Runtime::new().ok()?;
-    let result = runtime.block_on(async {
-        send_run_tests(&endpoint, cwd, &file_paths).await
-    });
+    let result = send_run_tests_blocking(&endpoint, cwd, &file_paths);
 
     match result {
         Ok(response) => Some(handle_test_response(response)),
@@ -92,15 +92,14 @@ fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
     }
 }
 
-/// Send RunTests request to daemon and read the response.
-async fn send_run_tests(
+/// Send RunTests request to daemon using a blocking Unix socket.
+/// Avoids tokio runtime initialization overhead (~2-5ms).
+fn send_run_tests_blocking(
     endpoint: &str,
     cwd: &Path,
     files: &[String],
 ) -> std::io::Result<Response> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut stream = IpcStream::connect(endpoint).await?;
+    let mut stream = std::os::unix::net::UnixStream::connect(endpoint)?;
 
     let frame = Frame::new(
         VERSION,
@@ -111,12 +110,12 @@ async fn send_run_tests(
     );
     let encoded = encode_frame(&frame)?;
 
-    stream.write_all(&encoded).await?;
-    stream.flush().await?;
+    stream.write_all(&encoded)?;
+    stream.flush()?;
 
-    // Read response
+    // Read response length prefix (4 bytes, little-endian)
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await?;
+    stream.read_exact(&mut len_buf)?;
     let len = u32::from_le_bytes(len_buf) as usize;
 
     if len > MAX_FRAME_SIZE {
@@ -127,7 +126,7 @@ async fn send_run_tests(
     }
 
     let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
+    stream.read_exact(&mut buf)?;
 
     let response: FrameResponse = serde_json::from_slice(&buf)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

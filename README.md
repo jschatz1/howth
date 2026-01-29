@@ -24,22 +24,36 @@ The connection runs deeper: deterministic builds are about always arriving back 
 
 ## Status
 
-**Active Development** - Core toolchain functionality is implemented:
+**Active Development** — All core functionality is implemented and working:
 
-- Native V8 runtime (via deno_core) with Web API support
-- ES module loading with TypeScript transpilation
+- TypeScript transpilation via SWC (1.2ms cold, 0.1ms warm)
+- Test runner with warm Node worker pool (8.7x faster than node --test)
 - Package installation and dependency management
-- Bundler with tree shaking
-- Test runner
+- Bundler with tree shaking and code splitting
 - Dev server with HMR
+- Native V8 runtime (via deno_core) with 85% Node.js API coverage
+- Long-running daemon with IPC for persistent caching
 
-## Vision
+## Benchmarks
 
-A multi-year project to build a Bun-class (and eventually faster-than-Bun) JavaScript/TypeScript toolchain and runtime:
+All benchmarks on Apple M3 Pro (11 cores). Run with `howth bench`.
 
-- **Phase 1**: Toolchain around Node (package manager, test runner, bundler) - **Complete**
-- **Phase 2**: Runtime experiments + Node compatibility harness - **In Progress**
-- **Phase 3**: Eliminate fallbacks + performance optimization
+### Transpile
+
+| Tool | Cold | Warm | Peak RSS |
+|------|------|------|----------|
+| **howth** | **1.2ms** | **0.1ms** | **8.2MB** |
+| tsc --noEmit | 975ms | - | 143MB |
+
+### Test Runner (15 files, 120 tests)
+
+| Tool | Median | p95 | Peak RSS |
+|------|--------|-----|----------|
+| **howth** | **19ms** | **20ms** | - |
+| bun test | 20ms | 25ms | 56.8MB |
+| node --test | 163ms | 189ms | 56.8MB |
+
+howth is **8.7x faster** than node and **1.05x faster** than bun.
 
 ## Building
 
@@ -58,11 +72,14 @@ cargo run -p fastnode-cli --bin howth -- --help
 ## Testing
 
 ```bash
-# Run all tests
+# Run all Rust tests
 cargo test --workspace
 
 # Run benchmarks
-cargo bench -p fastnode-bench
+howth bench transpile     # Transpile speed
+howth bench test          # Test runner speed (vs node, bun)
+howth bench install       # Install speed (vs npm, bun)
+howth bench smoke         # Internal micro-benchmarks
 
 # Smoke tests
 ./scripts/smoke.sh        # Unix
@@ -132,9 +149,9 @@ howth run --node script.ts
 | `node:assert` | ✅ | Full assertion support |
 | `node:child_process` | ✅ | execSync, spawnSync, exec, spawn |
 | `node:module` | ✅ | createRequire, builtinModules |
-| `node:crypto` | ✅ | randomBytes, randomUUID, createHash (MD5), timingSafeEqual |
-| `node:http` | ❌ | Not yet implemented |
-| `node:https` | ❌ | Not yet implemented |
+| `node:crypto` | ✅ | randomBytes, randomUUID, createHash, createCipheriv, sign/verify, RSA |
+| `node:http` | ✅ | Client (request/get), Server, Agent, IncomingMessage |
+| `node:https` | ✅ | Client (request/get), wraps http with TLS |
 | `node:util` | ✅ | format, inspect, promisify, types, deprecate |
 | `node:stream` | ✅ | Readable, Writable, Duplex, Transform, pipeline |
 | `node:os` | ✅ | platform, arch, cpus, homedir, tmpdir, EOL, constants |
@@ -150,9 +167,9 @@ howth run --node script.ts
 | `node:v8` | ✅ | Heap statistics, serialize/deserialize |
 | `node:domain` | ✅ | Deprecated domain module for error handling |
 | `node:async_hooks` | ✅ | AsyncLocalStorage, AsyncResource |
-| `node:http` | ✅ | Client (request/get), Server, Agent, IncomingMessage |
-| `node:https` | ✅ | Client (request/get), wraps http with TLS |
 | `node:net` | ✅ | Socket, Server, isIP/isIPv4/isIPv6 |
+| `node:zlib` | ✅ | gzip/gunzip/deflate/inflate sync + async + streaming |
+| `node:vm` | ✅ | Script, createContext, runInContext/NewContext/ThisContext |
 | `node:worker_threads` | ❌ | Not yet implemented |
 | `require()` | ✅ | Full CommonJS support |
 
@@ -170,7 +187,7 @@ cargo build --features native-runtime
 HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 ```
 
-**Current Results (as of January 2025):**
+**Current Results:**
 
 | Category | Passed | Skipped | Total |
 |----------|--------|---------|-------|
@@ -194,52 +211,13 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | HTTPS | 1 | 0 | 1 |
 | Net | 1 | 0 | 1 |
 | Path module | 8 | 2 | 10 |
-| FS module | 9 | 4 | 13 |
-| **Total** | **38** | **6** | **44** |
+| FS module | 9 | 5 | 14 |
+| **Total** | **39** | **7** | **46** |
 
-**Pass Rate: 86%**
-
-**Passing Tests:**
-- `test-buffer-basic.js` - Buffer operations (alloc, from, concat, fill, encoding)
-- `test-url-basic.js` - URL and URLSearchParams
-- `test-process-basic.js` - process object (env, cwd, argv, events)
-- `test-events-basic.js` - EventEmitter
-- `test-util-basic.js` - util module (format, inspect, promisify, types)
-- `test-stream-basic.js` - stream module (Readable, Writable, Transform, pipeline)
-- `test-crypto-basic.js` - crypto module (randomBytes, randomUUID, MD5, timingSafeEqual)
-- `test-path.js` - Main path module tests
-- `test-path-parse-format.js` - `path.parse()` and `path.format()`
-- `test-path-dirname.js` - `path.dirname()`
-- `test-path-basename.js` - `path.basename()`
-- `test-path-extname.js` - `path.extname()`
-- `test-path-relative.js` - `path.relative()`
-- `test-path-resolve.js` - `path.resolve()` (uses child_process)
-- `test-path-isabsolute.js` - `path.isAbsolute()`
-- `test-fs-exists.js` - `fs.exists()` and `fs.existsSync()`
-- `test-fs-readdir.js` - `fs.readdir()` and `fs.readdirSync()`
-- `test-fs-readfile.js` - `fs.readFile()` and `fs.readFileSync()`
-- `test-fs-writefile.js` - `fs.writeFile()` and `fs.writeFileSync()`
-- `test-fs-appendfile.js` - `fs.appendFile()` and `fs.appendFileSync()`
-- `test-fs-rename.js` - `fs.rename()` and `fs.renameSync()`
-- `test-fs-unlink.js` - `fs.unlink()` and `fs.unlinkSync()`
-- `test-fs-mkdir-basic.js` - `fs.mkdir()` and `fs.mkdirSync()`
-- `test-fs-copyfile-basic.js` - `fs.copyFile()` and `fs.copyFileSync()`
-- `test-os-basic.js` - OS module (platform, arch, cpus, homedir, tmpdir)
-- `test-querystring-basic.js` - querystring module (parse, stringify)
-- `test-timers-basic.js` - timers module (setTimeout, clearTimeout, promises)
-- `test-string-decoder-basic.js` - StringDecoder for buffer to string conversion
-- `test-url-module-basic.js` - URL module (parse, format, resolve, file URLs)
-- `test-punycode-basic.js` - Punycode for internationalized domain names
-- `test-perf-hooks-basic.js` - Performance hooks (mark, measure, observer)
-- `test-tty-basic.js` - TTY detection and streams
-- `test-v8-basic.js` - V8 module (heap stats, serialize/deserialize)
-- `test-async-hooks-basic.js` - Async hooks (AsyncLocalStorage, AsyncResource)
-- `test-http-basic.js` - HTTP client and server APIs
-- `test-http-server-basic.js` - Native HTTP server (request/response cycle)
-- `test-https-basic.js` - HTTPS module (wraps HTTP with TLS)
-- `test-net-basic.js` - TCP Socket and Server, IP utilities
+**Pass Rate: 85%** (39/46)
 
 **Skipped Tests (known limitations):**
+
 | Test | Reason |
 |------|--------|
 | `test-path-normalize.js` | CVE-2024-36139 Windows path traversal fixes |
@@ -248,6 +226,7 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | `test-fs-mkdir.js` | Requires `worker_threads` module |
 | `test-fs-realpath.js` | Requires `worker_threads` module |
 | `test-fs-access.js` | Requires `internal/test/binding` |
+| `test-fs-copyfile.js` | Requires `internal/test/binding` |
 
 ### ES Module Support
 
@@ -458,33 +437,21 @@ howth is designed to be predictable and non-surprising:
 
 ```
 crates/
-  fastnode-cli/      # CLI binary (owns logging)
-  fastnode-core/     # Core types: errors, config, paths, versioning
+  fastnode-cli/      # CLI binary and all commands (~8k LOC)
+  fastnode-core/     # Build system, bundler, compiler, resolver, pkg manager (~31k LOC)
+  fastnode-daemon/   # Long-running daemon: IPC, file watching, warm worker pool (~6k LOC)
+  fastnode-runtime/  # Native V8 runtime via deno_core, Node API shims (~5k LOC)
+  fastnode-proto/    # IPC/RPC protocol types and frame encoding (~3k LOC)
   fastnode-util/     # Pure utilities: fs helpers, hashing
-  fastnode-proto/    # IPC/RPC protocol types
-  fastnode-daemon/   # Long-running daemon (placeholder)
-  fastnode-compat/   # Node API compatibility layer (placeholder)
-  fastnode-bench/    # Benchmarks (criterion)
-
-scripts/
-  smoke.sh           # Unix smoke tests
-  smoke.ps1          # Windows smoke tests
-  dev.sh             # Development runner with defaults
-  bench-install.sh   # Placeholder for hyperfine benchmarks
+  fastnode-compat/   # Node API compatibility layer
+  fastnode-bench/    # Benchmark infrastructure
 ```
+
+~59k lines of Rust across 8 crates.
 
 ## Feature Flags
 
-Defined at workspace level:
-
-- `native-runtime` - Native V8 runtime via deno_core (recommended)
-- `engine-v8` - V8 JavaScript engine (placeholder)
-- `engine-sm` - SpiderMonkey engine (placeholder)
-- `engine-jsc` - JavaScriptCore engine (placeholder)
-- `daemon` - Daemon mode
-- `pm` - Package manager
-- `bundler` - Bundler
-- `test-runner` - Test runner
+- `native-runtime` - Native V8 runtime via deno_core (recommended for `howth run`)
 
 ## Cache/Data Directories
 

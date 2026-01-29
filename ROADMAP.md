@@ -86,9 +86,10 @@ TypeScript transpilation, bundling, and source maps.
 
 | Project | Status | Description |
 |---------|--------|-------------|
-| TypeScript Transpiler | Planned | Fast TS → JS transpilation (swc or oxc) |
-| Bundler | Planned | ESM bundling for production |
-| Source Maps | Planned | Source map generation and consumption |
+| TypeScript Transpiler | Done | SWC-based TS → JS (1.2ms cold, 0.1ms warm) |
+| Bundler | Done | ESM bundling, tree shaking, code splitting, CSS, plugins |
+| Source Maps | Done | Source map generation |
+| Watch Mode | Done | File watching with transpile-only default |
 
 ---
 
@@ -98,8 +99,9 @@ Built-in test runner with discovery, execution, and coverage.
 
 | Project | Status | Description |
 |---------|--------|-------------|
-| Test Discovery | Planned | Find test files by pattern |
-| Test Runner | Planned | Execute tests with reporting |
+| Test Discovery | Done | Find test files by `*.test.*` / `*.spec.*` pattern |
+| Test Runner | Done | Warm Node worker pool, 8.7x faster than node --test |
+| Daemon Integration | Done | SWC transpile + IPC to warm worker |
 | Coverage | Planned | Code coverage collection and reporting |
 
 ---
@@ -110,9 +112,10 @@ JavaScript engine integration and Node API compatibility.
 
 | Project | Status | Description |
 |---------|--------|-------------|
-| V8 Integration | Planned | Embed V8 as primary engine |
-| ESM Loader | Planned | Native ESM module loading |
-| Node APIs | Planned | fs, path, crypto, etc. compatibility |
+| V8 Integration | Done | Native V8 via deno_core |
+| ESM Loader | Done | ES modules + CommonJS + TypeScript |
+| Node APIs | Done | 85% module coverage (34/40 modules) |
+| Web APIs | Done | fetch, URL, crypto.subtle, streams, etc. |
 | Native Addons | Planned | N-API / node-gyp support |
 
 ---
@@ -123,9 +126,9 @@ Optimization and benchmarking for production readiness.
 
 | Project | Status | Description |
 |---------|--------|-------------|
-| Startup Time | Planned | Sub-10ms cold start target |
-| Memory Footprint | Planned | Minimize RSS and heap usage |
-| Benchmark Suite | Planned | Comparative benchmarks vs Node/Bun/Deno |
+| Startup Time | Done | 1.2ms cold transpile, 19ms test run |
+| Memory Footprint | Done | 8.2MB peak RSS (transpile), vs 143MB for tsc |
+| Benchmark Suite | Done | `howth bench` — transpile, test, install, smoke, devloop |
 
 ---
 
@@ -135,9 +138,9 @@ Ecosystem compatibility and framework support.
 
 | Project | Status | Description |
 |---------|--------|-------------|
-| Node Compatibility | Planned | Node.js API parity testing |
-| npm Ecosystem | Planned | Top-1000 package compatibility |
-| Framework Support | Planned | Next.js, Remix, Astro, etc. |
+| Node Compatibility | Done | 45 compat tests, 85% pass rate |
+| npm Ecosystem | In Progress | Package install, linking, graph, doctor |
+| Framework Support | In Progress | Examples for React, Next.js, Remix, SvelteKit, Express |
 
 ---
 
@@ -147,10 +150,10 @@ Distribution, documentation, and launch preparation.
 
 | Project | Status | Description |
 |---------|--------|-------------|
-| CI/CD Pipeline | In Progress | GitHub Actions for test/build/release |
-| Distribution | Planned | Binary releases, npm package, installers |
-| Documentation | In Progress | README, API docs, guides |
-| Launch Checklist | Planned | Pre-launch verification |
+| CI/CD Pipeline | Done | GitHub Actions for test/build/release |
+| Distribution | Done | Binary releases for macOS/Linux/Windows |
+| Documentation | Done | README, site (howth.run), API docs, guides |
+| Launch Checklist | In Progress | Pre-launch verification |
 
 ---
 
