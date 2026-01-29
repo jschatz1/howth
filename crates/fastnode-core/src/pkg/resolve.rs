@@ -163,6 +163,12 @@ pub async fn resolve_dependencies(
         }
     }
 
+    // Phase 2: Auto-install non-optional peer dependencies (pnpm v8+ behavior).
+    // This runs AFTER all regular transitive deps are resolved so we can
+    // reliably check whether a compatible version already exists and avoid
+    // pulling in duplicate major versions (e.g. react@19 when 18 is in the tree).
+    resolve_missing_peers(&state, registry).await?;
+
     // Build root dependencies map
     let mut dependencies: BTreeMap<String, LockDep> = BTreeMap::new();
     let packages = state.packages.read().await;
@@ -342,6 +348,22 @@ async fn resolve_single_dep(
         })
         .unwrap_or_default();
 
+    // Get peer dependencies (excluding optional ones per peerDependenciesMeta)
+    let all_peer_deps: BTreeMap<String, String> = version_data
+        .get("peerDependencies")
+        .and_then(|d| d.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let peer_deps: BTreeMap<String, String> = all_peer_deps
+        .into_iter()
+        .filter(|(name, _)| !is_peer_optional(version_data, name))
+        .collect();
+
     // Create lock package entry
     let lock_pkg = LockPackage {
         version: version.clone(),
@@ -352,6 +374,7 @@ async fn resolve_single_dep(
         alias_for: dep.alias.as_ref().map(|_| dep.name.clone()),
         dependencies: deps.clone(),
         optional_dependencies: BTreeMap::new(),
+        peer_dependencies: peer_deps,
         has_scripts: version_data
             .get("scripts")
             .and_then(|s| s.as_object())
@@ -391,6 +414,91 @@ async fn resolve_single_dep(
         .collect();
 
     Ok(new_deps)
+}
+
+/// Resolve peer dependencies that are not yet satisfied by any package in the
+/// lockfile.  Runs after all regular transitive resolution is complete so we
+/// can reliably detect existing versions and avoid duplicates.
+async fn resolve_missing_peers(
+    state: &Arc<ResolveState>,
+    registry: &RegistryClient,
+) -> Result<(), PkgError> {
+    use super::version::version_satisfies;
+
+    loop {
+        let missing: Vec<(String, String)> = {
+            let packages = state.packages.read().await;
+
+            let mut seen = HashSet::new();
+            let mut out = Vec::new();
+
+            for (_key, lock_pkg) in packages.iter() {
+                for (peer_name, peer_range) in &lock_pkg.peer_dependencies {
+                    // Already satisfied by an existing package?
+                    let satisfied = packages.iter().any(|(k, _pkg)| {
+                        k.rsplit_once('@').map_or(false, |(n, v)| {
+                            n == peer_name.as_str() && version_satisfies(v, peer_range)
+                        })
+                    });
+
+                    if !satisfied {
+                        let dedup_key = format!("{}@{}", peer_name, peer_range);
+                        if seen.insert(dedup_key) {
+                            out.push((peer_name.clone(), peer_range.clone()));
+                        }
+                    }
+                }
+            }
+
+            out
+        };
+
+        if missing.is_empty() {
+            break;
+        }
+
+        // Resolve missing peers as a batch
+        let batch: Vec<PendingDep> = missing
+            .into_iter()
+            .map(|(name, range)| PendingDep {
+                name,
+                alias: None,
+                range,
+                depth: 1, // peers are shallow
+            })
+            .collect();
+
+        let new_deps = resolve_batch(&batch, registry, state).await?;
+
+        // Peers may themselves have transitive deps — resolve those too
+        let mut pending: VecDeque<PendingDep> = new_deps.into_iter().collect();
+        while !pending.is_empty() {
+            let wave: Vec<PendingDep> = pending.drain(..).collect();
+            let next = resolve_batch(&wave, registry, state).await?;
+            for dep in next {
+                if dep.depth <= MAX_DEPTH {
+                    pending.push_back(dep);
+                }
+            }
+        }
+
+        // Loop back to check if the newly resolved packages introduced more
+        // unsatisfied peers (rare but possible).
+    }
+
+    Ok(())
+}
+
+/// Check whether a peer dependency is optional according to peerDependenciesMeta
+/// in the packument.  Used during the peer-resolution phase.
+fn is_peer_optional(version_data: &Value, peer_name: &str) -> bool {
+    version_data
+        .get("peerDependenciesMeta")
+        .and_then(|m| m.as_object())
+        .and_then(|obj| obj.get(peer_name))
+        .and_then(|v| v.get("optional"))
+        .and_then(|o| o.as_bool())
+        .unwrap_or(false)
 }
 
 /// Get the dependency kind for a package.

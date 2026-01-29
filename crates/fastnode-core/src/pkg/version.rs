@@ -4,6 +4,29 @@ use super::error::PkgError;
 use super::registry::{get_latest_version, get_versions};
 use semver::{Version, VersionReq};
 
+/// Check whether a concrete version satisfies an npm version range.
+///
+/// Handles OR ranges (`^1.0.0 || ^2.0.0`), hyphen ranges, x-ranges, and all
+/// other npm-specific syntax supported by [`parse_range`].
+pub fn version_satisfies(version: &str, range: &str) -> bool {
+    let ver = match Version::parse(version) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    if range.contains("||") {
+        range
+            .split("||")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .any(|alt| parse_range(alt).map(|req| req.matches(&ver)).unwrap_or(false))
+    } else {
+        parse_range(range)
+            .map(|req| req.matches(&ver))
+            .unwrap_or(false)
+    }
+}
+
 /// Resolve a version range against a packument.
 ///
 /// # Rules

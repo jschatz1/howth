@@ -200,6 +200,9 @@ pub struct LockPackage {
     /// Optional dependencies of this package.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub optional_dependencies: BTreeMap<String, String>,
+    /// Peer dependencies of this package.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub peer_dependencies: BTreeMap<String, String>,
     /// Whether this package has install scripts.
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_scripts: bool,
@@ -231,6 +234,7 @@ impl LockPackage {
             alias_for: None,
             dependencies: BTreeMap::new(),
             optional_dependencies: BTreeMap::new(),
+            peer_dependencies: BTreeMap::new(),
             has_scripts: false,
             cpu: Vec::new(),
             os: Vec::new(),

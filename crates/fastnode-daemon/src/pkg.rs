@@ -9,8 +9,8 @@ use fastnode_core::pkg::{
     download_tarball, extract_tgz_atomic, find_workspace_root, format_pnpm_key, get_tarball_url,
     link_into_node_modules, link_into_node_modules_direct, link_into_node_modules_with_version,
     link_package_binaries, link_package_dependencies, lockfile_content_hash, read_package_deps,
-    remove_dependency_from_package_json, resolve_dependencies, resolve_version, why_from_graph,
-    write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions, LockPackage, Lockfile,
+    remove_dependency_from_package_json, resolve_dependencies, resolve_version, version_satisfies,
+    why_from_graph, write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions, LockPackage, Lockfile,
     PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult, RegistryClient,
     ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
 };
@@ -28,6 +28,39 @@ use fastnode_proto::{
 };
 use std::path::Path;
 use tracing::{debug, warn};
+
+/// Find the best matching version for a dependency in the lockfile.
+///
+/// When multiple versions of the same package exist (e.g. `entities@4.5.0` and
+/// `entities@6.0.1`), uses the semver range to pick the correct one. Falls back
+/// to the first name match if range parsing fails.
+fn find_best_match(lockfile: &Lockfile, dep_name: &str, dep_range: &str) -> Option<String> {
+    let candidates: Vec<&LockPackage> = lockfile
+        .packages
+        .iter()
+        .filter_map(|(k, pkg)| {
+            k.rsplit_once('@')
+                .and_then(|(n, _)| if n == dep_name { Some(pkg) } else { None })
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(candidates[0].version.clone());
+    }
+
+    // Multiple versions — use semver to find the right one
+    for pkg in &candidates {
+        if version_satisfies(&pkg.version, dep_range) {
+            return Some(pkg.version.clone());
+        }
+    }
+
+    // Fallback: return first match (legacy behavior)
+    Some(candidates[0].version.clone())
+}
 
 /// Parse a channel string to Channel enum.
 fn parse_channel(channel: &str) -> Channel {
@@ -47,9 +80,9 @@ pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str, save_dev
     let chan = parse_channel(channel);
     let cache = PackageCache::new(chan);
 
-    // Create registry client with persistent packument cache
+    // Create registry client with persistent packument cache and .npmrc support
     let registry = match RegistryClient::from_env_with_cache(cache.clone()) {
-        Ok(r) => r,
+        Ok(r) => r.with_npmrc(project_root),
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
         }
@@ -177,8 +210,9 @@ async fn add_single_package(
 
         debug!(url = %tarball_url, "Downloading tarball");
 
-        // Download tarball
-        let bytes = download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE).await?;
+        // Download tarball (with auth token for scoped registries)
+        let auth_token = registry.auth_token_for(&spec.name);
+        let bytes = download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
 
         debug!(size = bytes.len(), "Downloaded tarball");
 
@@ -225,11 +259,11 @@ pub async fn handle_pkg_remove(packages: &[String], cwd: &str, channel: &str) ->
     let package_json_path = project_root.join("package.json");
     let node_modules = project_root.join("node_modules");
 
-    // Create package cache and registry client with persistent packument cache
+    // Create package cache and registry client with persistent packument cache and .npmrc support
     let chan = parse_channel(channel);
     let cache = PackageCache::new(chan);
     let registry = match RegistryClient::from_env_with_cache(cache) {
-        Ok(r) => r,
+        Ok(r) => r.with_npmrc(project_root),
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
         }
@@ -320,11 +354,11 @@ pub async fn handle_pkg_update(
     let project_root = Path::new(cwd);
     let package_json_path = project_root.join("package.json");
 
-    // Create package cache and registry client with persistent packument cache
+    // Create package cache and registry client with persistent packument cache and .npmrc support
     let chan = parse_channel(channel);
     let cache = PackageCache::new(chan);
     let registry = match RegistryClient::from_env_with_cache(cache) {
-        Ok(r) => r,
+        Ok(r) => r.with_npmrc(project_root),
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
         }
@@ -488,11 +522,11 @@ pub async fn handle_pkg_outdated(cwd: &str, channel: &str) -> Response {
     let project_root = Path::new(cwd);
     let package_json_path = project_root.join("package.json");
 
-    // Create package cache and registry client with persistent packument cache
+    // Create package cache and registry client with persistent packument cache and .npmrc support
     let chan = parse_channel(channel);
     let cache = PackageCache::new(chan);
     let registry = match RegistryClient::from_env_with_cache(cache) {
-        Ok(r) => r,
+        Ok(r) => r.with_npmrc(project_root),
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
         }
@@ -866,9 +900,9 @@ pub async fn handle_pkg_install_with_progress(
     let chan = parse_channel(channel);
     let cache = PackageCache::new(chan);
 
-    // Create registry client with persistent packument cache
+    // Create registry client with persistent packument cache and .npmrc support
     let registry = match RegistryClient::from_env_with_cache(cache.clone()) {
-        Ok(r) => r,
+        Ok(r) => r.with_npmrc(&project_root),
         Err(e) => {
             return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
         }
@@ -920,11 +954,87 @@ pub async fn handle_pkg_install_with_progress(
         }
     } else {
         // Read existing lockfile
-        match Lockfile::read_from(&lockfile_path) {
+        let lf = match Lockfile::read_from(&lockfile_path) {
             Ok(lf) => lf,
             Err(e) => {
                 return Response::error(codes::PKG_INSTALL_LOCKFILE_INVALID, e.to_string());
             }
+        };
+
+        // Check if package.json has diverged from the lockfile.
+        // Compare both dependency names AND version ranges, so that upgrading
+        // a package (e.g. googleapis from ^105 to ^170) triggers re-resolution.
+        let package_json_path = project_root.join("package.json");
+        let pkg_deps_result = read_package_deps(&package_json_path, include_dev, include_optional);
+        let needs_re_resolve = match pkg_deps_result {
+            Ok(pkg_deps) => {
+                // Reconstruct the original ranges (with npm: prefix for aliases)
+                // to match the format stored in the lockfile.
+                let pj_ranges: std::collections::HashMap<&str, String> = pkg_deps
+                    .deps
+                    .iter()
+                    .map(|(name, range)| {
+                        let original = if let Some(real_name) = pkg_deps.aliases.get(name) {
+                            format!("npm:{}@{}", real_name, range)
+                        } else {
+                            range.clone()
+                        };
+                        (name.as_str(), original)
+                    })
+                    .collect();
+                let lf_ranges: std::collections::HashMap<&str, &str> = lf
+                    .dependencies
+                    .iter()
+                    .map(|(n, d)| (n.as_str(), d.range.as_str()))
+                    .collect();
+                // Different number of deps, or any name/range mismatch
+                if pj_ranges.len() != lf_ranges.len() {
+                    true
+                } else {
+                    pj_ranges.iter().any(|(name, range)| {
+                        lf_ranges.get(name).map_or(true, |lf_range| range.as_str() != *lf_range)
+                    })
+                }
+            }
+            Err(_) => false, // If we can't read package.json, proceed with existing lockfile
+        };
+
+        if needs_re_resolve {
+            if frozen {
+                return Response::error(
+                    codes::PKG_INSTALL_LOCKFILE_INVALID,
+                    "Lockfile is out of date with package.json (--frozen disallows re-resolving)",
+                );
+            }
+
+            debug!("package.json has changed, re-resolving dependencies...");
+
+            let resolve_opts = ResolveOptions {
+                include_dev,
+                include_optional,
+            };
+
+            match resolve_dependencies(&project_root, &registry, &resolve_opts).await {
+                Ok(result) => {
+                    if let Err(e) = write_lockfile(&project_root, &result.lockfile) {
+                        return Response::error(
+                            codes::PKG_INSTALL_LOCKFILE_INVALID,
+                            format!("Failed to write lockfile: {e}"),
+                        );
+                    }
+                    debug!(
+                        resolved = result.resolved_count,
+                        fetched = result.fetched_count,
+                        "Dependencies re-resolved"
+                    );
+                    result.lockfile
+                }
+                Err(e) => {
+                    return Response::error(codes::PKG_REGISTRY_ERROR, e.to_string());
+                }
+            }
+        } else {
+            lf
         }
     };
 
@@ -1015,7 +1125,7 @@ pub async fn handle_pkg_install_with_progress(
 
         // Check if this is a workspace package
         if let Some(ref config) = workspace_config {
-            if let Some(ws_pkg) = config.get_package(name) {
+            if let Some(ws_pkg) = config.get_package(name).filter(|ws| ws.version == lock_pkg.version) {
                 // Link workspace package directly instead of fetching from registry
                 debug!(name = %name, path = %ws_pkg.path.display(), "Linking workspace package");
 
@@ -1127,7 +1237,7 @@ pub async fn handle_pkg_install_with_progress(
     // This must happen after all packages are installed so the targets exist
     debug!("Linking package dependencies (pnpm layout)");
     for (key, lock_pkg) in &lockfile.packages {
-        if lock_pkg.dependencies.is_empty() {
+        if lock_pkg.dependencies.is_empty() && lock_pkg.peer_dependencies.is_empty() {
             continue;
         }
 
@@ -1138,16 +1248,9 @@ pub async fn handle_pkg_install_with_progress(
         // Resolve dependency versions from the lockfile
         let mut resolved_deps = std::collections::BTreeMap::new();
         for (dep_name, dep_range) in &lock_pkg.dependencies {
-            // Find the resolved version for this dependency in the lockfile
-            // The lockfile packages map uses "name@version" as keys
-            // For npm: aliases, the key uses the alias name (dep_name), which matches
-            if let Some((_, dep_pkg)) = lockfile.packages.iter().find(|(k, _)| {
-                k.rsplit_once('@')
-                    .map_or(false, |(n, _)| n == dep_name)
-            }) {
-                resolved_deps.insert(dep_name.clone(), dep_pkg.version.clone());
+            if let Some(version) = find_best_match(&lockfile, dep_name, dep_range) {
+                resolved_deps.insert(dep_name.clone(), version);
             } else {
-                // Dependency not in lockfile - might be optional or peer
                 debug!(
                     pkg = %name,
                     dep = %dep_name,
@@ -1155,6 +1258,17 @@ pub async fn handle_pkg_install_with_progress(
                     "Dependency not found in lockfile, skipping"
                 );
             }
+        }
+
+        // Also link peer dependencies
+        for (dep_name, dep_range) in &lock_pkg.peer_dependencies {
+            if resolved_deps.contains_key(dep_name) {
+                continue; // already covered as a regular dep
+            }
+            if let Some(version) = find_best_match(&lockfile, dep_name, dep_range) {
+                resolved_deps.insert(dep_name.clone(), version);
+            }
+            // If not found in lockfile, silently skip — peer deps are optional by nature
         }
 
         if !resolved_deps.is_empty() {
@@ -1247,8 +1361,9 @@ async fn install_from_lockfile(
 
         debug!(url = %tarball_url, "Downloading tarball");
 
-        // Download tarball
-        let bytes = download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE).await?;
+        // Download tarball (with auth token for scoped registries)
+        let auth_token = registry.auth_token_for(fetch_name);
+        let bytes = download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
 
         // TODO: Verify integrity hash matches lock_pkg.integrity
         // For now, just extract

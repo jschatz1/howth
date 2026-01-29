@@ -8,10 +8,12 @@
 
 use super::cache::PackageCache;
 use super::error::PkgError;
+use super::npmrc::{load_npmrc_files, resolve_scoped_registries, ScopedRegistry};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -69,6 +71,8 @@ pub struct RegistryClient {
     http: Client,
     /// Shared state (memory cache, disk cache).
     shared: Arc<SharedState>,
+    /// Scoped registries loaded from `.npmrc` files.
+    scoped_registries: Arc<Vec<ScopedRegistry>>,
 }
 
 impl RegistryClient {
@@ -105,6 +109,7 @@ impl RegistryClient {
                 memory_cache: RwLock::new(HashMap::new()),
                 disk_cache,
             }),
+            scoped_registries: Arc::new(Vec::new()),
         })
     }
 
@@ -120,7 +125,38 @@ impl RegistryClient {
                 memory_cache: RwLock::new(HashMap::new()),
                 disk_cache: Some(cache),
             }),
+            scoped_registries: self.scoped_registries,
         }
+    }
+
+    /// Load `.npmrc` files from the project directory and configure scoped registries.
+    #[must_use]
+    pub fn with_npmrc(self, project_dir: &Path) -> Self {
+        let config = load_npmrc_files(project_dir);
+        let registries = resolve_scoped_registries(&config);
+
+        Self {
+            scoped_registries: Arc::new(registries),
+            ..self
+        }
+    }
+
+    /// Find a scoped registry for a package name (e.g., `@tiptap-pro/extension-foo`).
+    #[must_use]
+    pub fn find_scoped_registry(&self, name: &str) -> Option<&ScopedRegistry> {
+        if !name.starts_with('@') {
+            return None;
+        }
+        // Extract scope: "@scope/package" -> "@scope"
+        let scope = name.split('/').next()?;
+        self.scoped_registries.iter().find(|r| r.scope == scope)
+    }
+
+    /// Get the auth token for a package name, if it has a scoped registry with auth.
+    #[must_use]
+    pub fn auth_token_for(&self, name: &str) -> Option<&str> {
+        self.find_scoped_registry(name)
+            .and_then(|r| r.auth_token.as_deref())
     }
 
     /// Create a client using the registry URL from environment or default.
@@ -228,14 +264,26 @@ impl RegistryClient {
             name.to_string()
         };
 
-        let url = self
-            .base_url
+        // Check for a scoped registry override
+        let scoped = self.find_scoped_registry(name);
+        let base = scoped
+            .map(|r| &r.registry_url)
+            .unwrap_or(&self.base_url);
+
+        let url = base
             .join(&encoded_name)
             .map_err(|e| PkgError::registry(format!("Failed to build URL for '{name}': {e}")))?;
 
         // Build request with abbreviated packument header and conditional ETag
         let mut request = self.http.get(url.as_str())
             .header("Accept", ABBREVIATED_ACCEPT);
+
+        // Attach Bearer auth for scoped registries
+        if let Some(reg) = scoped {
+            if let Some(ref token) = reg.auth_token {
+                request = request.header("Authorization", format!("Bearer {token}"));
+            }
+        }
 
         if let Some(etag) = &cached_etag {
             request = request.header("If-None-Match", etag);

@@ -22,6 +22,19 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 fastnode-core = { workspace = true, features = ["swc"] }
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+aes = "0.8"
+cipher = { version = "0.4", features = ["block-padding"] }
+cbc = "0.1"
+ctr = "0.9"
+aes-gcm = "0.10"
+rsa = { version = "0.9", features = ["sha2"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+pkcs1 = { version = "0.7", features = ["pem"] }
+rand = "0.8"
+digest = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

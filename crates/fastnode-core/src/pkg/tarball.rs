@@ -18,16 +18,25 @@ const DOWNLOAD_TIMEOUT_SECS: u64 = 30;
 
 /// Download a tarball from a URL.
 ///
+/// If `auth_token` is provided, attaches a `Bearer` authorization header.
+///
 /// # Errors
 /// Returns an error if the download fails or exceeds the size limit.
 pub async fn download_tarball(
     client: &Client,
     url: &str,
     max_bytes: u64,
+    auth_token: Option<&str>,
 ) -> Result<Bytes, PkgError> {
-    let response = client
+    let mut request = client
         .get(url)
-        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS));
+
+    if let Some(token) = auth_token {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| PkgError::download_failed(format!("Failed to download '{url}': {e}")))?;

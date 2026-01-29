@@ -129,6 +129,14 @@ extension!(
         op_howth_random_bytes,
         op_howth_random_uuid,
         op_howth_hash,
+        op_howth_hmac,
+        op_howth_cipher,
+        op_howth_cipher_gcm,
+        op_howth_sign,
+        op_howth_verify,
+        op_howth_public_encrypt,
+        op_howth_private_decrypt,
+        op_howth_generate_rsa_keypair,
         op_howth_hrtime,
         op_howth_sleep,
         // File system ops
@@ -2225,89 +2233,374 @@ fn op_howth_random_uuid() -> String {
     )
 }
 
-/// Hash data using various algorithms.
+/// Hash data using various algorithms (cryptographic).
 #[op2]
 #[serde]
 fn op_howth_hash(
     #[string] algorithm: &str,
     #[buffer] data: &[u8],
 ) -> Result<Vec<u8>, deno_core::error::AnyError> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use digest::Digest;
 
-    // Simple hash implementation using Rust's built-in hasher
-    // For production, you'd want to use ring or sha2 crates
     match algorithm.to_lowercase().as_str() {
         "sha-1" | "sha1" => {
-            // Simple simulation - in production use a proper SHA-1 implementation
-            let mut hasher = DefaultHasher::new();
-            data.hash(&mut hasher);
-            let h1 = hasher.finish();
-            hasher.write_u64(h1);
-            let h2 = hasher.finish();
-            hasher.write_u64(h2);
-            let h3 = hasher.finish();
-            let mut result = Vec::with_capacity(20);
-            result.extend_from_slice(&h1.to_be_bytes());
-            result.extend_from_slice(&h2.to_be_bytes());
-            result.extend_from_slice(&h3.to_be_bytes()[0..4]);
-            Ok(result)
+            let mut hasher = sha1::Sha1::new();
+            hasher.update(data);
+            Ok(hasher.finalize().to_vec())
         }
         "sha-256" | "sha256" => {
-            let mut hasher = DefaultHasher::new();
-            data.hash(&mut hasher);
-            let h1 = hasher.finish();
-            hasher.write_u64(h1);
-            let h2 = hasher.finish();
-            hasher.write_u64(h2);
-            let h3 = hasher.finish();
-            hasher.write_u64(h3);
-            let h4 = hasher.finish();
-            let mut result = Vec::with_capacity(32);
-            result.extend_from_slice(&h1.to_be_bytes());
-            result.extend_from_slice(&h2.to_be_bytes());
-            result.extend_from_slice(&h3.to_be_bytes());
-            result.extend_from_slice(&h4.to_be_bytes());
-            Ok(result)
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(data);
+            Ok(hasher.finalize().to_vec())
         }
         "sha-384" | "sha384" => {
-            let mut hasher = DefaultHasher::new();
-            data.hash(&mut hasher);
-            let mut result = Vec::with_capacity(48);
-            for _ in 0..6 {
-                let h = hasher.finish();
-                result.extend_from_slice(&h.to_be_bytes());
-                hasher.write_u64(h);
-            }
-            Ok(result)
+            let mut hasher = sha2::Sha384::new();
+            hasher.update(data);
+            Ok(hasher.finalize().to_vec())
         }
         "sha-512" | "sha512" => {
-            let mut hasher = DefaultHasher::new();
-            data.hash(&mut hasher);
-            let mut result = Vec::with_capacity(64);
-            for _ in 0..8 {
-                let h = hasher.finish();
-                result.extend_from_slice(&h.to_be_bytes());
-                hasher.write_u64(h);
-            }
-            Ok(result)
+            let mut hasher = sha2::Sha512::new();
+            hasher.update(data);
+            Ok(hasher.finalize().to_vec())
         }
         "md5" => {
-            let mut hasher = DefaultHasher::new();
-            data.hash(&mut hasher);
-            let h1 = hasher.finish();
-            hasher.write_u64(h1);
-            let h2 = hasher.finish();
-            let mut result = Vec::with_capacity(16);
-            result.extend_from_slice(&h1.to_be_bytes());
-            result.extend_from_slice(&h2.to_be_bytes());
-            Ok(result)
+            // MD5 is not available via sha2 crate; keep a simple implementation
+            // for backwards compat. For now, use the md-5 crate if available,
+            // otherwise fall back to a non-cryptographic placeholder.
+            // deno_node pulls in md-5 transitively.
+            Err(deno_core::error::AnyError::msg(
+                "MD5 hashing should be handled in JavaScript"
+            ))
         }
         _ => Err(deno_core::error::AnyError::msg(format!(
             "Unsupported algorithm: {}",
             algorithm
         ))),
     }
+}
+
+/// HMAC computation using real HMAC crate.
+#[op2]
+#[serde]
+fn op_howth_hmac(
+    #[string] algorithm: &str,
+    #[buffer] key: &[u8],
+    #[buffer] data: &[u8],
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use hmac::{Hmac, Mac};
+
+    match algorithm.to_lowercase().as_str() {
+        "sha-1" | "sha1" => {
+            let mut mac = Hmac::<sha1::Sha1>::new_from_slice(key)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("HMAC key error: {}", e)))?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        "sha-256" | "sha256" => {
+            let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("HMAC key error: {}", e)))?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        "sha-384" | "sha384" => {
+            let mut mac = Hmac::<sha2::Sha384>::new_from_slice(key)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("HMAC key error: {}", e)))?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        "sha-512" | "sha512" => {
+            let mut mac = Hmac::<sha2::Sha512>::new_from_slice(key)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("HMAC key error: {}", e)))?;
+            mac.update(data);
+            Ok(mac.finalize().into_bytes().to_vec())
+        }
+        _ => Err(deno_core::error::AnyError::msg(format!(
+            "Unsupported HMAC algorithm: {}",
+            algorithm
+        ))),
+    }
+}
+
+/// Symmetric cipher operation (CBC, CTR modes).
+#[op2]
+#[serde]
+fn op_howth_cipher(
+    #[string] algorithm: &str,
+    #[buffer] key: &[u8],
+    #[buffer] iv: &[u8],
+    #[buffer] data: &[u8],
+    encrypt: bool,
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, StreamCipher};
+
+    match algorithm.to_lowercase().as_str() {
+        "aes-128-cbc" | "aes-256-cbc" => {
+            use cipher::block_padding::Pkcs7;
+            if key.len() == 16 {
+                if encrypt {
+                    let ct = cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv)
+                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .encrypt_padded_vec_mut::<Pkcs7>(data);
+                    Ok(ct)
+                } else {
+                    let pt = cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
+                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .decrypt_padded_vec_mut::<Pkcs7>(data)
+                        .map_err(|e| deno_core::error::AnyError::msg(format!("Decryption error: {}", e)))?;
+                    Ok(pt)
+                }
+            } else {
+                if encrypt {
+                    let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
+                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .encrypt_padded_vec_mut::<Pkcs7>(data);
+                    Ok(ct)
+                } else {
+                    let pt = cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
+                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .decrypt_padded_vec_mut::<Pkcs7>(data)
+                        .map_err(|e| deno_core::error::AnyError::msg(format!("Decryption error: {}", e)))?;
+                    Ok(pt)
+                }
+            }
+        }
+        "aes-128-ctr" | "aes-256-ctr" => {
+            let mut buf = data.to_vec();
+            if key.len() == 16 {
+                let mut cipher = ctr::Ctr128BE::<aes::Aes128>::new_from_slices(key, iv)
+                    .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?;
+                cipher.apply_keystream(&mut buf);
+            } else {
+                let mut cipher = ctr::Ctr128BE::<aes::Aes256>::new_from_slices(key, iv)
+                    .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?;
+                cipher.apply_keystream(&mut buf);
+            }
+            Ok(buf)
+        }
+        _ => Err(deno_core::error::AnyError::msg(format!(
+            "Unsupported cipher algorithm: {}",
+            algorithm
+        ))),
+    }
+}
+
+/// AES-GCM cipher operation. Returns (ciphertext/plaintext, auth_tag).
+/// For encrypt: returns (ciphertext, 16-byte auth_tag).
+/// For decrypt: auth_tag is passed in via `tag` param; returns (plaintext, empty).
+#[op2]
+#[serde]
+fn op_howth_cipher_gcm(
+    #[string] algorithm: &str,
+    #[buffer] key: &[u8],
+    #[buffer] iv: &[u8],
+    #[buffer] data: &[u8],
+    #[buffer] aad: &[u8],
+    #[buffer] tag: &[u8],
+    encrypt: bool,
+) -> Result<(Vec<u8>, Vec<u8>), deno_core::error::AnyError> {
+    use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit, AeadInPlace, Nonce, Tag};
+
+    match algorithm.to_lowercase().as_str() {
+        "aes-128-gcm" => {
+            let cipher = Aes128Gcm::new_from_slice(key)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("GCM key error: {}", e)))?;
+            let nonce = Nonce::from_slice(iv);
+            if encrypt {
+                let mut buffer = data.to_vec();
+                let auth_tag = cipher.encrypt_in_place_detached(nonce, aad, &mut buffer)
+                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM encrypt error: {}", e)))?;
+                Ok((buffer, auth_tag.to_vec()))
+            } else {
+                let mut buffer = data.to_vec();
+                let tag_arr = Tag::from_slice(tag);
+                cipher.decrypt_in_place_detached(nonce, aad, &mut buffer, tag_arr)
+                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM decrypt error: {}", e)))?;
+                Ok((buffer, vec![]))
+            }
+        }
+        "aes-256-gcm" => {
+            let cipher = Aes256Gcm::new_from_slice(key)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("GCM key error: {}", e)))?;
+            let nonce = Nonce::from_slice(iv);
+            if encrypt {
+                let mut buffer = data.to_vec();
+                let auth_tag = cipher.encrypt_in_place_detached(nonce, aad, &mut buffer)
+                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM encrypt error: {}", e)))?;
+                Ok((buffer, auth_tag.to_vec()))
+            } else {
+                let mut buffer = data.to_vec();
+                let tag_arr = Tag::from_slice(tag);
+                cipher.decrypt_in_place_detached(nonce, aad, &mut buffer, tag_arr)
+                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM decrypt error: {}", e)))?;
+                Ok((buffer, vec![]))
+            }
+        }
+        _ => Err(deno_core::error::AnyError::msg(format!(
+            "Unsupported GCM algorithm: {}",
+            algorithm
+        ))),
+    }
+}
+
+/// RSA sign with PKCS#1 v1.5 padding.
+#[op2]
+#[serde]
+fn op_howth_sign(
+    #[string] algorithm: &str,
+    #[string] key_pem: &str,
+    #[buffer] data: &[u8],
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use rsa::pkcs8::DecodePrivateKey;
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::signature::SignerMut;
+
+    let private_key = rsa::RsaPrivateKey::from_pkcs8_pem(key_pem)
+        .or_else(|_| {
+            use rsa::pkcs1::DecodeRsaPrivateKey;
+            rsa::RsaPrivateKey::from_pkcs1_pem(key_pem)
+        })
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse private key: {}", e)))?;
+
+    match algorithm.to_lowercase().as_str() {
+        "sha256" | "sha-256" => {
+            let mut signing_key = SigningKey::<sha2::Sha256>::new(private_key);
+            let signature = signing_key.sign(data);
+            use rsa::signature::SignatureEncoding;
+            Ok(signature.to_bytes().to_vec())
+        }
+        "sha384" | "sha-384" => {
+            let mut signing_key = SigningKey::<sha2::Sha384>::new(private_key);
+            let signature = signing_key.sign(data);
+            use rsa::signature::SignatureEncoding;
+            Ok(signature.to_bytes().to_vec())
+        }
+        "sha512" | "sha-512" => {
+            let mut signing_key = SigningKey::<sha2::Sha512>::new(private_key);
+            let signature = signing_key.sign(data);
+            use rsa::signature::SignatureEncoding;
+            Ok(signature.to_bytes().to_vec())
+        }
+        _ => Err(deno_core::error::AnyError::msg(format!(
+            "Unsupported signing algorithm: {}",
+            algorithm
+        ))),
+    }
+}
+
+/// RSA verify with PKCS#1 v1.5 padding.
+#[op2(fast)]
+fn op_howth_verify(
+    #[string] algorithm: &str,
+    #[string] key_pem: &str,
+    #[buffer] signature: &[u8],
+    #[buffer] data: &[u8],
+) -> Result<bool, deno_core::error::AnyError> {
+    use rsa::pkcs8::DecodePublicKey;
+    use rsa::pkcs1v15::{Signature, VerifyingKey};
+    use rsa::signature::Verifier;
+
+    let public_key = rsa::RsaPublicKey::from_public_key_pem(key_pem)
+        .or_else(|_| {
+            // Try parsing as PKCS#1 format
+            use rsa::pkcs1::DecodeRsaPublicKey;
+            rsa::RsaPublicKey::from_pkcs1_pem(key_pem)
+        })
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse public key: {}", e)))?;
+
+    let sig = Signature::try_from(signature)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Invalid signature: {}", e)))?;
+
+    match algorithm.to_lowercase().as_str() {
+        "sha256" | "sha-256" => {
+            let verifying_key = VerifyingKey::<sha2::Sha256>::new(public_key);
+            Ok(verifying_key.verify(data, &sig).is_ok())
+        }
+        "sha384" | "sha-384" => {
+            let verifying_key = VerifyingKey::<sha2::Sha384>::new(public_key);
+            Ok(verifying_key.verify(data, &sig).is_ok())
+        }
+        "sha512" | "sha-512" => {
+            let verifying_key = VerifyingKey::<sha2::Sha512>::new(public_key);
+            Ok(verifying_key.verify(data, &sig).is_ok())
+        }
+        _ => Err(deno_core::error::AnyError::msg(format!(
+            "Unsupported verify algorithm: {}",
+            algorithm
+        ))),
+    }
+}
+
+/// RSA public encrypt (OAEP with SHA-1, Node.js default).
+#[op2]
+#[serde]
+fn op_howth_public_encrypt(
+    #[string] key_pem: &str,
+    #[buffer] data: &[u8],
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use rsa::pkcs8::DecodePublicKey;
+    use rsa::Oaep;
+
+    let public_key = rsa::RsaPublicKey::from_public_key_pem(key_pem)
+        .or_else(|_| {
+            use rsa::pkcs1::DecodeRsaPublicKey;
+            rsa::RsaPublicKey::from_pkcs1_pem(key_pem)
+        })
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse public key: {}", e)))?;
+
+    let mut rng = rand::thread_rng();
+    let padding = Oaep::new::<sha1::Sha1>();
+    let encrypted = public_key
+        .encrypt(&mut rng, padding, data)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("RSA encrypt error: {}", e)))?;
+    Ok(encrypted)
+}
+
+/// RSA private decrypt (OAEP with SHA-1, Node.js default).
+#[op2]
+#[serde]
+fn op_howth_private_decrypt(
+    #[string] key_pem: &str,
+    #[buffer] data: &[u8],
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use rsa::pkcs8::DecodePrivateKey;
+    use rsa::Oaep;
+
+    let private_key = rsa::RsaPrivateKey::from_pkcs8_pem(key_pem)
+        .or_else(|_| {
+            use rsa::pkcs1::DecodeRsaPrivateKey;
+            rsa::RsaPrivateKey::from_pkcs1_pem(key_pem)
+        })
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse private key: {}", e)))?;
+
+    let padding = Oaep::new::<sha1::Sha1>();
+    let decrypted = private_key
+        .decrypt(padding, data)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("RSA decrypt error: {}", e)))?;
+    Ok(decrypted)
+}
+
+/// Generate an RSA key pair (returns PEM strings).
+#[op2]
+#[serde]
+fn op_howth_generate_rsa_keypair(
+    modulus_length: u32,
+) -> Result<(String, String), deno_core::error::AnyError> {
+    use rsa::pkcs8::EncodePrivateKey;
+    use rsa::pkcs8::EncodePublicKey;
+
+    let mut rng = rand::thread_rng();
+    let private_key = rsa::RsaPrivateKey::new(&mut rng, modulus_length as usize)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("RSA keygen error: {}", e)))?;
+    let public_key = rsa::RsaPublicKey::from(&private_key);
+
+    let private_pem = private_key
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("PEM encode error: {}", e)))?;
+    let public_pem = public_key
+        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("PEM encode error: {}", e)))?;
+
+    Ok((public_pem, private_pem.to_string()))
 }
 
 /// High-resolution time in nanoseconds.

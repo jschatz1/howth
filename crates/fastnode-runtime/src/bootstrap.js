@@ -7072,20 +7072,16 @@
       return this;
     }
 
-    async digest(encoding) {
+    digest(encoding) {
       const combined = Buffer.concat(this.#data);
-      const webAlgo = hashAlgorithms[this.#algorithm];
-      const keyData = await crypto.subtle.importKey(
-        "raw",
-        this.#key,
-        { name: "HMAC", hash: webAlgo },
-        false,
-        ["sign"]
-      );
-      const signature = await crypto.subtle.sign("HMAC", keyData, combined);
-      const result = Buffer.from(new Uint8Array(signature));
+      const algoName = hashAlgorithms[this.#algorithm] || this.#algorithm;
+      const hash = ops.op_howth_hmac(algoName, this.#key, combined);
+      const result = Buffer.from(hash);
       if (encoding === "hex") return result.toString("hex");
       if (encoding === "base64") return result.toString("base64");
+      if (encoding === "base64url") {
+        return result.toString("base64").replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      }
       return result;
     }
   }
@@ -7122,19 +7118,269 @@
    * Get list of supported ciphers (stub).
    */
   function getCiphers() {
-    return ["aes-128-cbc", "aes-256-cbc", "aes-128-gcm", "aes-256-gcm"];
+    return ["aes-128-cbc", "aes-256-cbc", "aes-128-ctr", "aes-256-ctr", "aes-128-gcm", "aes-256-gcm"];
   }
 
   /**
-   * Create a cipher (stub for basic support).
+   * Cipher class for symmetric encryption.
    */
+  class Cipher {
+    #algorithm;
+    #key;
+    #iv;
+    #chunks = [];
+    #aad = null;
+    #authTag = null;
+    #isGcm;
+
+    constructor(algorithm, key, iv) {
+      this.#algorithm = algorithm.toLowerCase();
+      this.#key = typeof key === "string" ? Buffer.from(key) : key;
+      this.#iv = typeof iv === "string" ? Buffer.from(iv) : iv;
+      this.#isGcm = this.#algorithm.includes("gcm");
+    }
+
+    setAAD(buffer) {
+      this.#aad = typeof buffer === "string" ? Buffer.from(buffer) : buffer;
+      return this;
+    }
+
+    getAuthTag() {
+      if (!this.#authTag) {
+        throw new Error("Auth tag not available. Has final() been called?");
+      }
+      return Buffer.from(this.#authTag);
+    }
+
+    update(data, inputEncoding, outputEncoding) {
+      if (typeof data === "string") {
+        data = Buffer.from(data, inputEncoding || "utf8");
+      }
+      this.#chunks.push(data);
+      // For streaming compat, return empty buffer on update (data is accumulated)
+      const empty = Buffer.alloc(0);
+      if (outputEncoding === "hex") return "";
+      if (outputEncoding === "base64") return "";
+      return empty;
+    }
+
+    final(outputEncoding) {
+      const combined = Buffer.concat(this.#chunks);
+      let result;
+
+      if (this.#isGcm) {
+        const aad = this.#aad || Buffer.alloc(0);
+        const tag = Buffer.alloc(0);
+        const [ct, authTag] = ops.op_howth_cipher_gcm(
+          this.#algorithm, this.#key, this.#iv, combined, aad, tag, true
+        );
+        result = Buffer.from(ct);
+        this.#authTag = authTag;
+      } else {
+        result = Buffer.from(ops.op_howth_cipher(
+          this.#algorithm, this.#key, this.#iv, combined, true
+        ));
+      }
+
+      if (outputEncoding === "hex") return result.toString("hex");
+      if (outputEncoding === "base64") return result.toString("base64");
+      return result;
+    }
+  }
+
+  /**
+   * Decipher class for symmetric decryption.
+   */
+  class Decipher {
+    #algorithm;
+    #key;
+    #iv;
+    #chunks = [];
+    #aad = null;
+    #authTag = null;
+    #isGcm;
+
+    constructor(algorithm, key, iv) {
+      this.#algorithm = algorithm.toLowerCase();
+      this.#key = typeof key === "string" ? Buffer.from(key) : key;
+      this.#iv = typeof iv === "string" ? Buffer.from(iv) : iv;
+      this.#isGcm = this.#algorithm.includes("gcm");
+    }
+
+    setAAD(buffer) {
+      this.#aad = typeof buffer === "string" ? Buffer.from(buffer) : buffer;
+      return this;
+    }
+
+    setAuthTag(tag) {
+      this.#authTag = typeof tag === "string" ? Buffer.from(tag) : tag;
+      return this;
+    }
+
+    update(data, inputEncoding, outputEncoding) {
+      if (typeof data === "string") {
+        data = Buffer.from(data, inputEncoding || "hex");
+      }
+      this.#chunks.push(data);
+      const empty = Buffer.alloc(0);
+      if (outputEncoding === "hex") return "";
+      if (outputEncoding === "utf8" || outputEncoding === "utf-8") return "";
+      return empty;
+    }
+
+    final(outputEncoding) {
+      const combined = Buffer.concat(this.#chunks);
+      let result;
+
+      if (this.#isGcm) {
+        const aad = this.#aad || Buffer.alloc(0);
+        const tag = this.#authTag || Buffer.alloc(16);
+        const [pt] = ops.op_howth_cipher_gcm(
+          this.#algorithm, this.#key, this.#iv, combined, aad, tag, false
+        );
+        result = Buffer.from(pt);
+      } else {
+        result = Buffer.from(ops.op_howth_cipher(
+          this.#algorithm, this.#key, this.#iv, combined, false
+        ));
+      }
+
+      if (outputEncoding === "hex") return result.toString("hex");
+      if (outputEncoding === "utf8" || outputEncoding === "utf-8") return result.toString("utf8");
+      if (outputEncoding === "base64") return result.toString("base64");
+      return result;
+    }
+  }
+
   function createCipheriv(algorithm, key, iv) {
-    // Basic stub - full implementation would use Web Crypto
-    throw new Error("createCipheriv not fully implemented yet");
+    return new Cipher(algorithm, key, iv);
   }
 
   function createDecipheriv(algorithm, key, iv) {
-    throw new Error("createDecipheriv not fully implemented yet");
+    return new Decipher(algorithm, key, iv);
+  }
+
+  /**
+   * RSA sign.
+   */
+  function sign(algorithm, data, key) {
+    if (typeof data === "string") data = Buffer.from(data);
+    let keyPem;
+    if (typeof key === "string") {
+      keyPem = key;
+    } else if (key && typeof key === "object" && key.key) {
+      keyPem = typeof key.key === "string" ? key.key : key.key.export({ type: "pkcs8", format: "pem" });
+    } else if (Buffer.isBuffer(key)) {
+      keyPem = key.toString("utf8");
+    } else if (key && typeof key.export === "function") {
+      keyPem = key.export({ type: "pkcs8", format: "pem" });
+    } else {
+      throw new TypeError("Invalid key argument");
+    }
+    const algo = algorithm ? algorithm.toLowerCase().replace("-", "") : "sha256";
+    const sig = ops.op_howth_sign(algo, keyPem, data);
+    return Buffer.from(sig);
+  }
+
+  /**
+   * RSA verify.
+   */
+  function verify(algorithm, data, key, signature) {
+    if (typeof data === "string") data = Buffer.from(data);
+    let keyPem;
+    if (typeof key === "string") {
+      keyPem = key;
+    } else if (key && typeof key === "object" && key.key) {
+      keyPem = typeof key.key === "string" ? key.key : key.key.export({ type: "spki", format: "pem" });
+    } else if (Buffer.isBuffer(key)) {
+      keyPem = key.toString("utf8");
+    } else if (key && typeof key.export === "function") {
+      keyPem = key.export({ type: "spki", format: "pem" });
+    } else {
+      throw new TypeError("Invalid key argument");
+    }
+    const algo = algorithm ? algorithm.toLowerCase().replace("-", "") : "sha256";
+    return ops.op_howth_verify(algo, keyPem, signature, data);
+  }
+
+  /**
+   * RSA public encrypt (OAEP with SHA-1).
+   */
+  function publicEncrypt(key, buffer) {
+    let keyPem;
+    if (typeof key === "string") {
+      keyPem = key;
+    } else if (key && typeof key === "object" && key.key) {
+      keyPem = typeof key.key === "string" ? key.key : key.key.toString("utf8");
+    } else if (Buffer.isBuffer(key)) {
+      keyPem = key.toString("utf8");
+    } else if (key && typeof key.export === "function") {
+      keyPem = key.export({ type: "spki", format: "pem" });
+    } else {
+      throw new TypeError("Invalid key argument");
+    }
+    return Buffer.from(ops.op_howth_public_encrypt(keyPem, buffer));
+  }
+
+  /**
+   * RSA private decrypt (OAEP with SHA-1).
+   */
+  function privateDecrypt(key, buffer) {
+    let keyPem;
+    if (typeof key === "string") {
+      keyPem = key;
+    } else if (key && typeof key === "object" && key.key) {
+      keyPem = typeof key.key === "string" ? key.key : key.key.toString("utf8");
+    } else if (Buffer.isBuffer(key)) {
+      keyPem = key.toString("utf8");
+    } else if (key && typeof key.export === "function") {
+      keyPem = key.export({ type: "pkcs8", format: "pem" });
+    } else {
+      throw new TypeError("Invalid key argument");
+    }
+    return Buffer.from(ops.op_howth_private_decrypt(keyPem, buffer));
+  }
+
+  /**
+   * Generate an RSA key pair synchronously.
+   */
+  function generateKeyPairSync(type, options = {}) {
+    if (type !== "rsa") {
+      throw new Error(`Unsupported key type: ${type}. Only 'rsa' is supported.`);
+    }
+    const modulusLength = options.modulusLength || 2048;
+    const [publicPem, privatePem] = ops.op_howth_generate_rsa_keypair(modulusLength);
+
+    const pubKeyObj = {
+      type: "public",
+      asymmetricKeyType: "rsa",
+      export(opts = {}) {
+        if (opts.format === "pem") return publicPem;
+        return Buffer.from(publicPem);
+      },
+      toString() { return publicPem; },
+    };
+    const privKeyObj = {
+      type: "private",
+      asymmetricKeyType: "rsa",
+      export(opts = {}) {
+        if (opts.format === "pem") return privatePem;
+        return Buffer.from(privatePem);
+      },
+      toString() { return privatePem; },
+    };
+
+    if (options.publicKeyEncoding && options.privateKeyEncoding) {
+      return {
+        publicKey: publicPem,
+        privateKey: privatePem,
+      };
+    }
+
+    return {
+      publicKey: pubKeyObj,
+      privateKey: privKeyObj,
+    };
   }
 
   /**
@@ -7216,10 +7462,23 @@
     scrypt,
     scryptSync,
 
-    // Ciphers (stubs)
+    // Ciphers
     getCiphers,
     createCipheriv,
     createDecipheriv,
+    Cipher,
+    Decipher,
+
+    // Signing
+    sign,
+    verify,
+
+    // RSA encrypt/decrypt
+    publicEncrypt,
+    privateDecrypt,
+
+    // Key generation
+    generateKeyPairSync,
 
     // Web Crypto access
     subtle: crypto.subtle,
@@ -7229,6 +7488,8 @@
     constants: {
       OPENSSL_VERSION_NUMBER: 0,
       SSL_OP_ALL: 0,
+      RSA_PKCS1_PADDING: 1,
+      RSA_PKCS1_OAEP_PADDING: 4,
     },
   };
 

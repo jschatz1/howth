@@ -335,7 +335,7 @@ pub fn link_package_dependencies(
         let dep_target = pnpm_dir
             .join(&dep_pnpm_key)
             .join("node_modules")
-            .join(get_package_basename(dep_name));
+            .join(dep_name);
 
         // Handle scoped packages
         let dep_link = get_package_link_path(&pkg_node_modules, dep_name)?;
@@ -367,11 +367,6 @@ pub fn format_pnpm_key(name: &str, version: &str) -> String {
     } else {
         format!("{name}@{version}")
     }
-}
-
-/// Get the basename of a package (last component for scoped packages).
-fn get_package_basename(name: &str) -> &str {
-    name.rsplit('/').next().unwrap_or(name)
 }
 
 /// Get the link path for a package, handling scoped packages.

@@ -211,10 +211,10 @@ enum Commands {
         banner: Option<String>,
     },
 
-    /// Start development server with HMR
+    /// Start development server with HMR, or run the "dev" script from package.json
     Dev {
-        /// Entry point file
-        entry: PathBuf,
+        /// Entry point file (if omitted, runs the "dev" script from package.json)
+        entry: Option<PathBuf>,
 
         /// Port to listen on
         #[arg(long, short = 'p', default_value = "3000")]
@@ -864,29 +864,46 @@ fn main() -> Result<()> {
         open,
     }) = &cli.command
     {
-        // For dev server, use entry file's parent directory as cwd
-        // (watches only the project directory, not unrelated dirs)
-        let dev_cwd = entry
-            .parent()
-            .map(|p| {
-                if p.as_os_str().is_empty() {
-                    std::path::PathBuf::from(".")
-                } else {
-                    p.to_path_buf()
-                }
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        match entry {
+            Some(entry) => {
+                // Explicit entry file: start the built-in dev server
+                let dev_cwd = entry
+                    .parent()
+                    .map(|p| {
+                        if p.as_os_str().is_empty() {
+                            std::path::PathBuf::from(".")
+                        } else {
+                            p.to_path_buf()
+                        }
+                    })
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-        let action = commands::dev::DevAction {
-            entry: entry.clone(),
-            cwd: dev_cwd,
-            port: *port,
-            host: host.clone(),
-            open: *open,
-        };
+                let action = commands::dev::DevAction {
+                    entry: entry.clone(),
+                    cwd: dev_cwd,
+                    port: *port,
+                    host: host.clone(),
+                    open: *open,
+                };
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        return rt.block_on(commands::dev::run(action));
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                return rt.block_on(commands::dev::run(action));
+            }
+            None => {
+                // No entry file: run the "dev" script from package.json (like pnpm dev)
+                return commands::run::run(
+                    &cwd,
+                    "dev",
+                    &[],
+                    false, // daemon
+                    false, // dry_run
+                    false, // native
+                    false, // node
+                    Channel::Stable,
+                    cli.json,
+                );
+            }
+        }
     }
 
     // Handle build command early (like other daemon commands)
