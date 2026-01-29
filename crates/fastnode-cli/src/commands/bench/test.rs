@@ -61,11 +61,14 @@ fn print_human(report: &TestBenchReport) -> Result<()> {
     // Results table
     writeln!(
         out,
-        "{:<20} {:>12} {:>12} {:>12} {:>12}",
+        "\x1b[90m{:<20} {:>12} {:>12} {:>12} {:>12}\x1b[0m",
         "Tool", "Median", "p95", "CPU (med)", "Peak RSS"
     )
     .into_diagnostic()?;
-    writeln!(out, "{}", "-".repeat(70)).into_diagnostic()?;
+    writeln!(out, "\x1b[90m{}\x1b[0m", "-".repeat(70)).into_diagnostic()?;
+
+    // Find the fastest median to highlight it
+    let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
 
     for result in &report.results {
         let median = format_duration(result.median_ns);
@@ -79,12 +82,16 @@ fn print_human(report: &TestBenchReport) -> Result<()> {
             .map(format_bytes)
             .unwrap_or_else(|| "-".to_string());
 
-        writeln!(
-            out,
+        let row = format!(
             "{:<20} {:>12} {:>12} {:>12} {:>12}",
             result.tool, median, p95, cpu, rss
-        )
-        .into_diagnostic()?;
+        );
+
+        if result.median_ns == min_median {
+            writeln!(out, "\x1b[1;32m{row}\x1b[0m").into_diagnostic()?;
+        } else {
+            writeln!(out, "{row}").into_diagnostic()?;
+        }
     }
 
     // Comparisons

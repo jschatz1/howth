@@ -60,7 +60,7 @@ fn print_human(report: &BenchReport) -> Result<()> {
 
         writeln!(
             out,
-            "{:<24} median={:<10} p95={:<10} min={:<10} max={:<10}",
+            "\x1b[32m{:<24}\x1b[0m median={:<10} p95={:<10} \x1b[90mmin={:<10} max={:<10}\x1b[0m",
             result.name, median, p95, min, max
         )
         .into_diagnostic()?;

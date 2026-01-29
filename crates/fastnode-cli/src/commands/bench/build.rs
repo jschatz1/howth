@@ -82,11 +82,14 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
     // Results table header
     writeln!(
         out,
-        "{:<20} {:>12} {:>12} {:>8} {:>18} {:>12} {:>12}",
+        "\x1b[90m{:<20} {:>12} {:>12} {:>8} {:>18} {:>12} {:>12}\x1b[0m",
         "Case", "Median", "p95", "Files", "Nodes (exec/hit)", "CPU (med)", "Peak RSS"
     )
     .into_diagnostic()?;
-    writeln!(out, "{}", "-".repeat(98)).into_diagnostic()?;
+    writeln!(out, "\x1b[90m{}\x1b[0m", "-".repeat(98)).into_diagnostic()?;
+
+    // Find the fastest median to highlight it
+    let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
 
     // Results
     for result in &report.results {
@@ -121,12 +124,16 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
             .map(|r| format_bytes(r.peak_rss_bytes))
             .unwrap_or_else(|| "-".to_string());
 
-        writeln!(
-            out,
+        let row = format!(
             "{:<20} {:>12} {:>12} {:>8} {:>18} {:>12} {:>12}",
             result.case, median, p95, files, nodes, cpu, rss
-        )
-        .into_diagnostic()?;
+        );
+
+        if result.median_ns == min_median {
+            writeln!(out, "\x1b[1;32m{row}\x1b[0m").into_diagnostic()?;
+        } else {
+            writeln!(out, "\x1b[32m{row}\x1b[0m").into_diagnostic()?;
+        }
     }
 
     // Baselines
