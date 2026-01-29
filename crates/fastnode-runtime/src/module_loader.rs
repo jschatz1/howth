@@ -9,7 +9,10 @@ use deno_core::{
     RequestedModuleType, ResolutionKind,
 };
 use serde::Deserialize;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 /// Minimal package.json structure for module resolution.
 #[derive(Debug, Deserialize, Default)]
@@ -25,16 +28,33 @@ struct PackageJson {
     pkg_type: Option<String>,
 }
 
+/// A map of virtual module paths to their source code.
+/// Modules in this map are served from memory without disk I/O.
+pub type VirtualModuleMap = Rc<RefCell<HashMap<String, String>>>;
+
 /// Howth's custom module loader.
 pub struct HowthModuleLoader {
     /// Base directory for resolving relative imports.
     cwd: PathBuf,
+    /// Virtual modules that live in memory (no disk I/O needed).
+    virtual_modules: Option<VirtualModuleMap>,
 }
 
 impl HowthModuleLoader {
     /// Create a new module loader with the given working directory.
     pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+        Self {
+            cwd,
+            virtual_modules: None,
+        }
+    }
+
+    /// Create a new module loader with virtual modules for in-memory loading.
+    pub fn new_with_virtual_modules(cwd: PathBuf, virtual_modules: VirtualModuleMap) -> Self {
+        Self {
+            cwd,
+            virtual_modules: Some(virtual_modules),
+        }
     }
 
     /// Resolve a module specifier to a file path.
@@ -108,8 +128,40 @@ impl HowthModuleLoader {
         self.resolve_bare_specifier(specifier, referrer)
     }
 
+    /// Normalize a path by removing `.` and resolving `..` components.
+    fn normalize_path(path: &Path) -> PathBuf {
+        use std::path::Component;
+        let mut result = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    result.pop();
+                }
+                other => result.push(other),
+            }
+        }
+        result
+    }
+
+    /// Check if a path exists in the virtual module map.
+    fn is_virtual_module(&self, path: &Path) -> bool {
+        if let Some(ref vm) = self.virtual_modules {
+            let normalized = Self::normalize_path(path);
+            vm.borrow()
+                .contains_key(&normalized.to_string_lossy().to_string())
+        } else {
+            false
+        }
+    }
+
     /// Try to resolve a path with various extensions.
     fn resolve_with_extensions(&self, path: &Path) -> Result<PathBuf, AnyError> {
+        // Check virtual module map first (no disk I/O needed)
+        if self.is_virtual_module(path) {
+            return Ok(path.to_path_buf());
+        }
+
         // If the path already has an extension and exists, use it
         if path.exists() && path.is_file() {
             return Ok(path.to_path_buf());
@@ -604,6 +656,7 @@ impl ModuleLoader for HowthModuleLoader {
     ) -> ModuleLoadResponse {
         let specifier = module_specifier.clone();
         let cwd = self.cwd.clone();
+        let virtual_modules = self.virtual_modules.clone();
 
         ModuleLoadResponse::Async(
             async move {
@@ -619,11 +672,25 @@ impl ModuleLoader for HowthModuleLoader {
                     ));
                 }
 
-                let loader = HowthModuleLoader::new(cwd);
-
                 let path = specifier.to_file_path().map_err(|_| {
                     AnyError::msg(format!("Invalid module specifier: {}", specifier))
                 })?;
+
+                // Check virtual module map before hitting disk
+                if let Some(ref vm) = virtual_modules {
+                    let normalized = Self::normalize_path(&path);
+                    let normalized_str = normalized.to_string_lossy();
+                    if let Some(code) = vm.borrow().get(normalized_str.as_ref()) {
+                        return Ok(ModuleSource::new(
+                            ModuleType::JavaScript,
+                            ModuleSourceCode::String(code.clone().into()),
+                            &specifier,
+                            None,
+                        ));
+                    }
+                }
+
+                let loader = HowthModuleLoader::new(cwd);
 
                 let (code, module_type) = loader.load_module(&path)?;
 

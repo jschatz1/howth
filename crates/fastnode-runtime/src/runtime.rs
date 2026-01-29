@@ -89,6 +89,8 @@ pub struct RuntimeOptions {
     pub cwd: Option<PathBuf>,
     /// Command-line arguments for the script (simulates process.argv).
     pub args: Option<Vec<String>>,
+    /// Virtual modules served from memory instead of disk.
+    pub virtual_modules: Option<crate::module_loader::VirtualModuleMap>,
 }
 
 /// Thread-local storage for script arguments (set before runtime creation).
@@ -2636,7 +2638,11 @@ impl Runtime {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let module_loader = Rc::new(HowthModuleLoader::new(cwd.clone()));
+        let module_loader = Rc::new(if let Some(vm) = options.virtual_modules {
+            HowthModuleLoader::new_with_virtual_modules(cwd.clone(), vm)
+        } else {
+            HowthModuleLoader::new(cwd.clone())
+        });
 
         let mut js_runtime = JsRuntime::new(DenoRuntimeOptions {
             extensions: vec![howth_runtime::init_ops()],
@@ -2664,6 +2670,30 @@ impl Runtime {
             .execute_script("<howth>", code.to_string())
             .map_err(|e| RuntimeError::JavaScript(e.to_string()))?;
         Ok(())
+    }
+
+    /// Execute a script and return the result as a String.
+    ///
+    /// The script must evaluate to a JS string value (or undefined/null).
+    pub fn eval_to_string(&mut self, code: &str) -> Result<String, RuntimeError> {
+        let global = self
+            .js_runtime
+            .execute_script("<howth:eval>", code.to_string())
+            .map_err(|e| RuntimeError::JavaScript(e.to_string()))?;
+
+        let scope = &mut self.js_runtime.handle_scope();
+        let local = deno_core::v8::Local::new(scope, global);
+
+        if local.is_undefined() || local.is_null() {
+            return Err(RuntimeError::JavaScript(
+                "eval_to_string: result was null/undefined".to_string(),
+            ));
+        }
+
+        let s = local
+            .to_string(scope)
+            .ok_or_else(|| RuntimeError::JavaScript("eval_to_string: could not convert to string".to_string()))?;
+        Ok(s.to_rust_string_lossy(scope))
     }
 
     /// Execute an ES module from a file path.

@@ -730,67 +730,60 @@ async fn handle_run_tests(
         return Response::error(codes::INTERNAL_ERROR, "Daemon state not available");
     };
 
-    // Transpile each file using the daemon's warm SWC compiler
+    // Transpile all files in parallel using rayon
     let compiler = &state.compiler;
-    let mut transpiled = Vec::with_capacity(files.len());
+    let results: Vec<Result<TranspiledTestFile, (String, String)>> = {
+        use rayon::prelude::*;
+        files
+            .par_iter()
+            .map(|file_path| {
+                let path = PathBuf::from(file_path);
 
-    for file_path in files {
-        let path = PathBuf::from(file_path);
+                // Check if file needs transpilation
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let needs_transpile = matches!(
+                    ext.to_lowercase().as_str(),
+                    "ts" | "tsx" | "jsx" | "mts" | "cts"
+                );
 
-        // Check if file needs transpilation
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        let needs_transpile = matches!(
-            ext.to_lowercase().as_str(),
-            "ts" | "tsx" | "jsx" | "mts" | "cts"
-        );
-
-        if needs_transpile {
-            let source = match std::fs::read_to_string(&path) {
-                Ok(s) => s,
-                Err(e) => {
-                    return Response::error(
-                        codes::TEST_TRANSPILE_FAILED,
+                let source = std::fs::read_to_string(&path).map_err(|e| {
+                    (
+                        file_path.clone(),
                         format!("Failed to read {file_path}: {e}"),
-                    );
-                }
-            };
+                    )
+                })?;
 
-            // Create a dummy output path for TranspileSpec
-            let out_path = path.with_extension("mjs");
-            let spec = TranspileSpec::new(&path, &out_path);
-
-            match compiler.transpile(&spec, &source) {
-                Ok(output) => {
-                    transpiled.push(TranspiledTestFile {
+                if needs_transpile {
+                    let out_path = path.with_extension("mjs");
+                    let spec = TranspileSpec::new(&path, &out_path);
+                    let output = compiler.transpile(&spec, &source).map_err(|e| {
+                        (
+                            file_path.clone(),
+                            format!("Failed to transpile {file_path}: {e}"),
+                        )
+                    })?;
+                    Ok(TranspiledTestFile {
                         path: file_path.clone(),
                         code: output.code,
-                    });
+                    })
+                } else {
+                    Ok(TranspiledTestFile {
+                        path: file_path.clone(),
+                        code: source,
+                    })
                 }
-                Err(e) => {
-                    return Response::error(
-                        codes::TEST_TRANSPILE_FAILED,
-                        format!("Failed to transpile {file_path}: {e}"),
-                    );
-                }
+            })
+            .collect()
+    };
+
+    // Check for errors and collect transpiled files
+    let mut transpiled = Vec::with_capacity(results.len());
+    for result in results {
+        match result {
+            Ok(file) => transpiled.push(file),
+            Err((_path, msg)) => {
+                return Response::error(codes::TEST_TRANSPILE_FAILED, msg);
             }
-        } else {
-            // JS files — read and send directly
-            let source = match std::fs::read_to_string(&path) {
-                Ok(s) => s,
-                Err(e) => {
-                    return Response::error(
-                        codes::TEST_TRANSPILE_FAILED,
-                        format!("Failed to read {file_path}: {e}"),
-                    );
-                }
-            };
-            transpiled.push(TranspiledTestFile {
-                path: file_path.clone(),
-                code: source,
-            });
         }
     }
 

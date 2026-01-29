@@ -6,9 +6,38 @@
 
 <p align="center"><em>A commodius vicus of recirculation for your JavaScript.</em></p>
 
-A deterministic Node toolchain inspector and runtime foundation.
+A complete JavaScript/TypeScript toolchain — runtime, build system, bundler, test runner, package manager, and dev server — written in Rust.
 
 > `howth` is the new name of the project formerly known as `fastnode`.
+
+## What is howth?
+
+howth replaces the patchwork of tools in a typical JS/TS project with a single binary that covers the entire development lifecycle:
+
+- **`howth run`** — Execute TypeScript/JavaScript directly in a native V8 runtime. No `ts-node`, no `tsx`, no subprocess overhead.
+- **`howth build`** — Transpile TypeScript via SWC. Content-addressed caching means only changed files rebuild.
+- **`howth test`** — Run tests 29x faster than `node --test` and 2.7x faster than `bun test` at scale.
+- **`howth bundle`** — Tree shaking, code splitting, CSS bundling, minification. Rollup-compatible plugin system.
+- **`howth install`** — Package management with lockfile support, integrity checking, and offline caching.
+- **`howth dev`** — Dev server with hot module replacement.
+
+All of these share a single long-running daemon process that keeps compilers, caches, and a warm V8 runtime in memory. The first invocation pays a one-time startup cost; every subsequent command is near-instant because the daemon is already running.
+
+## Why it's fast
+
+The speed comes from architecture, not just using Rust:
+
+1. **Persistent daemon** — A long-running background process holds a warm SWC compiler, build caches, module resolution caches, and a warm V8 runtime in memory. CLI commands connect via Unix domain sockets with length-prefixed JSON frames. The daemon stays alive across invocations, so there's no startup cost after the first run.
+
+2. **Native V8 runtime** — Tests and scripts run directly in an embedded V8 engine (via deno_core), not in a Node.js subprocess. The runtime implements 85% of the Node.js API surface — `http` (backed by hyper), `fs`, `crypto`, `streams`, `child_process`, and more — so most real-world code works without Node.js installed.
+
+3. **In-memory module loading** — Transpiled test files are loaded from a virtual module map in V8's address space. No temp files are written to or read from disk. The module loader checks this in-memory map before touching the filesystem.
+
+4. **In-memory result passing** — Test results are extracted directly from V8's `globalThis` via `eval_to_string()`. No JSON files written to disk, no serialization round-trip through the filesystem.
+
+5. **Parallel SWC transpilation** — All test files are transpiled concurrently using rayon across all available cores. On an 11-core M3 Pro, 500 TypeScript files transpile in the time it takes Node.js to start up.
+
+6. **IPC, not subprocesses** — The CLI talks to the daemon over a Unix domain socket (or named pipe on Windows). A test run is a single IPC round-trip: send file paths, receive results. No process spawning, no pipe setup, no environment inheritance.
 
 ## Why "howth"?
 
@@ -27,7 +56,7 @@ The connection runs deeper: deterministic builds are about always arriving back 
 **Active Development** — All core functionality is implemented and working:
 
 - TypeScript transpilation via SWC (1.2ms cold, 0.1ms warm)
-- Test runner with warm Node worker pool (8.7x faster than node --test)
+- Test runner (29x faster than node, 2.7x faster than bun at 10k tests)
 - Package installation and dependency management
 - Bundler with tree shaking and code splitting
 - Dev server with HMR
@@ -45,15 +74,25 @@ All benchmarks on Apple M3 Pro (11 cores). Run with `howth bench`.
 | **howth** | **1.2ms** | **0.1ms** | **8.2MB** |
 | tsc --noEmit | 975ms | - | 143MB |
 
-### Test Runner (15 files, 120 tests)
+### Test Runner (500 files, 10,000 tests)
 
 | Tool | Median | p95 | Peak RSS |
 |------|--------|-----|----------|
-| **howth** | **19ms** | **20ms** | - |
-| bun test | 20ms | 25ms | 56.8MB |
-| node --test | 163ms | 189ms | 56.8MB |
+| **howth** | **139ms** | **146ms** | - |
+| bun test | 368ms | 394ms | 138MB |
+| node --test | 4.08s | 6.26s | 138MB |
 
-howth is **8.7x faster** than node and **1.05x faster** than bun.
+howth is **29x faster** than node and **2.7x faster** than bun.
+
+### Test Runner (100 files, 1,600 tests)
+
+| Tool | Median | p95 | Peak RSS |
+|------|--------|-----|----------|
+| **howth** | **33ms** | **37ms** | - |
+| bun test | 260ms | 1.51s | 77MB |
+| node --test | 816ms | 916ms | 77MB |
+
+howth is **25x faster** than node and **7.8x faster** than bun.
 
 ## Building
 

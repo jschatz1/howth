@@ -9,8 +9,11 @@
 //! 6.5ms bootstrap cost is paid only on the first test run.
 
 use crate::test_worker::{TranspiledTestFile, WorkerResponse, WorkerTestCase};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 use tracing::{debug, warn};
@@ -109,9 +112,14 @@ async fn v8_worker_loop(rx: mpsc::Receiver<V8Request>, temp_dir: &std::path::Pat
 
     debug!("V8 test worker loop started, initializing runtime...");
 
+    // Create a shared virtual module map for in-memory module loading
+    let virtual_modules: Rc<RefCell<HashMap<String, String>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+
     // Create the runtime once — pays the 6.5ms bootstrap cost here.
     let mut runtime = match Runtime::new(RuntimeOptions {
         cwd: Some(temp_dir.to_path_buf()),
+        virtual_modules: Some(virtual_modules.clone()),
         ..Default::default()
     }) {
         Ok(r) => r,
@@ -131,7 +139,8 @@ async fn v8_worker_loop(rx: mpsc::Receiver<V8Request>, temp_dir: &std::path::Pat
     debug!("V8 runtime ready, waiting for test requests");
 
     while let Ok(req) = rx.recv() {
-        let result = run_tests_in_v8(&mut runtime, &req.id, &req.files, temp_dir).await;
+        let result =
+            run_tests_in_v8(&mut runtime, &req.id, &req.files, temp_dir, &virtual_modules).await;
         let _ = req.reply.send(result);
     }
 
@@ -144,45 +153,47 @@ async fn run_tests_in_v8(
     id: &str,
     files: &[TranspiledTestFile],
     temp_dir: &std::path::Path,
+    virtual_modules: &Rc<RefCell<HashMap<String, String>>>,
 ) -> io::Result<WorkerResponse> {
     let start = std::time::Instant::now();
 
-    // Write transpiled files to temp .mjs files
-    let mut temp_paths = Vec::with_capacity(files.len());
-    for (i, file) in files.iter().enumerate() {
-        let temp_path = temp_dir.join(format!("{id}-{i}.mjs"));
-        std::fs::write(&temp_path, &file.code)?;
-        temp_paths.push(temp_path);
+    // Populate virtual module map with transpiled code (no disk I/O)
+    let mut virtual_paths = Vec::with_capacity(files.len());
+    {
+        let mut vm = virtual_modules.borrow_mut();
+        for (i, file) in files.iter().enumerate() {
+            let temp_path = temp_dir.join(format!("{id}-{i}.mjs"));
+            let path_str = temp_path.to_string_lossy().to_string();
+            vm.insert(path_str, file.code.clone());
+            virtual_paths.push(temp_path);
+        }
     }
 
     // Build a runner module that imports all test files then runs the harness.
-    // Each run uses unique filenames so the module cache doesn't conflict.
-    let results_path = temp_dir.join(format!("{id}-results.json"));
-    let results_path_str = results_path
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'");
-
     let mut runner_code = String::new();
-    for temp_path in &temp_paths {
-        let filename = temp_path.file_name().unwrap().to_string_lossy();
+    for vpath in &virtual_paths {
+        let filename = vpath.file_name().unwrap().to_string_lossy();
         runner_code.push_str(&format!("import './{filename}';\n"));
     }
-    runner_code.push_str(&format!(
+    runner_code.push_str(
         r#"
 const report = await globalThis.__howth_run_tests();
-const json = JSON.stringify(report);
-Deno.core.ops.op_howth_write_file('{results_path_str}', json);
-"#
-    ));
+globalThis.__howth_test_result_json = JSON.stringify(report);
+"#,
+    );
 
     let runner_path = temp_dir.join(format!("{id}-runner.mjs"));
-    std::fs::write(&runner_path, &runner_code)?;
-    temp_paths.push(runner_path.clone());
+    {
+        let mut vm = virtual_modules.borrow_mut();
+        vm.insert(
+            runner_path.to_string_lossy().to_string(),
+            runner_code,
+        );
+    }
 
     // Execute as a side module (reusable runtime — no "main module" restriction)
     if let Err(e) = runtime.execute_side_module(&runner_path).await {
-        cleanup_temp_files(&temp_paths);
+        cleanup_virtual_modules(virtual_modules, &virtual_paths, &runner_path);
         return Ok(WorkerResponse {
             id: id.to_string(),
             ok: false,
@@ -202,15 +213,12 @@ Deno.core.ops.op_howth_write_file('{results_path_str}', json);
         });
     }
 
-    // Clean up temp files
-    cleanup_temp_files(&temp_paths);
+    // Clean up virtual modules
+    cleanup_virtual_modules(virtual_modules, &virtual_paths, &runner_path);
 
-    // Read results
-    let json_str = match std::fs::read_to_string(&results_path) {
-        Ok(s) => {
-            let _ = std::fs::remove_file(&results_path);
-            s
-        }
+    // Extract results from globalThis (stays in V8 memory, no disk I/O)
+    let json_str = match runtime.eval_to_string("globalThis.__howth_test_result_json") {
+        Ok(s) => s,
         Err(e) => {
             return Ok(WorkerResponse {
                 id: id.to_string(),
@@ -221,7 +229,7 @@ Deno.core.ops.op_howth_write_file('{results_path_str}', json);
                 skipped: 0,
                 duration_ms: start.elapsed().as_secs_f64() * 1000.0,
                 tests: vec![],
-                diagnostics: format!("Failed to read results file: {e}"),
+                diagnostics: format!("Failed to read test results from V8: {e}"),
             });
         }
     };
@@ -267,8 +275,14 @@ Deno.core.ops.op_howth_write_file('{results_path_str}', json);
     })
 }
 
-fn cleanup_temp_files(paths: &[PathBuf]) {
-    for p in paths {
-        let _ = std::fs::remove_file(p);
+fn cleanup_virtual_modules(
+    virtual_modules: &Rc<RefCell<HashMap<String, String>>>,
+    file_paths: &[PathBuf],
+    runner_path: &PathBuf,
+) {
+    let mut vm = virtual_modules.borrow_mut();
+    for p in file_paths {
+        vm.remove(&p.to_string_lossy().to_string());
     }
+    vm.remove(&runner_path.to_string_lossy().to_string());
 }

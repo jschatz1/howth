@@ -27,10 +27,10 @@ pub const DEFAULT_ITERS: u32 = 5;
 pub const DEFAULT_WARMUP: u32 = 1;
 
 /// Number of test files to generate.
-const NUM_TEST_FILES: u32 = 15;
+const NUM_TEST_FILES: u32 = 500;
 
 /// Number of test cases per file.
-const TESTS_PER_FILE: u32 = 8;
+const TESTS_PER_FILE: u32 = 20;
 
 /// Parameters for the test benchmark.
 #[derive(Debug, Clone, Serialize, Deserialize)]
