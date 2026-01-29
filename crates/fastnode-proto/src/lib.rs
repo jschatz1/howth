@@ -39,6 +39,9 @@ pub const PKG_DOCTOR_SCHEMA_VERSION: u32 = 1;
 /// Package install schema version.
 pub const PKG_INSTALL_SCHEMA_VERSION: u32 = 1;
 
+/// Test run schema version.
+pub const TEST_RUN_SCHEMA_VERSION: u32 = 1;
+
 /// Build graph schema version (v2.0).
 pub const BUILD_GRAPH_SCHEMA_VERSION: u32 = 1;
 
@@ -130,6 +133,13 @@ pub mod codes {
     // v3.0: watch build error codes
     pub const BUILD_WATCH_JSON_UNSUPPORTED: &str = "BUILD_WATCH_JSON_UNSUPPORTED";
     pub const BUILD_WATCH_ALREADY_ACTIVE: &str = "BUILD_WATCH_ALREADY_ACTIVE";
+
+    // Test runner error codes
+    pub const TEST_CWD_INVALID: &str = "TEST_CWD_INVALID";
+    pub const TEST_NO_FILES: &str = "TEST_NO_FILES";
+    pub const TEST_TRANSPILE_FAILED: &str = "TEST_TRANSPILE_FAILED";
+    pub const TEST_WORKER_FAILED: &str = "TEST_WORKER_FAILED";
+    pub const TEST_WORKER_TIMEOUT: &str = "TEST_WORKER_TIMEOUT";
 }
 
 /// Resolver reason codes for unresolved imports.
@@ -403,6 +413,14 @@ pub enum Request {
         /// Target nodes to build (v2.1). Empty = use defaults.
         #[serde(default)]
         targets: Vec<String>,
+    },
+
+    /// Run tests via warm Node worker pool.
+    RunTests {
+        /// Working directory (project root).
+        cwd: String,
+        /// Absolute paths to test files (.test.ts, .test.js, etc.).
+        files: Vec<String>,
     },
 
     /// Watch for file changes and rebuild (v3.0).
@@ -1225,6 +1243,65 @@ pub struct BuildRunResult {
     pub notes: Vec<String>,
 }
 
+// =============================================================================
+// Test Run types
+// =============================================================================
+
+/// Status of a single test case.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TestStatus {
+    /// Test passed.
+    Pass,
+    /// Test failed.
+    Fail,
+    /// Test was skipped.
+    Skip,
+}
+
+/// Result of a single test case.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestCaseResult {
+    /// Test name.
+    pub name: String,
+    /// File path (temp file or original).
+    pub file: String,
+    /// Pass/fail/skip status.
+    pub status: TestStatus,
+    /// Duration in milliseconds.
+    pub duration_ms: f64,
+    /// Error message if failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Result of a test run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestRunResult {
+    /// Schema version.
+    pub schema_version: u32,
+    /// Working directory.
+    pub cwd: String,
+    /// Whether all tests passed.
+    pub ok: bool,
+    /// Total tests found.
+    pub total: u32,
+    /// Tests that passed.
+    pub passed: u32,
+    /// Tests that failed.
+    pub failed: u32,
+    /// Tests that were skipped.
+    pub skipped: u32,
+    /// Duration in milliseconds.
+    pub duration_ms: f64,
+    /// Individual test results.
+    #[serde(default)]
+    pub tests: Vec<TestCaseResult>,
+    /// Stderr/diagnostic output from the test run.
+    #[serde(default)]
+    pub diagnostics: String,
+}
+
 /// A response from daemon to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1393,6 +1470,12 @@ pub enum Response {
     BuildResult {
         /// The build result.
         result: BuildRunResult,
+    },
+
+    /// Result of test run via warm worker pool.
+    TestRunResult {
+        /// The test run result.
+        result: TestRunResult,
     },
 
     /// Watch build session started (v3.0).

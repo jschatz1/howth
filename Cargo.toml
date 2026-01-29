@@ -30,7 +30,7 @@ rust-version = "1.75"
 [workspace.dependencies]
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 miette = { version = "7", features = ["fancy"] }

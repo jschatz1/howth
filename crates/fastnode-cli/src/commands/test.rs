@@ -1,10 +1,16 @@
 //! `howth test` command implementation.
 //!
 //! If package.json has a "test" script, runs that.
-//! Otherwise, discovers test files and runs via Node's --test.
+//! Otherwise, discovers test files and runs via daemon's warm Node worker pool
+//! (falling back to direct `node --test` if the daemon is not running).
 
 use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
+use fastnode_core::config::Channel;
+use fastnode_core::paths;
 use fastnode_core::Config;
+use fastnode_core::VERSION;
+use fastnode_daemon::ipc::{IpcStream, MAX_FRAME_SIZE};
+use fastnode_proto::{encode_frame, Frame, FrameResponse, Request, Response};
 use miette::Result;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -31,7 +37,9 @@ const EXCLUDE_DIRS: &[&str] = &[
 /// Run the test command.
 ///
 /// First checks for a "test" script in package.json and runs it.
-/// If no script exists, falls back to built-in test discovery.
+/// If no script exists, discovers test files and tries to run via
+/// the daemon's warm Node worker pool for speed. Falls back to
+/// direct `node --test` if daemon is not running.
 pub fn run(config: &Config) -> Result<()> {
     let cwd = &config.cwd;
 
@@ -40,7 +48,7 @@ pub fn run(config: &Config) -> Result<()> {
         return run_test_script(cwd, &script);
     }
 
-    // Fall back to built-in test discovery
+    // Discover test files
     let test_files = discover_test_files(cwd);
 
     if test_files.is_empty() {
@@ -51,6 +59,147 @@ pub fn run(config: &Config) -> Result<()> {
 
     println!("Found {} test file(s)", test_files.len());
 
+    // Try running via daemon first
+    if let Some(exit_code) = try_run_via_daemon(cwd, &test_files) {
+        std::process::exit(exit_code);
+    }
+
+    // Fallback: run directly via node --test
+    run_direct(cwd, test_files)
+}
+
+/// Try to run tests via the daemon's warm Node worker pool.
+/// Returns Some(exit_code) on success, None if daemon is unavailable.
+fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
+    let endpoint = paths::ipc_endpoint(Channel::Stable);
+
+    let file_paths: Vec<String> = test_files
+        .iter()
+        .map(|f| f.to_string_lossy().into_owned())
+        .collect();
+
+    let runtime = tokio::runtime::Runtime::new().ok()?;
+    let result = runtime.block_on(async {
+        send_run_tests(&endpoint, cwd, &file_paths).await
+    });
+
+    match result {
+        Ok(response) => Some(handle_test_response(response)),
+        Err(_) => {
+            // Daemon not running — fall back to direct execution
+            None
+        }
+    }
+}
+
+/// Send RunTests request to daemon and read the response.
+async fn send_run_tests(
+    endpoint: &str,
+    cwd: &Path,
+    files: &[String],
+) -> std::io::Result<Response> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = IpcStream::connect(endpoint).await?;
+
+    let frame = Frame::new(
+        VERSION,
+        Request::RunTests {
+            cwd: cwd.to_string_lossy().into_owned(),
+            files: files.to_vec(),
+        },
+    );
+    let encoded = encode_frame(&frame)?;
+
+    stream.write_all(&encoded).await?;
+    stream.flush().await?;
+
+    // Read response
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).await?;
+    let len = u32::from_le_bytes(len_buf) as usize;
+
+    if len > MAX_FRAME_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("response frame too large: {len} bytes"),
+        ));
+    }
+
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await?;
+
+    let response: FrameResponse = serde_json::from_slice(&buf)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    Ok(response.response)
+}
+
+/// Handle test response from daemon and print results.
+/// Returns the exit code.
+fn handle_test_response(response: Response) -> i32 {
+    match response {
+        Response::TestRunResult { result } => {
+            // Print results
+            for test in &result.tests {
+                let status_str = match test.status {
+                    fastnode_proto::TestStatus::Pass => "\x1b[32m✓\x1b[0m",
+                    fastnode_proto::TestStatus::Fail => "\x1b[31m✗\x1b[0m",
+                    fastnode_proto::TestStatus::Skip => "\x1b[33m-\x1b[0m",
+                };
+                print!("{status_str} {}", test.name);
+                if test.duration_ms > 0.0 {
+                    print!(" ({:.0}ms)", test.duration_ms);
+                }
+                println!();
+                if let Some(ref err) = test.error {
+                    eprintln!("  {err}");
+                }
+            }
+
+            // Summary line
+            println!();
+            let duration_str = if result.duration_ms >= 1000.0 {
+                format!("{:.2}s", result.duration_ms / 1000.0)
+            } else {
+                format!("{:.0}ms", result.duration_ms)
+            };
+
+            if result.ok {
+                println!(
+                    "\x1b[32m{} tests passed\x1b[0m ({duration_str})",
+                    result.passed
+                );
+            } else {
+                println!(
+                    "\x1b[31m{} failed\x1b[0m, {} passed ({duration_str})",
+                    result.failed, result.passed
+                );
+            }
+
+            if result.skipped > 0 {
+                println!("{} skipped", result.skipped);
+            }
+
+            if !result.diagnostics.is_empty() {
+                eprintln!("{}", result.diagnostics.trim_end());
+            }
+
+            if result.ok { 0 } else { 1 }
+        }
+        Response::Error { code, message } => {
+            eprintln!("error: {code}: {message}");
+            EXIT_INTERNAL_ERROR
+        }
+        _ => {
+            eprintln!("error: unexpected response from daemon");
+            EXIT_INTERNAL_ERROR
+        }
+    }
+}
+
+/// Fallback: run tests directly via transpile + node --test.
+fn run_direct(cwd: &Path, test_files: Vec<PathBuf>) -> Result<()> {
     // Separate files by type
     let (ts_files, js_files): (Vec<_>, Vec<_>) =
         test_files.into_iter().partition(|f| needs_transpilation(f));
@@ -130,19 +279,6 @@ fn is_supported_extension(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
-}
-
-/// Check if a path is in an excluded directory.
-fn is_in_excluded_dir(path: &Path) -> bool {
-    path.components().any(|c| {
-        if let std::path::Component::Normal(name) = c {
-            EXCLUDE_DIRS
-                .iter()
-                .any(|excluded| name == std::ffi::OsStr::new(*excluded))
-        } else {
-            false
-        }
-    })
 }
 
 /// Check if a file needs transpilation (TypeScript/TSX/JSX).

@@ -89,8 +89,8 @@ pub async fn run_server(config: DaemonConfig) -> io::Result<()> {
     Ok(())
 }
 
-/// Check if a request requires async handling (pkg operations).
-fn is_pkg_request(request: &Request) -> bool {
+/// Check if a request requires async handling (pkg operations or test runner).
+fn is_async_request(request: &Request) -> bool {
     matches!(
         request,
         Request::PkgAdd { .. }
@@ -100,6 +100,7 @@ fn is_pkg_request(request: &Request) -> bool {
             | Request::PkgPublish { .. }
             | Request::PkgCacheList { .. }
             | Request::PkgCachePrune { .. }
+            | Request::RunTests { .. }
     )
 }
 
@@ -402,8 +403,8 @@ async fn handle_connection(
         return handle_pkg_install_streaming(stream, frame, state).await;
     }
 
-    // Handle request - use async handler for pkg operations
-    let (response, should_shutdown) = if is_pkg_request(&frame.request) {
+    // Handle request - use async handler for pkg/test operations
+    let (response, should_shutdown) = if is_async_request(&frame.request) {
         handle_request_async(
             &frame.request,
             frame.hello.proto_schema_version,

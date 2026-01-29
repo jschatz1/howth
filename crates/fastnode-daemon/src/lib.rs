@@ -38,6 +38,7 @@ pub mod ipc;
 pub mod pkg;
 mod server;
 pub mod state;
+pub mod test_worker;
 pub mod watch;
 
 pub use cache::{DaemonPkgJsonCache, DaemonResolverCache};
@@ -58,7 +59,7 @@ use fastnode_core::{build_run_plan, RunPlanInput, RunPlanOutput};
 use fastnode_proto::{
     codes, BuildCacheStatus, BuildErrorInfo, BuildNodeResult, BuildRunCounts, BuildRunResult,
     BuildRunSummary, FrameResponse, ImportSpec, Request, ResolvedImport, Response, RunPlan,
-    PROTO_SCHEMA_VERSION,
+    TestCaseResult, TestRunResult, TestStatus, PROTO_SCHEMA_VERSION, TEST_RUN_SCHEMA_VERSION,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -231,6 +232,14 @@ pub fn handle_request(
             ),
             false,
         ),
+        // RunTests needs async handler (tokio mutex + worker I/O)
+        Request::RunTests { .. } => (
+            Response::error(
+                codes::INTERNAL_ERROR,
+                "RunTests requires async handler",
+            ),
+            false,
+        ),
         // Pkg operations that need async - return error if called sync
         Request::PkgAdd { .. }
         | Request::PkgRemove { .. }
@@ -251,7 +260,8 @@ pub fn handle_request(
 
 /// Handle a request asynchronously.
 ///
-/// Use this for requests that may require network I/O (pkg operations).
+/// Use this for requests that may require network I/O (pkg operations)
+/// or test worker access.
 /// Returns a tuple of (response, `should_shutdown` flag).
 pub async fn handle_request_async(
     request: &Request,
@@ -321,6 +331,10 @@ pub async fn handle_request_async(
                 access.as_deref(),
             )
             .await,
+            false,
+        ),
+        Request::RunTests { cwd, files } => (
+            handle_run_tests(cwd, files, _state).await,
             false,
         ),
         // Non-async operations - should not reach here, but handle gracefully
@@ -683,6 +697,161 @@ fn convert_build_result(result: fastnode_core::build::BuildRunResult, cwd: &str)
         },
         results,
         notes: result.notes,
+    }
+}
+
+/// Handle a `RunTests` request.
+///
+/// Transpiles test files via the daemon's warm SWC compiler, then sends
+/// the transpiled code to the warm Node.js test worker.
+async fn handle_run_tests(
+    cwd: &str,
+    files: &[String],
+    state: Option<&Arc<DaemonState>>,
+) -> Response {
+    use crate::test_worker::TranspiledTestFile;
+    use fastnode_core::compiler::TranspileSpec;
+
+    let cwd_path = PathBuf::from(cwd);
+    if !cwd_path.exists() || !cwd_path.is_dir() {
+        return Response::error(
+            codes::TEST_CWD_INVALID,
+            format!("Invalid working directory: {cwd}"),
+        );
+    }
+
+    if files.is_empty() {
+        return Response::error(codes::TEST_NO_FILES, "No test files provided");
+    }
+
+    let Some(state) = state else {
+        return Response::error(codes::INTERNAL_ERROR, "Daemon state not available");
+    };
+
+    // Transpile each file using the daemon's warm SWC compiler
+    let compiler = &state.compiler;
+    let mut transpiled = Vec::with_capacity(files.len());
+
+    for file_path in files {
+        let path = PathBuf::from(file_path);
+
+        // Check if file needs transpilation
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let needs_transpile = matches!(
+            ext.to_lowercase().as_str(),
+            "ts" | "tsx" | "jsx" | "mts" | "cts"
+        );
+
+        if needs_transpile {
+            let source = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Response::error(
+                        codes::TEST_TRANSPILE_FAILED,
+                        format!("Failed to read {file_path}: {e}"),
+                    );
+                }
+            };
+
+            // Create a dummy output path for TranspileSpec
+            let out_path = path.with_extension("mjs");
+            let spec = TranspileSpec::new(&path, &out_path);
+
+            match compiler.transpile(&spec, &source) {
+                Ok(output) => {
+                    transpiled.push(TranspiledTestFile {
+                        path: file_path.clone(),
+                        code: output.code,
+                    });
+                }
+                Err(e) => {
+                    return Response::error(
+                        codes::TEST_TRANSPILE_FAILED,
+                        format!("Failed to transpile {file_path}: {e}"),
+                    );
+                }
+            }
+        } else {
+            // JS files — read and send directly
+            let source = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Response::error(
+                        codes::TEST_TRANSPILE_FAILED,
+                        format!("Failed to read {file_path}: {e}"),
+                    );
+                }
+            };
+            transpiled.push(TranspiledTestFile {
+                path: file_path.clone(),
+                code: source,
+            });
+        }
+    }
+
+    // Get or create the warm test worker
+    let mut worker_guard = state.test_worker.lock().await;
+    if worker_guard.is_none() {
+        match crate::test_worker::NodeTestWorker::spawn().await {
+            Ok(w) => *worker_guard = Some(w),
+            Err(e) => {
+                return Response::error(
+                    codes::TEST_WORKER_FAILED,
+                    format!("Failed to spawn test worker: {e}"),
+                );
+            }
+        }
+    }
+
+    let worker = worker_guard.as_mut().unwrap();
+
+    // Run tests on the warm worker
+    match worker.run_tests(transpiled).await {
+        Ok(result) => {
+            let tests: Vec<TestCaseResult> = result
+                .tests
+                .into_iter()
+                .map(|t| TestCaseResult {
+                    name: t.name,
+                    file: t.file,
+                    status: match t.status.as_str() {
+                        "pass" => TestStatus::Pass,
+                        "fail" => TestStatus::Fail,
+                        _ => TestStatus::Skip,
+                    },
+                    duration_ms: t.duration_ms,
+                    error: t.error,
+                })
+                .collect();
+
+            Response::TestRunResult {
+                result: TestRunResult {
+                    schema_version: TEST_RUN_SCHEMA_VERSION,
+                    cwd: cwd.to_string(),
+                    ok: result.ok,
+                    total: result.total,
+                    passed: result.passed,
+                    failed: result.failed,
+                    skipped: result.skipped,
+                    duration_ms: result.duration_ms,
+                    tests,
+                    diagnostics: result.diagnostics,
+                },
+            }
+        }
+        Err(e) => {
+            // Worker may have died — drop it so next request spawns a new one
+            *worker_guard = None;
+            let code = if e.kind() == std::io::ErrorKind::TimedOut {
+                codes::TEST_WORKER_TIMEOUT
+            } else {
+                codes::TEST_WORKER_FAILED
+            };
+            Response::error(code, format!("Test worker error: {e}"))
+        }
     }
 }
 
