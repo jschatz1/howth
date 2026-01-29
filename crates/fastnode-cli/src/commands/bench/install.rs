@@ -33,6 +33,18 @@ fn print_json(report: &InstallBenchReport) -> Result<()> {
     Ok(())
 }
 
+/// ANSI color codes for each tool in the benchmark.
+const TOOL_COLORS: &[&str] = &[
+    "\x1b[1;32m", // green bold  — howth (first)
+    "\x1b[1;36m", // cyan bold   — second tool
+    "\x1b[1;35m", // magenta bold — third tool
+    "\x1b[1;33m", // yellow bold — fourth tool
+];
+
+fn tool_color(index: usize) -> &'static str {
+    TOOL_COLORS.get(index).unwrap_or(&"\x1b[1;37m")
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn print_human(report: &InstallBenchReport) -> Result<()> {
     let mut out = io::stdout().lock();
@@ -41,40 +53,33 @@ fn print_human(report: &InstallBenchReport) -> Result<()> {
     writeln!(out, "\x1b[1mhowth bench install\x1b[0m").into_diagnostic()?;
     writeln!(out).into_diagnostic()?;
 
-    // Machine info
+    // Machine info (dim)
     writeln!(
         out,
-        "Machine: {} ({} cores, {})",
+        "\x1b[90mMachine: {} ({} cores, {})\x1b[0m",
         report.machine.cpu, report.machine.cores, report.machine.os
     )
     .into_diagnostic()?;
     writeln!(
         out,
-        "Runs: {} (warmup: {})",
+        "\x1b[90mRuns: {} (warmup: {})\x1b[0m",
         report.params.iters, report.params.warmup
     )
     .into_diagnostic()?;
     writeln!(
         out,
-        "Project: {} ({} deps)",
+        "\x1b[90mProject: {} ({} deps)\x1b[0m",
         report.project.name, report.project.dep_count
     )
     .into_diagnostic()?;
     writeln!(out).into_diagnostic()?;
 
-    // Results table
-    writeln!(
-        out,
-        "\x1b[90m{:<20} {:>12} {:>12} {:>12} {:>12}\x1b[0m",
-        "Tool", "Median", "p95", "CPU (med)", "Peak RSS"
-    )
-    .into_diagnostic()?;
-    writeln!(out, "\x1b[90m{}\x1b[0m", "-".repeat(70)).into_diagnostic()?;
-
-    // Find the fastest median to highlight it
+    // Find the fastest median
     let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
 
-    for result in &report.results {
+    // Results — one block per tool (hyperfine style)
+    for (i, result) in report.results.iter().enumerate() {
+        let color = tool_color(i);
         let median = format_duration(result.median_ns);
         let p95 = format_duration(result.p95_ns);
         let cpu = result
@@ -86,33 +91,62 @@ fn print_human(report: &InstallBenchReport) -> Result<()> {
             .map(format_bytes)
             .unwrap_or_else(|| "-".to_string());
 
-        let row = format!(
-            "{:<20} {:>12} {:>12} {:>12} {:>12}",
-            result.tool, median, p95, cpu, rss
-        );
+        // Tool name
+        writeln!(
+            out,
+            "\x1b[1mBenchmark #{}: {color}{}\x1b[0m",
+            i + 1,
+            result.tool
+        )
+        .into_diagnostic()?;
 
+        // Median line — green if fastest
         if result.median_ns == min_median {
-            writeln!(out, "\x1b[1;32m{row}\x1b[0m").into_diagnostic()?;
+            write!(out, "  Time (median):     \x1b[1;32m{median:>10}\x1b[0m").into_diagnostic()?;
         } else {
-            writeln!(out, "{row}").into_diagnostic()?;
+            write!(out, "  Time (median):     {median:>10}").into_diagnostic()?;
         }
+        writeln!(out, "     p95: {p95:>10}").into_diagnostic()?;
+
+        // Resource line (dim)
+        writeln!(
+            out,
+            "  \x1b[90mResources:           CPU: {cpu:>10}     RSS: {rss:>10}\x1b[0m",
+        )
+        .into_diagnostic()?;
+
+        // Samples count
+        writeln!(
+            out,
+            "  \x1b[90m{} runs\x1b[0m",
+            result.samples
+        )
+        .into_diagnostic()?;
+        writeln!(out).into_diagnostic()?;
     }
 
-    // Comparisons
+    // Summary
     if !report.comparisons.is_empty() {
-        writeln!(out).into_diagnostic()?;
-        for cmp in &report.comparisons {
+        writeln!(out, "\x1b[1mSummary\x1b[0m").into_diagnostic()?;
+        writeln!(
+            out,
+            "  {}\x1b[1;32mhowth\x1b[0m ran",
+            tool_color(0)
+        )
+        .into_diagnostic()?;
+        for (i, cmp) in report.comparisons.iter().enumerate() {
+            let cmp_color = tool_color(i + 1);
             if cmp.speedup >= 1.0 {
                 writeln!(
                     out,
-                    "\x1b[1;32mhowth is {:.1}x faster than {}\x1b[0m",
+                    "    \x1b[1;32m{:.2}\x1b[0m times faster than {cmp_color}{}\x1b[0m",
                     cmp.speedup, cmp.tool
                 )
                 .into_diagnostic()?;
             } else {
                 writeln!(
                     out,
-                    "\x1b[1;33mhowth is {:.1}x slower than {}\x1b[0m",
+                    "    \x1b[1;31m{:.2}\x1b[0m times slower than {cmp_color}{}\x1b[0m",
                     1.0 / cmp.speedup, cmp.tool
                 )
                 .into_diagnostic()?;
@@ -123,19 +157,17 @@ fn print_human(report: &InstallBenchReport) -> Result<()> {
     // Warnings
     if !report.warnings.is_empty() {
         writeln!(out).into_diagnostic()?;
-        writeln!(
-            out,
-            "\x1b[1mWarnings\x1b[0m ({} total)",
-            report.warnings.len()
-        )
-        .into_diagnostic()?;
         for warning in &report.warnings {
             let prefix = match warning.severity {
                 Severity::Info => "\x1b[34minfo\x1b[0m",
                 Severity::Warn => "\x1b[33mwarn\x1b[0m",
             };
-            writeln!(out, "  [{prefix}] {}: {}", warning.code, warning.message)
-                .into_diagnostic()?;
+            writeln!(
+                out,
+                "\x1b[33mWarning\x1b[0m: [{prefix}] {}: {}",
+                warning.code, warning.message
+            )
+            .into_diagnostic()?;
         }
     }
 

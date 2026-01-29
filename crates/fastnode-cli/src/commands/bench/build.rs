@@ -57,6 +57,18 @@ fn print_json(report: &BuildBenchReport) -> Result<()> {
     Ok(())
 }
 
+/// ANSI color codes for each case in the benchmark.
+const CASE_COLORS: &[&str] = &[
+    "\x1b[1;32m", // green bold  — first case (cold)
+    "\x1b[1;36m", // cyan bold   — second case (warm_noop)
+    "\x1b[1;35m", // magenta bold — third case (warm_1_change)
+    "\x1b[1;33m", // yellow bold — fourth case (watch_ttg)
+];
+
+fn case_color(index: usize) -> &'static str {
+    CASE_COLORS.get(index).unwrap_or(&"\x1b[1;37m")
+}
+
 fn print_human(report: &BuildBenchReport) -> Result<()> {
     let mut out = io::stdout().lock();
 
@@ -64,39 +76,30 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
     writeln!(out, "\x1b[1mhowth bench {}\x1b[0m", report.target).into_diagnostic()?;
     writeln!(out).into_diagnostic()?;
 
-    // Machine info
+    // Machine info (dim)
     writeln!(
         out,
-        "Machine: {} ({} cores, {})",
+        "\x1b[90mMachine: {} ({} cores, {})\x1b[0m",
         report.machine.cpu, report.machine.cores, report.machine.os
     )
     .into_diagnostic()?;
     writeln!(
         out,
-        "Runs: {} (warmup: {})",
+        "\x1b[90mRuns: {} (warmup: {})\x1b[0m",
         report.params.iters, report.params.warmup
     )
     .into_diagnostic()?;
     writeln!(out).into_diagnostic()?;
 
-    // Results table header
-    writeln!(
-        out,
-        "\x1b[90m{:<20} {:>12} {:>12} {:>8} {:>18} {:>12} {:>12}\x1b[0m",
-        "Case", "Median", "p95", "Files", "Nodes (exec/hit)", "CPU (med)", "Peak RSS"
-    )
-    .into_diagnostic()?;
-    writeln!(out, "\x1b[90m{}\x1b[0m", "-".repeat(98)).into_diagnostic()?;
-
-    // Find the fastest median to highlight it
+    // Find the fastest median
     let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
 
-    // Results
-    for result in &report.results {
+    // Results — one block per case (hyperfine style)
+    for (i, result) in report.results.iter().enumerate() {
+        let color = case_color(i);
         let median = format_duration(result.median_ns);
         let p95 = format_duration(result.p95_ns);
 
-        // Files column: show files_transpiled if available, else files_count, else "-"
         let files = result
             .work_done
             .as_ref()
@@ -105,14 +108,12 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
             .map(|c| c.to_string())
             .unwrap_or_else(|| "-".to_string());
 
-        // Nodes column: "executed/cached" or "-"
         let nodes = result
             .work_done
             .as_ref()
             .map(|w| format!("{}/{}", w.nodes_executed, w.nodes_cached))
             .unwrap_or_else(|| "-".to_string());
 
-        // CPU and RSS columns
         let cpu = result
             .resource_stats
             .as_ref()
@@ -124,39 +125,62 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
             .map(|r| format_bytes(r.peak_rss_bytes))
             .unwrap_or_else(|| "-".to_string());
 
-        let row = format!(
-            "{:<20} {:>12} {:>12} {:>8} {:>18} {:>12} {:>12}",
-            result.case, median, p95, files, nodes, cpu, rss
-        );
+        // Case name
+        writeln!(
+            out,
+            "\x1b[1mBenchmark #{}: {color}{}\x1b[0m",
+            i + 1,
+            result.case
+        )
+        .into_diagnostic()?;
 
+        // Median line — green if fastest
         if result.median_ns == min_median {
-            writeln!(out, "\x1b[1;32m{row}\x1b[0m").into_diagnostic()?;
+            write!(out, "  Time (median):     \x1b[1;32m{median:>10}\x1b[0m").into_diagnostic()?;
         } else {
-            writeln!(out, "\x1b[32m{row}\x1b[0m").into_diagnostic()?;
+            write!(out, "  Time (median):     {median:>10}").into_diagnostic()?;
         }
+        writeln!(out, "     p95: {p95:>10}").into_diagnostic()?;
+
+        // Work done
+        writeln!(
+            out,
+            "  \x1b[90mWork:                files: {files:>5}       nodes: {nodes}\x1b[0m",
+        )
+        .into_diagnostic()?;
+
+        // Resources (dim)
+        writeln!(
+            out,
+            "  \x1b[90mResources:           CPU: {cpu:>10}     RSS: {rss:>10}\x1b[0m",
+        )
+        .into_diagnostic()?;
+
+        // Samples
+        writeln!(out, "  \x1b[90m{} runs\x1b[0m", result.samples).into_diagnostic()?;
+        writeln!(out).into_diagnostic()?;
     }
 
     // Baselines
     if !report.baselines.is_empty() {
-        writeln!(out).into_diagnostic()?;
         writeln!(out, "\x1b[1mBaselines\x1b[0m").into_diagnostic()?;
         for baseline in &report.baselines {
             let median = format_duration(baseline.median_ns);
             let mut extras = Vec::new();
             if let Some(cpu_us) = baseline.median_cpu_us {
-                extras.push(format!("CPU: {}", format_cpu_time(cpu_us)));
+                extras.push(format!("CPU: \x1b[33m{}\x1b[0m", format_cpu_time(cpu_us)));
             }
             if let Some(rss) = baseline.peak_rss_bytes {
-                extras.push(format!("RSS: {}", format_bytes(rss)));
+                extras.push(format!("RSS: \x1b[33m{}\x1b[0m", format_bytes(rss)));
             }
             if extras.is_empty() {
-                writeln!(out, "  {}: {}", baseline.name, median).into_diagnostic()?;
+                writeln!(out, "  \x1b[1;31m{}\x1b[0m: \x1b[31m{median}\x1b[0m", baseline.name)
+                    .into_diagnostic()?;
             } else {
                 writeln!(
                     out,
-                    "  {}: {} ({})",
+                    "  \x1b[1;31m{}\x1b[0m: \x1b[31m{median}\x1b[0m ({})",
                     baseline.name,
-                    median,
                     extras.join(", ")
                 )
                 .into_diagnostic()?;
@@ -168,19 +192,17 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
     // Warnings
     if !report.warnings.is_empty() {
         writeln!(out).into_diagnostic()?;
-        writeln!(
-            out,
-            "\x1b[1mWarnings\x1b[0m ({} total)",
-            report.warnings.len()
-        )
-        .into_diagnostic()?;
         for warning in &report.warnings {
             let prefix = match warning.severity {
                 Severity::Info => "\x1b[34minfo\x1b[0m",
                 Severity::Warn => "\x1b[33mwarn\x1b[0m",
             };
-            writeln!(out, "  [{prefix}] {}: {}", warning.code, warning.message)
-                .into_diagnostic()?;
+            writeln!(
+                out,
+                "\x1b[33mWarning\x1b[0m: [{prefix}] {}: {}",
+                warning.code, warning.message
+            )
+            .into_diagnostic()?;
         }
     }
 

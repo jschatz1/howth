@@ -36,6 +36,20 @@ fn print_json(report: &BenchReport) -> Result<()> {
     Ok(())
 }
 
+/// ANSI color codes for each smoke benchmark.
+const SMOKE_COLORS: &[&str] = &[
+    "\x1b[1;32m", // green bold
+    "\x1b[1;36m", // cyan bold
+    "\x1b[1;35m", // magenta bold
+    "\x1b[1;33m", // yellow bold
+    "\x1b[1;34m", // blue bold
+    "\x1b[1;37m", // white bold
+];
+
+fn smoke_color(index: usize) -> &'static str {
+    SMOKE_COLORS.get(index % SMOKE_COLORS.len()).unwrap_or(&"\x1b[1;37m")
+}
+
 fn print_human(report: &BenchReport) -> Result<()> {
     let mut out = io::stdout().lock();
 
@@ -43,7 +57,7 @@ fn print_human(report: &BenchReport) -> Result<()> {
     writeln!(out, "\x1b[1mhowth bench smoke\x1b[0m").into_diagnostic()?;
     writeln!(
         out,
-        "Params: iters={} warmup={} size={} MiB",
+        "\x1b[90mParams: iters={} warmup={} size={} MiB\x1b[0m",
         report.params.iters,
         report.params.warmup,
         report.params.size_bytes / (1024 * 1024)
@@ -51,37 +65,57 @@ fn print_human(report: &BenchReport) -> Result<()> {
     .into_diagnostic()?;
     writeln!(out).into_diagnostic()?;
 
-    // Results
-    for result in &report.results {
+    // Find the fastest median
+    let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
+
+    // Results — one block per benchmark
+    for (i, result) in report.results.iter().enumerate() {
+        let color = smoke_color(i);
         let median = format_duration(result.median_ns);
         let p95 = format_duration(result.p95_ns);
         let min = format_duration(result.min_ns);
         let max = format_duration(result.max_ns);
 
+        // Name
         writeln!(
             out,
-            "\x1b[32m{:<24}\x1b[0m median={:<10} p95={:<10} \x1b[90mmin={:<10} max={:<10}\x1b[0m",
-            result.name, median, p95, min, max
+            "\x1b[1mBenchmark #{}: {color}{}\x1b[0m",
+            i + 1,
+            result.name
         )
         .into_diagnostic()?;
+
+        // Time line
+        if result.median_ns == min_median {
+            write!(out, "  Time (median):     \x1b[1;32m{median:>10}\x1b[0m").into_diagnostic()?;
+        } else {
+            write!(out, "  Time (median):     {median:>10}").into_diagnostic()?;
+        }
+        writeln!(out, "     p95: {p95:>10}").into_diagnostic()?;
+
+        // Range line — min green, max red
+        writeln!(
+            out,
+            "  Range (min \u{2026} max):  \x1b[32m{min:>10}\x1b[0m \u{2026} \x1b[31m{max:>10}\x1b[0m    \x1b[90m{} runs\x1b[0m",
+            result.samples
+        )
+        .into_diagnostic()?;
+        writeln!(out).into_diagnostic()?;
     }
 
     // Warnings
     if !report.warnings.is_empty() {
-        writeln!(out).into_diagnostic()?;
-        writeln!(
-            out,
-            "\x1b[1mWarnings\x1b[0m ({} total)",
-            report.warnings.len()
-        )
-        .into_diagnostic()?;
         for warning in &report.warnings {
             let prefix = match warning.severity {
                 Severity::Info => "\x1b[34minfo\x1b[0m",
                 Severity::Warn => "\x1b[33mwarn\x1b[0m",
             };
-            writeln!(out, "  [{prefix}] {}: {}", warning.code, warning.message)
-                .into_diagnostic()?;
+            writeln!(
+                out,
+                "\x1b[33mWarning\x1b[0m: [{prefix}] {}: {}",
+                warning.code, warning.message
+            )
+            .into_diagnostic()?;
         }
     }
 
