@@ -216,8 +216,14 @@ async fn add_single_package(
 
         debug!(size = bytes.len(), "Downloaded tarball");
 
-        // Extract to cache
-        extract_tgz_atomic(&bytes, &package_dir)?;
+        // Extract to cache (offload CPU-bound decompression to thread pool)
+        let extract_bytes = bytes.clone();
+        let extract_dest = package_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            extract_tgz_atomic(&extract_bytes, &extract_dest)
+        })
+        .await
+        .map_err(|e| PkgError::extract_failed(format!("Extraction task failed: {e}")))??;
 
         debug!(path = %package_dir.display(), "Extracted to cache");
     }
@@ -1180,8 +1186,8 @@ pub async fn handle_pkg_install_with_progress(
         registry_packages.push((name.to_string(), lock_pkg.clone()));
     }
 
-    // Install registry packages in parallel (max 16 concurrent downloads)
-    const MAX_CONCURRENT_DOWNLOADS: usize = 16;
+    // Install registry packages in parallel
+    const MAX_CONCURRENT_DOWNLOADS: usize = 32;
 
     let mut stream = stream::iter(registry_packages)
         .map(|(name, lock_pkg)| {
@@ -1234,18 +1240,21 @@ pub async fn handle_pkg_install_with_progress(
     }
 
     // Phase 2: Link package dependencies (pnpm-style)
-    // This must happen after all packages are installed so the targets exist
+    // This must happen after all packages are installed so the targets exist.
+    // First resolve all dependency versions from the lockfile (cheap, single-threaded),
+    // then create symlinks in parallel via rayon.
     debug!("Linking package dependencies (pnpm layout)");
+
+    // Collect work items: (name, version, resolved_deps)
+    let mut link_work: Vec<(String, String, std::collections::BTreeMap<String, String>)> = Vec::new();
     for (key, lock_pkg) in &lockfile.packages {
         if lock_pkg.dependencies.is_empty() && lock_pkg.peer_dependencies.is_empty() {
             continue;
         }
 
-        // Parse package name from key (format: "name@version")
         let name = key.rsplit_once('@').map_or(key.as_str(), |(n, _)| n);
         let version = &lock_pkg.version;
 
-        // Resolve dependency versions from the lockfile
         let mut resolved_deps = std::collections::BTreeMap::new();
         for (dep_name, dep_range) in &lock_pkg.dependencies {
             if let Some(version) = find_best_match(&lockfile, dep_name, dep_range) {
@@ -1260,26 +1269,38 @@ pub async fn handle_pkg_install_with_progress(
             }
         }
 
-        // Also link peer dependencies
         for (dep_name, dep_range) in &lock_pkg.peer_dependencies {
             if resolved_deps.contains_key(dep_name) {
-                continue; // already covered as a regular dep
+                continue;
             }
             if let Some(version) = find_best_match(&lockfile, dep_name, dep_range) {
                 resolved_deps.insert(dep_name.clone(), version);
             }
-            // If not found in lockfile, silently skip — peer deps are optional by nature
         }
 
         if !resolved_deps.is_empty() {
-            if let Err(e) = link_package_dependencies(&project_root, name, version, &resolved_deps) {
-                warn!(
-                    pkg = %name,
-                    error = %e,
-                    "Failed to link package dependencies"
-                );
-                // Don't fail the install for dependency linking errors
-            }
+            link_work.push((name.to_string(), version.clone(), resolved_deps));
+        }
+    }
+
+    // Execute symlink creation in parallel
+    {
+        let project_root = project_root.clone();
+        let link_errors: Vec<String> = tokio::task::block_in_place(|| {
+            use rayon::prelude::*;
+            link_work
+                .par_iter()
+                .filter_map(|(name, version, resolved_deps)| {
+                    match link_package_dependencies(&project_root, name, version, resolved_deps) {
+                        Ok(()) => None,
+                        Err(e) => Some(format!("{name}@{version}: {e}")),
+                    }
+                })
+                .collect()
+        });
+
+        for msg in &link_errors {
+            warn!(error = %msg, "Failed to link package dependencies");
         }
     }
 
@@ -1351,27 +1372,38 @@ async fn install_from_lockfile(
     if was_cached {
         debug!(path = %package_dir.display(), "Using cached package");
     } else {
-        // Fetch packument to get tarball URL (use real package name)
-        let packument = registry.fetch_packument(fetch_name).await?;
-
-        // Get tarball URL
-        let tarball_url = get_tarball_url(&packument, version).ok_or_else(|| {
-            PkgError::download_failed(format!("No tarball URL for {}@{}", fetch_name, version))
-        })?;
+        // Get tarball URL: prefer lockfile (avoids packument fetch), fall back to registry
+        let tarball_url = if let Some(ref url) = lock_pkg.tarball_url {
+            debug!(url = %url, "Using tarball URL from lockfile");
+            url.clone()
+        } else {
+            let packument = registry.fetch_packument(fetch_name).await?;
+            get_tarball_url(&packument, version)
+                .ok_or_else(|| {
+                    PkgError::download_failed(format!("No tarball URL for {}@{}", fetch_name, version))
+                })?
+                .to_string()
+        };
 
         debug!(url = %tarball_url, "Downloading tarball");
 
         // Download tarball (with auth token for scoped registries)
         let auth_token = registry.auth_token_for(fetch_name);
-        let bytes = download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
+        let bytes = download_tarball(registry.http(), &tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
 
         // TODO: Verify integrity hash matches lock_pkg.integrity
         // For now, just extract
 
         debug!(size = bytes.len(), "Downloaded tarball");
 
-        // Extract to cache
-        extract_tgz_atomic(&bytes, &package_dir)?;
+        // Extract to cache (offload CPU-bound decompression to thread pool)
+        let extract_bytes = bytes.clone();
+        let extract_dest = package_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            extract_tgz_atomic(&extract_bytes, &extract_dest)
+        })
+        .await
+        .map_err(|e| PkgError::extract_failed(format!("Extraction task failed: {e}")))??;
 
         debug!(path = %package_dir.display(), "Extracted to cache");
     }
@@ -1379,8 +1411,6 @@ async fn install_from_lockfile(
     // Link into node_modules using pnpm-style layout
     // Use the alias name so the module is accessible under the alias
     let link_path = link_into_node_modules_with_version(project_root, name, version, &package_dir)?;
-
-    debug!(link = %link_path.display(), "Linked into node_modules (pnpm layout)");
 
     // Derive the .pnpm content path so binary symlinks resolve transitive deps
     let pnpm_pkg_dir = project_root

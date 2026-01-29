@@ -203,6 +203,9 @@ pub struct LockPackage {
     /// Peer dependencies of this package.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub peer_dependencies: BTreeMap<String, String>,
+    /// Tarball download URL (cached from registry to skip packument fetch on install).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tarball_url: Option<String>,
     /// Whether this package has install scripts.
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_scripts: bool,
@@ -232,6 +235,7 @@ impl LockPackage {
             integrity: integrity.into(),
             resolution: LockResolution::default(),
             alias_for: None,
+            tarball_url: None,
             dependencies: BTreeMap::new(),
             optional_dependencies: BTreeMap::new(),
             peer_dependencies: BTreeMap::new(),

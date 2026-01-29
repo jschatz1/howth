@@ -364,6 +364,13 @@ async fn resolve_single_dep(
         .filter(|(name, _)| !is_peer_optional(version_data, name))
         .collect();
 
+    // Get tarball URL (stored in lockfile to skip packument fetch on install)
+    let tarball_url = version_data
+        .get("dist")
+        .and_then(|d| d.get("tarball"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     // Create lock package entry
     let lock_pkg = LockPackage {
         version: version.clone(),
@@ -372,6 +379,7 @@ async fn resolve_single_dep(
             registry: String::new(),
         },
         alias_for: dep.alias.as_ref().map(|_| dep.name.clone()),
+        tarball_url,
         dependencies: deps.clone(),
         optional_dependencies: BTreeMap::new(),
         peer_dependencies: peer_deps,

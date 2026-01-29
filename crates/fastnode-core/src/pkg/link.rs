@@ -245,14 +245,21 @@ pub fn link_into_node_modules_with_version(
     // Get the destination path for the package
     let pnpm_pkg_dest = get_package_link_path(&pnpm_pkg_dir, pkg_name)?;
 
-    // Remove existing content if present
-    if pnpm_pkg_dest.exists() || pnpm_pkg_dest.symlink_metadata().is_ok() {
-        remove_link_or_dir(&pnpm_pkg_dest)?;
-    }
+    // Fast path: if the destination already has the same content (same inode on
+    // package.json), skip the expensive recursive hard-link.  This avoids
+    // thousands of syscalls on repeated installs.
+    if !needs_relink(cached_pkg_dir, &pnpm_pkg_dest) {
+        // Content already matches — skip hard-linking.
+    } else {
+        // Remove existing content if present
+        if pnpm_pkg_dest.exists() || pnpm_pkg_dest.symlink_metadata().is_ok() {
+            remove_link_or_dir(&pnpm_pkg_dest)?;
+        }
 
-    // Hard-link or copy the package content (not symlink!)
-    // This ensures Node.js sees the real path as within .pnpm, not the cache
-    hard_link_or_copy_dir(cached_pkg_dir, &pnpm_pkg_dest)?;
+        // Hard-link or copy the package content (not symlink!)
+        // This ensures Node.js sees the real path as within .pnpm, not the cache
+        hard_link_or_copy_dir(cached_pkg_dir, &pnpm_pkg_dest)?;
+    }
 
     // Create top-level link: node_modules/<name> -> .pnpm/<key>/node_modules/<name>
     let top_level_link = get_package_link_path(&node_modules, pkg_name)?;
@@ -262,6 +269,35 @@ pub fn link_into_node_modules_with_version(
     create_dir_link(&pnpm_pkg_dest, &top_level_link)?;
 
     Ok(top_level_link)
+}
+
+/// Check whether the destination needs to be re-linked from the cache.
+///
+/// Returns `false` (no relink needed) when the destination's `package.json`
+/// shares the same inode as the cache's — meaning the hard-links are already
+/// in place from a previous install.
+#[cfg(unix)]
+fn needs_relink(cache_dir: &Path, dest_dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let cache_pkg = cache_dir.join("package.json");
+    let dest_pkg = dest_dir.join("package.json");
+
+    let (Ok(cache_meta), Ok(dest_meta)) = (
+        fs::metadata(&cache_pkg),
+        fs::metadata(&dest_pkg),
+    ) else {
+        return true; // Missing file — needs linking
+    };
+
+    // Same inode + same device = same hard-link
+    cache_meta.ino() != dest_meta.ino() || cache_meta.dev() != dest_meta.dev()
+}
+
+#[cfg(not(unix))]
+fn needs_relink(_cache_dir: &Path, dest_dir: &Path) -> bool {
+    // On non-Unix, always relink (no inode check available)
+    !dest_dir.join("package.json").exists()
 }
 
 /// Hard-link files from src to dst, falling back to copy if hard linking fails.
