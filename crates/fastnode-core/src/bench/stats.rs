@@ -62,6 +62,29 @@ fn percentile(sorted: &[u64], p: u32) -> u64 {
     sorted[index]
 }
 
+/// Compute the median of a slice of `u64` samples.
+///
+/// Separate from `compute_stats` to avoid semantic confusion with `*_ns` field names,
+/// since this is used for CPU time in microseconds and RSS in bytes.
+///
+/// # Panics
+/// Panics if `samples` is empty.
+#[must_use]
+pub fn compute_median(samples: &[u64]) -> u64 {
+    assert!(!samples.is_empty(), "samples must not be empty");
+
+    let mut sorted: Vec<u64> = samples.to_vec();
+    sorted.sort_unstable();
+
+    let len = sorted.len();
+    if len % 2 == 1 {
+        sorted[len / 2]
+    } else {
+        // Average of the two middle values
+        (sorted[len / 2 - 1] + sorted[len / 2]) / 2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +169,29 @@ mod tests {
     fn test_compute_stats_empty_panics() {
         let samples: Vec<u64> = vec![];
         let _ = compute_stats(&samples);
+    }
+
+    #[test]
+    fn test_compute_median_odd() {
+        assert_eq!(compute_median(&[3, 1, 2]), 2);
+        assert_eq!(compute_median(&[5, 1, 3, 2, 4]), 3);
+    }
+
+    #[test]
+    fn test_compute_median_even() {
+        assert_eq!(compute_median(&[1, 2, 3, 4]), 2); // (2+3)/2 = 2
+        assert_eq!(compute_median(&[10, 20]), 15);
+    }
+
+    #[test]
+    fn test_compute_median_single() {
+        assert_eq!(compute_median(&[42]), 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "samples must not be empty")]
+    fn test_compute_median_empty_panics() {
+        let samples: Vec<u64> = vec![];
+        let _ = compute_median(&samples);
     }
 }

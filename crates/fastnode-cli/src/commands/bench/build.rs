@@ -82,11 +82,11 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
     // Results table header
     writeln!(
         out,
-        "{:<20} {:>12} {:>12} {:>8} {:>18}",
-        "Case", "Median", "p95", "Files", "Nodes (exec/hit)"
+        "{:<20} {:>12} {:>12} {:>8} {:>18} {:>12} {:>12}",
+        "Case", "Median", "p95", "Files", "Nodes (exec/hit)", "CPU (med)", "Peak RSS"
     )
     .into_diagnostic()?;
-    writeln!(out, "{}", "-".repeat(74)).into_diagnostic()?;
+    writeln!(out, "{}", "-".repeat(98)).into_diagnostic()?;
 
     // Results
     for result in &report.results {
@@ -109,10 +109,22 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
             .map(|w| format!("{}/{}", w.nodes_executed, w.nodes_cached))
             .unwrap_or_else(|| "-".to_string());
 
+        // CPU and RSS columns
+        let cpu = result
+            .resource_stats
+            .as_ref()
+            .map(|r| format_cpu_time(r.median_cpu_us))
+            .unwrap_or_else(|| "-".to_string());
+        let rss = result
+            .resource_stats
+            .as_ref()
+            .map(|r| format_bytes(r.peak_rss_bytes))
+            .unwrap_or_else(|| "-".to_string());
+
         writeln!(
             out,
-            "{:<20} {:>12} {:>12} {:>8} {:>18}",
-            result.case, median, p95, files, nodes
+            "{:<20} {:>12} {:>12} {:>8} {:>18} {:>12} {:>12}",
+            result.case, median, p95, files, nodes, cpu, rss
         )
         .into_diagnostic()?;
     }
@@ -123,7 +135,25 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
         writeln!(out, "\x1b[1mBaselines\x1b[0m").into_diagnostic()?;
         for baseline in &report.baselines {
             let median = format_duration(baseline.median_ns);
-            writeln!(out, "  {}: {}", baseline.name, median).into_diagnostic()?;
+            let mut extras = Vec::new();
+            if let Some(cpu_us) = baseline.median_cpu_us {
+                extras.push(format!("CPU: {}", format_cpu_time(cpu_us)));
+            }
+            if let Some(rss) = baseline.peak_rss_bytes {
+                extras.push(format!("RSS: {}", format_bytes(rss)));
+            }
+            if extras.is_empty() {
+                writeln!(out, "  {}: {}", baseline.name, median).into_diagnostic()?;
+            } else {
+                writeln!(
+                    out,
+                    "  {}: {} ({})",
+                    baseline.name,
+                    median,
+                    extras.join(", ")
+                )
+                .into_diagnostic()?;
+            }
             writeln!(out, "    \x1b[90m$ {}\x1b[0m", baseline.command).into_diagnostic()?;
         }
     }
@@ -149,6 +179,32 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
 
     out.flush().into_diagnostic()?;
     Ok(())
+}
+
+/// Format bytes to a human-readable string (KB/MB/GB).
+#[allow(clippy::cast_precision_loss)]
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1}GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1}MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+/// Format CPU time in microseconds to a human-readable string.
+#[allow(clippy::cast_precision_loss)]
+fn format_cpu_time(us: u64) -> String {
+    if us >= 1_000_000 {
+        format!("{:.2}s", us as f64 / 1_000_000.0)
+    } else if us >= 1_000 {
+        format!("{:.2}ms", us as f64 / 1_000.0)
+    } else {
+        format!("{us}us")
+    }
 }
 
 /// Format a duration in nanoseconds to a human-readable string.
@@ -195,5 +251,23 @@ mod tests {
     fn test_format_duration_seconds() {
         assert_eq!(format_duration(1_000_000_000), "1.00s");
         assert_eq!(format_duration(1_820_000_000), "1.82s");
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(500), "500B");
+        assert_eq!(format_bytes(1024), "1.0KB");
+        assert_eq!(format_bytes(1_048_576), "1.0MB");
+        assert_eq!(format_bytes(47_448_064), "45.2MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.0GB");
+    }
+
+    #[test]
+    fn test_format_cpu_time() {
+        assert_eq!(format_cpu_time(500), "500us");
+        assert_eq!(format_cpu_time(1_000), "1.00ms");
+        assert_eq!(format_cpu_time(120_500), "120.50ms");
+        assert_eq!(format_cpu_time(1_000_000), "1.00s");
+        assert_eq!(format_cpu_time(3_400_000), "3.40s");
     }
 }

@@ -18,7 +18,8 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::map_unwrap_or)]
 
-use crate::bench::{compute_stats, BenchStats, BenchWarning};
+use crate::bench::stats::compute_median;
+use crate::bench::{compute_stats, rusage, BenchStats, BenchWarning};
 use crate::build::{
     build_graph_from_project, execute_graph_with_file_cache, ExecOptions, InMemoryFileHashCache,
     MemoryCache,
@@ -31,7 +32,7 @@ use std::process::Command;
 use std::time::Instant;
 
 /// Schema version for build benchmark reports.
-pub const BUILD_BENCH_SCHEMA_VERSION: u32 = 1;
+pub const BUILD_BENCH_SCHEMA_VERSION: u32 = 2;
 
 /// Benchmark target type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +126,15 @@ pub struct WorkDoneStats {
     pub files_transpiled: Option<u32>,
 }
 
+/// CPU and memory resource statistics for a benchmark case.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceStats {
+    /// Median total CPU time (user + system) per iteration, in microseconds.
+    pub median_cpu_us: u64,
+    /// Peak resident set size across all iterations, in bytes.
+    pub peak_rss_bytes: u64,
+}
+
 /// Result for a single benchmark case.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildBenchResult {
@@ -145,6 +155,9 @@ pub struct BuildBenchResult {
     /// Work-done statistics (from last run).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_done: Option<WorkDoneStats>,
+    /// CPU and memory resource statistics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_stats: Option<ResourceStats>,
 }
 
 impl BuildBenchResult {
@@ -160,6 +173,7 @@ impl BuildBenchResult {
             samples,
             files_count: None,
             work_done: None,
+            resource_stats: None,
         }
     }
 
@@ -176,6 +190,13 @@ impl BuildBenchResult {
         self.work_done = Some(work_done);
         self
     }
+
+    /// Set resource stats.
+    #[must_use]
+    pub fn with_resource_stats(mut self, stats: ResourceStats) -> Self {
+        self.resource_stats = Some(stats);
+        self
+    }
 }
 
 /// Result for a baseline comparison.
@@ -187,6 +208,12 @@ pub struct BaselineResult {
     pub command: String,
     /// Median time in nanoseconds.
     pub median_ns: u64,
+    /// Median total CPU time (user + system) in microseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub median_cpu_us: Option<u64>,
+    /// Peak RSS in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_rss_bytes: Option<u64>,
 }
 
 /// Complete build benchmark report.
@@ -379,6 +406,8 @@ fn run_cold_bench(
     targets: &[String],
 ) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
+    let mut cpu_samples = Vec::with_capacity(iters as usize);
+    let mut peak_rss: u64 = 0;
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
 
@@ -406,6 +435,7 @@ fn run_cold_bench(
         let file_cache = InMemoryFileHashCache::new();
         let options = ExecOptions::new().with_targets(targets.to_vec());
 
+        let ru_before = rusage::snapshot_self();
         let start = Instant::now();
         if let Ok(graph) = build_graph_from_project(project_dir) {
             if let Ok(result) = execute_graph_with_file_cache(
@@ -425,10 +455,23 @@ fn run_cold_bench(
         }
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
+
+        if let (Some(before), Some(after)) = (ru_before, rusage::snapshot_self()) {
+            let d = rusage::delta(&before, &after);
+            cpu_samples.push(d.total_cpu_us());
+            peak_rss = peak_rss.max(after.max_rss);
+        }
     }
 
     let stats = compute_stats(&samples);
-    BuildBenchResult::new("cold", iters, stats).with_work_done(last_work_done)
+    let mut result = BuildBenchResult::new("cold", iters, stats).with_work_done(last_work_done);
+    if !cpu_samples.is_empty() {
+        result = result.with_resource_stats(ResourceStats {
+            median_cpu_us: compute_median(&cpu_samples),
+            peak_rss_bytes: peak_rss,
+        });
+    }
+    result
 }
 
 /// Run warm noop benchmark (cached, no changes).
@@ -440,6 +483,8 @@ fn run_warm_noop_bench(
     targets: &[String],
 ) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
+    let mut cpu_samples = Vec::with_capacity(iters as usize);
+    let mut peak_rss: u64 = 0;
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
 
@@ -479,6 +524,7 @@ fn run_warm_noop_bench(
     // Measured runs - only time execution, not graph construction
     // File hash cache should make this very fast
     for _ in 0..iters {
+        let ru_before = rusage::snapshot_self();
         let start = Instant::now();
         if let Ok(result) = execute_graph_with_file_cache(
             &graph,
@@ -495,10 +541,24 @@ fn run_warm_noop_bench(
         }
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
+
+        if let (Some(before), Some(after)) = (ru_before, rusage::snapshot_self()) {
+            let d = rusage::delta(&before, &after);
+            cpu_samples.push(d.total_cpu_us());
+            peak_rss = peak_rss.max(after.max_rss);
+        }
     }
 
     let stats = compute_stats(&samples);
-    BuildBenchResult::new("warm_noop", iters, stats).with_work_done(last_work_done)
+    let mut result =
+        BuildBenchResult::new("warm_noop", iters, stats).with_work_done(last_work_done);
+    if !cpu_samples.is_empty() {
+        result = result.with_resource_stats(ResourceStats {
+            median_cpu_us: compute_median(&cpu_samples),
+            peak_rss_bytes: peak_rss,
+        });
+    }
+    result
 }
 
 /// Run warm 1-change benchmark (cached, touch one file).
@@ -510,6 +570,8 @@ fn run_warm_1_change_bench(
     targets: &[String],
 ) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
+    let mut cpu_samples = Vec::with_capacity(iters as usize);
+    let mut peak_rss: u64 = 0;
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
 
@@ -562,6 +624,7 @@ fn run_warm_1_change_bench(
         }
         // Keep same caches - measures incremental rebuild after 1 file change
 
+        let ru_before = rusage::snapshot_self();
         let start = Instant::now();
         if let Ok(result) = execute_graph_with_file_cache(
             &graph,
@@ -578,10 +641,24 @@ fn run_warm_1_change_bench(
         }
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
+
+        if let (Some(before), Some(after)) = (ru_before, rusage::snapshot_self()) {
+            let d = rusage::delta(&before, &after);
+            cpu_samples.push(d.total_cpu_us());
+            peak_rss = peak_rss.max(after.max_rss);
+        }
     }
 
     let stats = compute_stats(&samples);
-    BuildBenchResult::new("warm_1_change", iters, stats).with_work_done(last_work_done)
+    let mut result =
+        BuildBenchResult::new("warm_1_change", iters, stats).with_work_done(last_work_done);
+    if !cpu_samples.is_empty() {
+        result = result.with_resource_stats(ResourceStats {
+            median_cpu_us: compute_median(&cpu_samples),
+            peak_rss_bytes: peak_rss,
+        });
+    }
+    result
 }
 
 /// Run watch time-to-green benchmark.
@@ -596,6 +673,8 @@ fn run_watch_ttg_bench(
     targets: &[String],
 ) -> BuildBenchResult {
     let mut samples = Vec::with_capacity(iters as usize);
+    let mut cpu_samples = Vec::with_capacity(iters as usize);
+    let mut peak_rss: u64 = 0;
     let backend = SwcBackend::new();
     let mut last_work_done = WorkDoneStats::default();
 
@@ -650,6 +729,7 @@ fn run_watch_ttg_bench(
         }
 
         // Start timing immediately after file change
+        let ru_before = rusage::snapshot_self();
         let start = Instant::now();
 
         if let Ok(result) = execute_graph_with_file_cache(
@@ -668,10 +748,24 @@ fn run_watch_ttg_bench(
 
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
+
+        if let (Some(before), Some(after)) = (ru_before, rusage::snapshot_self()) {
+            let d = rusage::delta(&before, &after);
+            cpu_samples.push(d.total_cpu_us());
+            peak_rss = peak_rss.max(after.max_rss);
+        }
     }
 
     let stats = compute_stats(&samples);
-    BuildBenchResult::new("watch_ttg", iters, stats).with_work_done(last_work_done)
+    let mut result =
+        BuildBenchResult::new("watch_ttg", iters, stats).with_work_done(last_work_done);
+    if !cpu_samples.is_empty() {
+        result = result.with_resource_stats(ResourceStats {
+            median_cpu_us: compute_median(&cpu_samples),
+            peak_rss_bytes: peak_rss,
+        });
+    }
+    result
 }
 
 /// Resolve the tsc command to use.
@@ -711,8 +805,11 @@ fn run_tsc_baseline(project_dir: &Path) -> Option<BaselineResult> {
 
     // Run tsc --noEmit and time it
     let mut samples = Vec::with_capacity(3);
+    let mut cpu_samples = Vec::with_capacity(3);
+    let mut peak_rss: u64 = 0;
 
     for _ in 0..3 {
+        let ru_before = rusage::snapshot_children();
         let start = Instant::now();
         let _ = Command::new(&cmd)
             .args(&args)
@@ -720,6 +817,12 @@ fn run_tsc_baseline(project_dir: &Path) -> Option<BaselineResult> {
             .output();
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
+
+        if let (Some(before), Some(after)) = (ru_before, rusage::snapshot_children()) {
+            let d = rusage::delta(&before, &after);
+            cpu_samples.push(d.total_cpu_us());
+            peak_rss = peak_rss.max(d.max_rss);
+        }
     }
 
     let stats = compute_stats(&samples);
@@ -727,6 +830,12 @@ fn run_tsc_baseline(project_dir: &Path) -> Option<BaselineResult> {
         name: "tsc --noEmit".to_string(),
         command: exact_command,
         median_ns: stats.median_ns,
+        median_cpu_us: if cpu_samples.is_empty() {
+            None
+        } else {
+            Some(compute_median(&cpu_samples))
+        },
+        peak_rss_bytes: if peak_rss > 0 { Some(peak_rss) } else { None },
     })
 }
 
@@ -774,9 +883,10 @@ fn run_esbuild_baseline(project_dir: &Path) -> Option<BaselineResult> {
 
     // Run esbuild and time it
     let mut samples = Vec::with_capacity(3);
+    let mut cpu_samples = Vec::with_capacity(3);
+    let mut peak_rss: u64 = 0;
 
     for _ in 0..3 {
-        let start = Instant::now();
         let mut args: Vec<String> = input_files
             .iter()
             .map(|p| p.to_string_lossy().to_string())
@@ -784,12 +894,20 @@ fn run_esbuild_baseline(project_dir: &Path) -> Option<BaselineResult> {
         args.push(format!("--outdir={}", out_dir.to_string_lossy()));
         args.push("--format=esm".to_string());
 
+        let ru_before = rusage::snapshot_children();
+        let start = Instant::now();
         let _ = Command::new(&cmd)
             .args(&args)
             .current_dir(project_dir)
             .output();
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
+
+        if let (Some(before), Some(after)) = (ru_before, rusage::snapshot_children()) {
+            let d = rusage::delta(&before, &after);
+            cpu_samples.push(d.total_cpu_us());
+            peak_rss = peak_rss.max(d.max_rss);
+        }
     }
 
     // Cleanup
@@ -800,6 +918,12 @@ fn run_esbuild_baseline(project_dir: &Path) -> Option<BaselineResult> {
         name: "esbuild".to_string(),
         command: exact_command,
         median_ns: stats.median_ns,
+        median_cpu_us: if cpu_samples.is_empty() {
+            None
+        } else {
+            Some(compute_median(&cpu_samples))
+        },
+        peak_rss_bytes: if peak_rss > 0 { Some(peak_rss) } else { None },
     })
 }
 
@@ -825,8 +949,11 @@ fn run_swc_baseline(project_dir: &Path) -> Option<BaselineResult> {
 
     // Run swc and time it
     let mut samples = Vec::with_capacity(3);
+    let mut cpu_samples = Vec::with_capacity(3);
+    let mut peak_rss: u64 = 0;
 
     for _ in 0..3 {
+        let ru_before = rusage::snapshot_children();
         let start = Instant::now();
         let _ = Command::new(&cmd)
             .args(["src", "-d", &out_dir.to_string_lossy()])
@@ -834,6 +961,12 @@ fn run_swc_baseline(project_dir: &Path) -> Option<BaselineResult> {
             .output();
         let elapsed = start.elapsed();
         samples.push(elapsed.as_nanos() as u64);
+
+        if let (Some(before), Some(after)) = (ru_before, rusage::snapshot_children()) {
+            let d = rusage::delta(&before, &after);
+            cpu_samples.push(d.total_cpu_us());
+            peak_rss = peak_rss.max(d.max_rss);
+        }
     }
 
     // Cleanup
@@ -844,6 +977,12 @@ fn run_swc_baseline(project_dir: &Path) -> Option<BaselineResult> {
         name: "swc".to_string(),
         command: exact_command,
         median_ns: stats.median_ns,
+        median_cpu_us: if cpu_samples.is_empty() {
+            None
+        } else {
+            Some(compute_median(&cpu_samples))
+        },
+        peak_rss_bytes: if peak_rss > 0 { Some(peak_rss) } else { None },
     })
 }
 
