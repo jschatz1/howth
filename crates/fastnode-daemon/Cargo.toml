@@ -8,6 +8,7 @@ description = "Long-running daemon for fastnode"
 [dependencies]
 fastnode-core.workspace = true
 fastnode-proto.workspace = true
+fastnode-runtime = { path = "../fastnode-runtime" }
 tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true

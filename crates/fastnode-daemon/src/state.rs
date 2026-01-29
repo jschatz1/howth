@@ -6,6 +6,7 @@
 
 use crate::cache::{DaemonBuildCache, DaemonPkgJsonCache, DaemonResolverCache};
 use crate::test_worker::NodeTestWorker;
+use crate::v8_test_worker::V8TestWorker;
 use crate::watch::WatcherState;
 use fastnode_core::compiler::{CompilerBackend, SwcBackend};
 use fastnode_core::config::Channel;
@@ -28,8 +29,10 @@ pub struct DaemonState {
     pub compiler: Arc<dyn CompilerBackend>,
     /// Shared registry client with persistent packument cache.
     pub registry: Arc<RegistryClient>,
-    /// Warm Node.js test worker (lazy-started on first test run).
+    /// Warm Node.js test worker (lazy-started on first test run, fallback).
     pub test_worker: tokio::sync::Mutex<Option<NodeTestWorker>>,
+    /// Native V8 test worker (lazy-started on first test run).
+    pub v8_test_worker: std::sync::Mutex<Option<V8TestWorker>>,
 }
 
 // Manual Debug impl because dyn CompilerBackend doesn't implement Debug
@@ -44,6 +47,7 @@ impl std::fmt::Debug for DaemonState {
             .field("compiler", &self.compiler.name())
             .field("registry", &"RegistryClient")
             .field("test_worker", &"<Mutex>")
+            .field("v8_test_worker", &"<Mutex>")
             .finish()
     }
 }
@@ -78,6 +82,7 @@ impl DaemonState {
             compiler,
             registry: Arc::new(registry),
             test_worker: tokio::sync::Mutex::new(None),
+            v8_test_worker: std::sync::Mutex::new(None),
         }
     }
 
@@ -103,6 +108,7 @@ impl DaemonState {
             compiler,
             registry: Arc::new(registry),
             test_worker: tokio::sync::Mutex::new(None),
+            v8_test_worker: std::sync::Mutex::new(None),
         }
     }
 
@@ -128,6 +134,7 @@ impl DaemonState {
             compiler,
             registry: Arc::new(registry),
             test_worker: tokio::sync::Mutex::new(None),
+            v8_test_worker: std::sync::Mutex::new(None),
         }
     }
 }

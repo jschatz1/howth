@@ -671,6 +671,12 @@ impl HowthModuleLoader {
             "node:fs/promises" | "fs/promises" => {
                 "readFile, writeFile, appendFile, mkdir, rmdir, rm, unlink, rename, copyFile, readdir, stat, lstat, realpath, chmod, access"
             }
+            "node:test" | "test" => {
+                "test, describe, it, before, after, beforeEach, afterEach, mock"
+            }
+            "node:assert" | "assert" => {
+                "ok, equal, notEqual, strictEqual, notStrictEqual, deepEqual, notDeepEqual, deepStrictEqual, notDeepStrictEqual, throws, doesNotThrow, rejects, doesNotReject, fail, ifError, match, doesNotMatch, strict, AssertionError"
+            }
             _ => "",
         }
     }

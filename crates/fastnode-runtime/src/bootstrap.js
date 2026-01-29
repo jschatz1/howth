@@ -3169,11 +3169,42 @@
   // Register the path module
   globalThis.__howth_modules = globalThis.__howth_modules || {};
 
-  // Register process module (already created as globalThis.process)
+  // Lazy module registration system.
+  // Factories are called on first access and the result is cached.
+  const __lazy_factories = {};
+  function __registerLazy(names, factory) {
+    for (const name of names) {
+      __lazy_factories[name] = factory;
+    }
+  }
+  // __howth_modules is a Proxy that triggers lazy init on first access.
+  const __eager_modules = {};
+  globalThis.__howth_modules = new Proxy(__eager_modules, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      const factory = __lazy_factories[prop];
+      if (factory) {
+        const mod = factory();
+        // The factory registers all its aliases into __eager_modules directly.
+        // If it didn't set this key, set it now.
+        if (!(prop in target)) target[prop] = mod;
+        return target[prop];
+      }
+      return undefined;
+    },
+    has(target, prop) {
+      return (prop in target) || (prop in __lazy_factories);
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    },
+  });
+
+  // Core modules (eager — needed by everything)
   globalThis.__howth_modules["node:process"] = globalThis.process;
   globalThis.__howth_modules["process"] = globalThis.process;
 
-  // Register Buffer module
   const bufferModule = {
     Buffer: globalThis.Buffer,
     kMaxLength: 2147483647,
@@ -3201,8 +3232,9 @@
   globalThis.__howth_modules["node:path/win32"] = win32Path;
   globalThis.__howth_modules["path/win32"] = win32Path;
   // ============================================
-  // node:fs module
+  // node:fs module (lazy)
   // ============================================
+  __registerLazy(["node:fs", "fs", "node:fs/promises", "fs/promises"], () => {
 
   // Stats class to mimic Node.js fs.Stats
   class Stats {
@@ -4733,6 +4765,8 @@
   globalThis.__howth_modules["fs"] = fsModule;
   globalThis.__howth_modules["node:fs/promises"] = fsPromises;
   globalThis.__howth_modules["fs/promises"] = fsPromises;
+  return fsModule;
+  }); // end lazy node:fs
 
   // ============================================
   // CommonJS Module System
@@ -5103,8 +5137,9 @@
   globalThis.__howth_modules["module"] = Module;
 
   // ============================================
-  // node:assert module
+  // node:assert module (lazy)
   // ============================================
+  __registerLazy(["node:assert", "assert", "node:assert/strict", "assert/strict"], () => {
 
   class AssertionError extends Error {
     constructor(options = {}) {
@@ -5581,10 +5616,43 @@
   globalThis.__howth_modules["assert"] = assert;
   globalThis.__howth_modules["node:assert/strict"] = assert.strict;
   globalThis.__howth_modules["assert/strict"] = assert.strict;
+  return assert;
+  }); // end lazy node:assert
 
   // ============================================================================
-  // events module (EventEmitter)
+  // events module (EventEmitter) — start of heavy lazy block
+  // All modules from here through node:tls are lazily initialized together.
   // ============================================================================
+  __registerLazy([
+    "node:events", "events",
+    "node:util", "util", "node:util/types", "util/types",
+    "node:stream", "stream", "node:stream/promises", "stream/promises", "node:stream/web", "stream/web",
+    "node:crypto", "crypto",
+    "node:child_process", "child_process",
+    "node:os", "os",
+    "node:querystring", "querystring",
+    "node:timers", "timers", "node:timers/promises", "timers/promises",
+    "node:string_decoder", "string_decoder",
+    "node:url", "url",
+    "node:punycode", "punycode",
+    "node:console", "console",
+    "node:constants", "constants",
+    "node:perf_hooks", "perf_hooks",
+    "node:tty", "tty",
+    "node:v8", "v8",
+    "node:domain", "domain",
+    "node:async_hooks", "async_hooks",
+    "node:zlib", "zlib",
+    "node:worker_threads", "worker_threads",
+    "node:http", "http",
+    "node:https", "https",
+    "node:net", "net",
+    "node:dns", "dns", "node:dns/promises", "dns/promises",
+    "node:diagnostics_channel", "diagnostics_channel",
+    "node:inspector", "inspector",
+    "node:vm", "vm",
+    "node:tls", "tls",
+  ], () => {
 
   class EventEmitter {
     constructor() {
@@ -12027,6 +12095,8 @@
 
   globalThis.__howth_modules["node:tls"] = tlsModule;
   globalThis.__howth_modules["tls"] = tlsModule;
+  return globalThis.__howth_modules["node:events"];
+  }); // end heavy lazy block
 
   // Set up unhandled promise rejection handler using Deno core API
   core.setUnhandledPromiseRejectionHandler((promise, reason) => {
@@ -12062,6 +12132,215 @@
       console.error('[howth] Uncaught exception:', err);
     }
   });
+
+  // node:test module — lightweight test runner for howth's native V8 executor.
+  // Implements test(), describe(), it(), before(), after(), beforeEach(), afterEach().
+  // Results are collected in globalThis.__howth_test_results after __howth_run_tests().
+  (function() {
+    const suiteStack = []; // stack of { name, before, after, beforeEach, afterEach, children }
+    let rootSuite = { name: '<root>', before: [], after: [], beforeEach: [], afterEach: [], children: [] };
+    let currentSuite = rootSuite;
+
+    function pushSuite(name) {
+      const suite = { name, before: [], after: [], beforeEach: [], afterEach: [], children: [] };
+      currentSuite.children.push({ type: 'suite', suite });
+      suiteStack.push(currentSuite);
+      currentSuite = suite;
+      return suite;
+    }
+
+    function popSuite() {
+      currentSuite = suiteStack.pop() || rootSuite;
+    }
+
+    // test(name, [options], fn)
+    function test(name, optionsOrFn, maybeFn) {
+      let fn, options;
+      if (typeof optionsOrFn === 'function') {
+        fn = optionsOrFn;
+        options = {};
+      } else {
+        options = optionsOrFn || {};
+        fn = maybeFn;
+      }
+      const skip = options.skip === true || (typeof options.skip === 'string');
+      const todo = options.todo === true || (typeof options.todo === 'string');
+      currentSuite.children.push({ type: 'test', name, fn, skip: skip || todo });
+    }
+
+    // describe(name, [options], fn) — synchronous suite registration
+    function describe(name, optionsOrFn, maybeFn) {
+      let fn, options;
+      if (typeof optionsOrFn === 'function') {
+        fn = optionsOrFn;
+        options = {};
+      } else {
+        options = optionsOrFn || {};
+        fn = maybeFn;
+      }
+      const skip = options.skip === true;
+      if (skip) {
+        currentSuite.children.push({ type: 'suite', suite: { name, before: [], after: [], beforeEach: [], afterEach: [], children: [], skip: true } });
+        return;
+      }
+      pushSuite(name);
+      if (fn) fn();
+      popSuite();
+    }
+
+    // it() is an alias for test()
+    const it = test;
+
+    function before(fn) { currentSuite.before.push(fn); }
+    function after(fn) { currentSuite.after.push(fn); }
+    function beforeEach(fn) { currentSuite.beforeEach.push(fn); }
+    function afterEach(fn) { currentSuite.afterEach.push(fn); }
+
+    // Execute all registered tests and return results
+    async function __howth_run_tests() {
+      const results = [];
+      const startTime = performance.now();
+
+      async function runSuite(suite, parentBeforeEach, parentAfterEach, prefix) {
+        if (suite.skip) {
+          // Mark all children as skipped
+          function skipAll(s, pfx) {
+            for (const child of s.children) {
+              if (child.type === 'test') {
+                results.push({ name: pfx ? pfx + ' > ' + child.name : child.name, status: 'skip', duration_ms: 0, error: null });
+              } else if (child.type === 'suite') {
+                skipAll(child.suite, pfx ? pfx + ' > ' + child.suite.name : child.suite.name);
+              }
+            }
+          }
+          skipAll(suite, prefix);
+          return;
+        }
+
+        const allBeforeEach = parentBeforeEach.concat(suite.beforeEach);
+        const allAfterEach = suite.afterEach.concat(parentAfterEach);
+
+        // Run suite-level before hooks
+        for (const hook of suite.before) {
+          try { await hook(); } catch (e) {
+            // If before hook fails, skip all tests in this suite
+            for (const child of suite.children) {
+              if (child.type === 'test') {
+                const fullName = prefix ? prefix + ' > ' + child.name : child.name;
+                results.push({ name: fullName, status: 'fail', duration_ms: 0, error: 'before hook failed: ' + (e.message || String(e)) });
+              }
+            }
+            return;
+          }
+        }
+
+        for (const child of suite.children) {
+          if (child.type === 'test') {
+            const fullName = prefix ? prefix + ' > ' + child.name : child.name;
+            if (child.skip) {
+              results.push({ name: fullName, status: 'skip', duration_ms: 0, error: null });
+              continue;
+            }
+
+            const t0 = performance.now();
+            let status = 'pass';
+            let error = null;
+
+            try {
+              for (const hook of allBeforeEach) await hook();
+              if (child.fn) {
+                const result = child.fn();
+                if (result && typeof result.then === 'function') await result;
+              }
+            } catch (e) {
+              status = 'fail';
+              error = e && (e.stack || e.message || String(e));
+            }
+
+            try {
+              for (const hook of allAfterEach) await hook();
+            } catch (e) {
+              if (status === 'pass') {
+                status = 'fail';
+                error = 'afterEach hook failed: ' + (e.message || String(e));
+              }
+            }
+
+            const duration_ms = performance.now() - t0;
+            results.push({ name: fullName, status, duration_ms, error });
+          } else if (child.type === 'suite') {
+            const childPrefix = prefix ? prefix + ' > ' + child.suite.name : child.suite.name;
+            await runSuite(child.suite, allBeforeEach, allAfterEach, childPrefix);
+          }
+        }
+
+        // Run suite-level after hooks
+        for (const hook of suite.after) {
+          try { await hook(); } catch (e) { /* after hook errors are swallowed */ }
+        }
+      }
+
+      await runSuite(rootSuite, [], [], '');
+
+      const totalDuration = performance.now() - startTime;
+      let passed = 0, failed = 0, skipped = 0;
+      for (const r of results) {
+        if (r.status === 'pass') passed++;
+        else if (r.status === 'fail') failed++;
+        else skipped++;
+      }
+
+      const report = {
+        ok: failed === 0,
+        total: results.length,
+        passed,
+        failed,
+        skipped,
+        duration_ms: totalDuration,
+        tests: results,
+      };
+
+      globalThis.__howth_test_results = report;
+
+      // Reset for next run
+      rootSuite = { name: '<root>', before: [], after: [], beforeEach: [], afterEach: [], children: [] };
+      currentSuite = rootSuite;
+      suiteStack.length = 0;
+
+      return report;
+    }
+
+    // mock stub — minimal implementation
+    const mock = {
+      fn(impl) {
+        const mockFn = function(...args) {
+          mockFn.mock.calls.push({ arguments: args });
+          mockFn.mock.callCount++;
+          if (impl) return impl.apply(this, args);
+        };
+        mockFn.mock = { calls: [], callCount: 0 };
+        mockFn.mock.resetCalls = () => { mockFn.mock.calls = []; mockFn.mock.callCount = 0; };
+        return mockFn;
+      },
+      reset() {},
+      restoreAll() {},
+    };
+
+    const testModule = test;
+    // Attach named exports as properties
+    testModule.test = test;
+    testModule.describe = describe;
+    testModule.it = it;
+    testModule.before = before;
+    testModule.after = after;
+    testModule.beforeEach = beforeEach;
+    testModule.afterEach = afterEach;
+    testModule.mock = mock;
+
+    globalThis.__howth_modules["node:test"] = testModule;
+    globalThis.__howth_modules["test"] = testModule;
+    globalThis.__howth_run_tests = __howth_run_tests;
+  })();
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

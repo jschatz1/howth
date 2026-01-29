@@ -39,6 +39,7 @@ pub mod pkg;
 mod server;
 pub mod state;
 pub mod test_worker;
+pub mod v8_test_worker;
 pub mod watch;
 
 pub use cache::{DaemonPkgJsonCache, DaemonResolverCache};
@@ -63,6 +64,7 @@ use fastnode_proto::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::debug;
 
 /// Handle a request and produce a response (sync version).
 ///
@@ -792,65 +794,103 @@ async fn handle_run_tests(
         }
     }
 
-    // Get or create the warm test worker
-    let mut worker_guard = state.test_worker.lock().await;
-    if worker_guard.is_none() {
-        match crate::test_worker::NodeTestWorker::spawn().await {
-            Ok(w) => *worker_guard = Some(w),
-            Err(e) => {
-                return Response::error(
-                    codes::TEST_WORKER_FAILED,
-                    format!("Failed to spawn test worker: {e}"),
-                );
+    // Try native V8 test worker first, fall back to Node.js worker
+    let v8_result = try_v8_test_worker(state, &transpiled);
+
+    let result = match v8_result {
+        Ok(result) => result,
+        Err(v8_err) => {
+            debug!("V8 test worker failed ({v8_err}), falling back to Node.js worker");
+            // Fallback to Node.js worker
+            match run_tests_node_worker(state, transpiled).await {
+                Ok(r) => r,
+                Err(e) => {
+                    let code = if e.kind() == std::io::ErrorKind::TimedOut {
+                        codes::TEST_WORKER_TIMEOUT
+                    } else {
+                        codes::TEST_WORKER_FAILED
+                    };
+                    return Response::error(code, format!("Test worker error: {e}"));
+                }
             }
         }
+    };
+
+    worker_response_to_response(cwd, result)
+}
+
+/// Convert a WorkerResponse into a daemon Response.
+fn worker_response_to_response(cwd: &str, result: crate::test_worker::WorkerResponse) -> Response {
+    let tests: Vec<TestCaseResult> = result
+        .tests
+        .into_iter()
+        .map(|t| TestCaseResult {
+            name: t.name,
+            file: t.file,
+            status: match t.status.as_str() {
+                "pass" => TestStatus::Pass,
+                "fail" => TestStatus::Fail,
+                _ => TestStatus::Skip,
+            },
+            duration_ms: t.duration_ms,
+            error: t.error,
+        })
+        .collect();
+
+    Response::TestRunResult {
+        result: TestRunResult {
+            schema_version: TEST_RUN_SCHEMA_VERSION,
+            cwd: cwd.to_string(),
+            ok: result.ok,
+            total: result.total,
+            passed: result.passed,
+            failed: result.failed,
+            skipped: result.skipped,
+            duration_ms: result.duration_ms,
+            tests,
+            diagnostics: result.diagnostics,
+        },
+    }
+}
+
+/// Try running tests via the native V8 test worker.
+fn try_v8_test_worker(
+    state: &Arc<DaemonState>,
+    files: &[crate::test_worker::TranspiledTestFile],
+) -> Result<crate::test_worker::WorkerResponse, std::io::Error> {
+    let mut guard = state.v8_test_worker.lock().map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::Other, "V8 worker mutex poisoned")
+    })?;
+
+    if guard.is_none() {
+        *guard = Some(crate::v8_test_worker::V8TestWorker::spawn()?);
+    }
+
+    let worker = guard.as_ref().unwrap();
+    let id = format!("v8-{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis());
+
+    worker.run_tests(id, files.to_vec())
+}
+
+/// Run tests via the Node.js test worker (fallback path).
+async fn run_tests_node_worker(
+    state: &Arc<DaemonState>,
+    files: Vec<crate::test_worker::TranspiledTestFile>,
+) -> Result<crate::test_worker::WorkerResponse, std::io::Error> {
+    let mut worker_guard = state.test_worker.lock().await;
+    if worker_guard.is_none() {
+        *worker_guard = Some(crate::test_worker::NodeTestWorker::spawn().await?);
     }
 
     let worker = worker_guard.as_mut().unwrap();
-
-    // Run tests on the warm worker
-    match worker.run_tests(transpiled).await {
-        Ok(result) => {
-            let tests: Vec<TestCaseResult> = result
-                .tests
-                .into_iter()
-                .map(|t| TestCaseResult {
-                    name: t.name,
-                    file: t.file,
-                    status: match t.status.as_str() {
-                        "pass" => TestStatus::Pass,
-                        "fail" => TestStatus::Fail,
-                        _ => TestStatus::Skip,
-                    },
-                    duration_ms: t.duration_ms,
-                    error: t.error,
-                })
-                .collect();
-
-            Response::TestRunResult {
-                result: TestRunResult {
-                    schema_version: TEST_RUN_SCHEMA_VERSION,
-                    cwd: cwd.to_string(),
-                    ok: result.ok,
-                    total: result.total,
-                    passed: result.passed,
-                    failed: result.failed,
-                    skipped: result.skipped,
-                    duration_ms: result.duration_ms,
-                    tests,
-                    diagnostics: result.diagnostics,
-                },
-            }
-        }
+    match worker.run_tests(files).await {
+        Ok(result) => Ok(result),
         Err(e) => {
-            // Worker may have died — drop it so next request spawns a new one
             *worker_guard = None;
-            let code = if e.kind() == std::io::ErrorKind::TimedOut {
-                codes::TEST_WORKER_TIMEOUT
-            } else {
-                codes::TEST_WORKER_FAILED
-            };
-            Response::error(code, format!("Test worker error: {e}"))
+            Err(e)
         }
     }
 }

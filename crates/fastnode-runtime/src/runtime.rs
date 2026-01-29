@@ -2734,6 +2734,41 @@ impl Runtime {
         Ok(())
     }
 
+    /// Execute an ES module as a side module (can be called multiple times).
+    ///
+    /// Unlike `execute_module`, this does not set the module as the "main" module,
+    /// so it can be called repeatedly on the same runtime instance.
+    pub async fn execute_side_module(&mut self, path: &std::path::Path) -> Result<(), RuntimeError> {
+        let specifier = ModuleSpecifier::from_file_path(path)
+            .map_err(|_| RuntimeError::Io(format!("Invalid path: {}", path.display())))?;
+
+        let module_id = self
+            .js_runtime
+            .load_side_es_module(&specifier)
+            .await
+            .map_err(|e| RuntimeError::JavaScript(format!("Failed to load module: {}", e)))?;
+
+        let mut receiver = self.js_runtime.mod_evaluate(module_id);
+
+        loop {
+            tokio::select! {
+                biased;
+                maybe_result = &mut receiver => {
+                    match maybe_result {
+                        Ok(()) => break,
+                        Err(e) => return Err(RuntimeError::JavaScript(format!("Module evaluation failed: {}", e))),
+                    }
+                }
+                event_loop_result = self.js_runtime.run_event_loop(Default::default()) => {
+                    event_loop_result
+                        .map_err(|e| RuntimeError::JavaScript(format!("Event loop error: {}", e)))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Run the event loop until completion.
     pub async fn run_event_loop(&mut self) -> Result<(), RuntimeError> {
         self.js_runtime
