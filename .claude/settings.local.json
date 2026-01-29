@@ -27,7 +27,15 @@
       "Bash(# Check if packuments are being cached ls -la ~/Library/Application\\\\ Support/howth/v1/stable/packages/npm/packuments/)",
       "Bash(howth run:*)",
       "Bash(DEBUG_CJS_WRAPPER=1 /Users/jacobschatz/projects/howth/target/debug/howth run:*)",
-      "Bash(cargo install:*)"
+      "Bash(cargo install:*)",
+      "mcp__1medium__org_set",
+      "Bash(cargo tree:*)",
+      "mcp__1medium__space_list",
+      "mcp__1medium__project_delete",
+      "Bash(npx vitepress build:*)",
+      "Bash(git init:*)",
+      "Bash(git commit:*)",
+      "Bash(gh repo create:*)"
     ]
   }
 }

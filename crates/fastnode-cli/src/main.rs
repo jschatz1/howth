@@ -343,6 +343,33 @@ enum BenchCommands {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+
+    /// Benchmark package install speed (howth vs npm vs bun)
+    Install {
+        /// Number of measured iterations
+        #[arg(long, default_value_t = commands::bench::install::DEFAULT_ITERS)]
+        iters: u32,
+
+        /// Number of warmup iterations
+        #[arg(long, default_value_t = commands::bench::install::DEFAULT_WARMUP)]
+        warmup: u32,
+
+        /// Project directory to benchmark (uses temp project if not specified)
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+
+    /// Benchmark test execution speed (howth vs node vs bun)
+    #[command(name = "test")]
+    TestRun {
+        /// Number of measured iterations
+        #[arg(long, default_value_t = commands::bench::test::DEFAULT_ITERS)]
+        iters: u32,
+
+        /// Number of warmup iterations
+        #[arg(long, default_value_t = commands::bench::test::DEFAULT_WARMUP)]
+        warmup: u32,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -613,6 +640,15 @@ fn main() -> Result<()> {
                 warmup,
                 project,
             } => commands::bench::build::run_devloop(*iters, *warmup, project.clone(), cli.json),
+            BenchCommands::Install {
+                iters,
+                warmup,
+                project,
+            } => commands::bench::install::run(*iters, *warmup, project.clone(), cli.json),
+            BenchCommands::TestRun {
+                iters,
+                warmup,
+            } => commands::bench::test::run(*iters, *warmup, cli.json),
         };
     }
 
