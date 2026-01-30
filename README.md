@@ -481,6 +481,59 @@ The dev server currently uses sensible defaults:
 
 Plugins can modify the configuration via the `config` hook before the server starts.
 
+### What's Next for the Dev Server
+
+The dev server has the core architecture in place — unbundled serving, HMR, plugin hooks, pre-bundling. Here's what's still needed before it handles real-world projects end to end.
+
+**The essentials** — things most projects need:
+
+- **User `index.html`** — Right now howth generates a synthetic HTML shell. Real projects have their own `index.html` with meta tags, favicons, analytics, etc. howth should detect and serve it from the project root.
+- **Config file** (`howth.config.ts`) — There's no way to configure aliases, proxy, define globals, or register plugins without recompiling. A config file unlocks project-specific settings.
+- **JS/TS plugin loading** — Plugins are currently Rust-only, which means the entire Vite plugin ecosystem is inaccessible. A bridge (V8, IPC, or WASM) for at least `transform` and `resolveId` hooks would open the door.
+- **SPA fallback** — Client-side routing (React Router, Vue Router) returns 404 on page refresh. Non-file routes need to serve `index.html`.
+
+**CSS and styling** — the gaps that block common workflows:
+
+- **CSS Modules** (`.module.css`) — Scoped class name generation
+- **PostCSS** — Needed for Tailwind and autoprefixer
+- **Sass/Less/Stylus** — Preprocessor support
+- **`url()` rewriting** — CSS asset references break when served from a different path
+- **`@import` resolution** — CSS import chains aren't inlined in dev mode
+
+**Environment and resolution:**
+
+- **`.env` files** and `import.meta.env` — Most projects use environment variables for API URLs and feature flags
+- **tsconfig `paths`** — Path aliases like `@/*` → `src/*` are very common in TypeScript projects
+- **`package.json` `browser` field** — Some packages rely on this for browser-specific module remapping
+- **`exports` wildcard patterns** — The resolver only handles exact subpath matches, not `*` wildcards
+
+**Dev server features:**
+
+- **Proxy** (`server.proxy`) — Forward `/api/*` requests to a backend server
+- **CORS headers** — Cross-origin requests from other dev tools fail without these
+- **`public/` directory** — Static assets served at root, copied as-is in builds
+- **Rich error overlay** — Code frame with file/line/column, clickable file links
+- **Plugin middleware** — `configureServer` middleware is registered but never actually invoked
+
+**Module features:**
+
+- **`import.meta.glob()`** — File-based routing and auto-imports (used by Astro, etc.)
+- **Asset queries** (`?raw`, `?url`, `?inline`) — Import files as strings, URLs, or data URIs
+- **Web Workers** (`?worker`, `new Worker(new URL(...))`)
+- **CJS-to-ESM** in pre-bundling — Many npm packages are still CommonJS-only
+
+**Build and advanced:**
+
+- **SSR** (`transformRequest`, `ssrLoadModule`) — Required by Next.js, Nuxt, SvelteKit
+- **Library mode** (`build.lib`) — Build packages with UMD/ESM/CJS outputs
+- **Multi-page apps** — Multiple HTML entry points
+- **Rollup hooks** — `generateBundle`, `writeBundle`, `moduleParsed`, `closeBundle`
+- **`base` path** — The field exists in config but isn't applied anywhere
+- **HTTPS/TLS** — Some APIs require secure origins
+- **Dependency cache invalidation** — `.howth/deps/` has no invalidation; must be deleted manually
+
+See [ROADMAP.md](ROADMAP.md) for the full project roadmap and [1Medium](https://1medium.com) for task tracking.
+
 ## Doctor Command
 
 `howth doctor` checks system health and capabilities:

@@ -34,7 +34,7 @@ use fastnode_core::bundler::{
     BundleFormat, BundleOptions, Bundler, DevConfig, PluginContainer,
     plugins::ReactRefreshPlugin,
 };
-use fastnode_core::dev::{HmrEngine, ModuleTransformer, PreBundler};
+use fastnode_core::dev::{HmrEngine, ModuleTransformer, PreBundler, extract_import_urls, is_self_accepting_module};
 use miette::{IntoDiagnostic, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -365,12 +365,19 @@ async fn serve_css_module(
 ) -> impl IntoResponse {
     let url_path = format!("/@style/{}", path);
     match state.transformer.transform_module(&url_path, &state.plugins) {
-        Ok(module) => Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", module.content_type)
-            .header("Cache-Control", "no-cache")
-            .body(module.code)
-            .unwrap(),
+        Ok(module) => {
+            // Register CSS module in HMR graph (CSS modules are self-accepting)
+            let file_path = state.cwd.join(&path).display().to_string();
+            state.hmr_engine.module_graph.ensure_module(&url_path, &file_path);
+            state.hmr_engine.module_graph.mark_self_accepting(&url_path);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", module.content_type)
+                .header("Cache-Control", "no-cache")
+                .body(module.code)
+                .unwrap()
+        }
         Err(e) => Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .header("Content-Type", "application/javascript")
@@ -410,6 +417,26 @@ async fn serve_module(
                         .hmr_engine
                         .module_graph
                         .ensure_module(url_path, &module.file_path);
+
+                    // Extract import URLs from the transformed code and populate graph edges
+                    let import_urls = extract_import_urls(&module.code);
+                    // Ensure imported modules exist in the graph before updating edges
+                    for import_url in &import_urls {
+                        // Resolve the import to a file path for the graph
+                        let import_file = if import_url.starts_with("/@style/") {
+                            let rel = import_url.strip_prefix("/@style").unwrap_or(import_url);
+                            state.cwd.join(rel.strip_prefix('/').unwrap_or(rel)).display().to_string()
+                        } else {
+                            state.cwd.join(import_url.strip_prefix('/').unwrap_or(import_url)).display().to_string()
+                        };
+                        state.hmr_engine.module_graph.ensure_module(import_url, &import_file);
+                    }
+                    state.hmr_engine.module_graph.update_module_imports(url_path, &import_urls);
+
+                    // Detect self-accepting modules (import.meta.hot.accept())
+                    if is_self_accepting_module(&module.code) {
+                        state.hmr_engine.module_graph.mark_self_accepting(url_path);
+                    }
 
                     // Inject HMR preamble for JS modules
                     let code = if ext != "json" {
@@ -511,13 +538,55 @@ async fn handle_hmr_socket(mut socket: WebSocket, state: Arc<DevState>) {
         .send(Message::Text(HmrMessage::Connected.to_json()))
         .await;
 
-    // Forward HMR messages to client
-    while let Ok(msg) = rx.recv().await {
-        let json = msg.to_json();
-        if socket.send(Message::Text(json)).await.is_err() {
-            break;
+    // Bidirectional: forward server→client HMR messages, handle client→server messages
+    loop {
+        tokio::select! {
+            // Server → Client: forward HMR updates
+            Ok(msg) = rx.recv() => {
+                let json = msg.to_json();
+                if socket.send(Message::Text(json)).await.is_err() {
+                    break;
+                }
+            }
+            // Client → Server: handle hotAccept, invalidate, etc.
+            Some(Ok(msg)) = socket.recv() => {
+                if let Message::Text(text) = msg {
+                    handle_client_hmr_message(&state, &text);
+                }
+            }
+            else => break,
         }
     }
+}
+
+/// Handle an incoming HMR message from the client.
+fn handle_client_hmr_message(state: &DevState, text: &str) {
+    // Parse JSON manually (avoid serde dependency for a few message types)
+    if let Some(path) = extract_json_string(text, "path") {
+        if text.contains("\"hotAccept\"") {
+            // Client confirmed this module is self-accepting
+            state.hmr_engine.module_graph.mark_self_accepting(&path);
+        }
+        // "invalidate" is handled client-side (reload), no server action needed
+    }
+}
+
+/// Extract a string value for a key from a simple JSON object.
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\"", key);
+    let idx = json.find(&pattern)?;
+    let after_key = &json[idx + pattern.len()..];
+    // Skip `:` and whitespace
+    let after_colon = after_key.trim_start().strip_prefix(':')?;
+    let after_colon = after_colon.trim_start();
+    // Extract string value
+    let quote = after_colon.chars().next()?;
+    if quote != '"' {
+        return None;
+    }
+    let inner = &after_colon[1..];
+    let end = inner.find('"')?;
+    Some(inner[..end].to_string())
 }
 
 // ============================================================================

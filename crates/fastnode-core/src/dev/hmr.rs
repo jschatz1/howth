@@ -425,6 +425,10 @@ export function createHotContext(ownerPath) {
         entry.selfAccepted = true;
         entry.selfAcceptCb = typeof deps === 'function' ? deps : cb;
         hotModulesMap.set(ownerPath, entry);
+        // Notify server that this module is self-accepting
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'hotAccept', path: ownerPath }));
+        }
       } else if (typeof deps === 'string') {
         // Accept single dep: hot.accept('./dep', cb)
         const entry = hotModulesMap.get(ownerPath) || {

@@ -387,6 +387,7 @@
             <a href="#plugins">Plugins</a>
             <a href="#bundler">Bundler</a>
             <a href="#benchmarks">Benchmarks</a>
+            <a href="#whats-next">What's Next</a>
         </nav>
 
         <section id="quick-start">
@@ -778,6 +779,113 @@
                 </tbody>
             </table>
             <p style="color: #8b949e; margin-top: 0.75rem; font-size: 0.875rem;">howth is <strong style="color: var(--green);">29x faster</strong> than node and <strong style="color: var(--green);">2.7x faster</strong> than bun.</p>
+        </section>
+
+        <section id="whats-next">
+            <h2>What's Next</h2>
+            <p class="section-subtitle">The dev server architecture is in place. Here's what's still being built.</p>
+
+            <h3>The essentials</h3>
+            <p style="color: #8b949e; margin-bottom: 1rem;">Things most projects need before howth can be their daily driver.</p>
+            <div class="features">
+                <div class="feature">
+                    <h3>User index.html</h3>
+                    <p>Detect and serve your project's own <code>index.html</code> instead of generating a synthetic one. Meta tags, favicons, analytics &mdash; all preserved.</p>
+                </div>
+                <div class="feature">
+                    <h3>Config File</h3>
+                    <p><code>howth.config.ts</code> for aliases, proxy, define globals, and plugin registration without recompiling.</p>
+                </div>
+                <div class="feature">
+                    <h3>JS Plugin Loading</h3>
+                    <p>Load Vite/Rollup plugins written in JavaScript. Opens the door to the entire Vite ecosystem.</p>
+                </div>
+                <div class="feature">
+                    <h3>SPA Fallback</h3>
+                    <p>Serve <code>index.html</code> for non-file routes so client-side routing works on page refresh.</p>
+                </div>
+            </div>
+
+            <h3>CSS and styling</h3>
+            <p style="color: #8b949e; margin-bottom: 1rem;">Gaps that block common frontend workflows.</p>
+            <div class="features">
+                <div class="feature">
+                    <h3>CSS Modules</h3>
+                    <p><code>.module.css</code> with scoped class names. Widely used in React and Vue projects.</p>
+                </div>
+                <div class="feature">
+                    <h3>PostCSS</h3>
+                    <p>Auto-detect <code>postcss.config.js</code> and apply Tailwind, autoprefixer, and other plugins.</p>
+                </div>
+                <div class="feature">
+                    <h3>Preprocessors</h3>
+                    <p>Sass, Less, and Stylus support. Just install the preprocessor package and import.</p>
+                </div>
+                <div class="feature">
+                    <h3>url() &amp; @import</h3>
+                    <p>Rewrite CSS asset references and inline <code>@import</code> chains in dev mode.</p>
+                </div>
+            </div>
+
+            <h3>Environment and resolution</h3>
+            <div class="features">
+                <div class="feature">
+                    <h3>.env Files</h3>
+                    <p>Load <code>.env</code>, <code>.env.local</code>, <code>.env.development</code> and expose via <code>import.meta.env</code>.</p>
+                </div>
+                <div class="feature">
+                    <h3>tsconfig paths</h3>
+                    <p>Resolve <code>@/*</code> aliases from <code>tsconfig.json</code> without separate config.</p>
+                </div>
+                <div class="feature">
+                    <h3>browser Field</h3>
+                    <p>Respect <code>package.json</code> <code>browser</code> field for browser-specific module remapping.</p>
+                </div>
+                <div class="feature">
+                    <h3>Exports Wildcards</h3>
+                    <p>Support <code>*</code> patterns, nested conditions, and <code>null</code> exclusions in <code>package.json</code> exports.</p>
+                </div>
+            </div>
+
+            <h3>Dev server features</h3>
+            <div class="features">
+                <div class="feature">
+                    <h3>Proxy</h3>
+                    <p>Forward <code>/api/*</code> to a backend. Path rewriting, WebSocket proxying, changeOrigin.</p>
+                </div>
+                <div class="feature">
+                    <h3>public/ Directory</h3>
+                    <p>Static assets served at root URL, copied as-is in production builds.</p>
+                </div>
+                <div class="feature">
+                    <h3>Error Overlay</h3>
+                    <p>Code frame with syntax highlighting, file/line/column, clickable links to open in editor.</p>
+                </div>
+                <div class="feature">
+                    <h3>CORS &amp; HTTPS</h3>
+                    <p>Configurable CORS headers and TLS support for secure-origin APIs.</p>
+                </div>
+            </div>
+
+            <h3>Module features and build</h3>
+            <div class="features">
+                <div class="feature">
+                    <h3>import.meta.glob()</h3>
+                    <p>File-based routing and auto-imports. Lazy or eager. Used by Astro, Vite templates, etc.</p>
+                </div>
+                <div class="feature">
+                    <h3>Asset Queries</h3>
+                    <p><code>?raw</code>, <code>?url</code>, <code>?inline</code> &mdash; import files as strings, URLs, or data URIs.</p>
+                </div>
+                <div class="feature">
+                    <h3>SSR</h3>
+                    <p><code>transformRequest</code> and <code>ssrLoadModule</code> for Next.js, Nuxt, and SvelteKit.</p>
+                </div>
+                <div class="feature">
+                    <h3>Library Mode</h3>
+                    <p>Build packages with UMD, ESM, and CJS outputs via <code>build.lib</code>.</p>
+                </div>
+            </div>
         </section>
 
         <section>

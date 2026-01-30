@@ -257,6 +257,98 @@ fn extract_string_from_start(s: &str) -> Option<(String, char, &str)> {
     Some((specifier, quote, rest))
 }
 
+/// Extract all import URLs from rewritten JavaScript code.
+///
+/// Scans for static imports (`import ... from '...'`), side-effect imports
+/// (`import '...'`), re-exports (`export ... from '...'`), and dynamic
+/// imports (`import('...')`). Returns deduplicated URL paths.
+pub fn extract_import_urls(code: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+
+        // Static imports and re-exports
+        if is_import_line(trimmed) || is_export_from_line(trimmed) {
+            if let Some((_, specifier, _, _)) = extract_from_specifier(line) {
+                if !specifier.starts_with("/@modules/") && !specifier.starts_with('\0') && seen.insert(specifier.clone()) {
+                    urls.push(specifier);
+                }
+            } else if let Some((_, specifier, _, _)) = extract_side_effect_import(line) {
+                if !specifier.starts_with("/@modules/") && !specifier.starts_with('\0') && seen.insert(specifier.clone()) {
+                    urls.push(specifier);
+                }
+            }
+        }
+
+        // Dynamic imports
+        if trimmed.contains("import(") {
+            let mut remaining = trimmed;
+            while let Some(idx) = remaining.find("import(") {
+                let after = &remaining[idx + 7..];
+                if let Some((specifier, _, rest)) = extract_string_from_start(after) {
+                    if !specifier.starts_with("/@modules/") && !specifier.starts_with('\0') && seen.insert(specifier.clone()) {
+                        urls.push(specifier);
+                    }
+                    remaining = rest;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    urls
+}
+
+/// Check if transformed code contains a self-accepting HMR call.
+///
+/// Uses a simple heuristic: scans for `.hot.accept(` calls and checks whether
+/// the first argument is a string or array (dep-accepting) or not (self-accepting).
+///
+/// This is a best-effort detection at serve time. The authoritative source is
+/// the client runtime, which sends an `accept` WebSocket message back to the
+/// server when `import.meta.hot.accept()` actually executes. This function
+/// provides an early hint so the module graph has edges before the browser
+/// even loads the module.
+///
+/// Vite uses `es-module-lexer` for AST-level detection. We use line scanning
+/// which is fast but can have false positives (e.g., inside comments/strings).
+/// For howth's use case this is acceptable — a false positive just means we
+/// attempt HMR when we'd otherwise do a full reload, and the worst outcome is
+/// the client falls back to reload anyway.
+pub fn is_self_accepting_module(code: &str) -> bool {
+    for line in code.lines() {
+        let trimmed = line.trim();
+
+        // Skip obvious comments
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+            continue;
+        }
+
+        if !trimmed.contains(".hot.accept") && !trimmed.contains(".hot?.accept") {
+            continue;
+        }
+
+        for pattern in &[".hot.accept(", ".hot?.accept("] {
+            if let Some(idx) = trimmed.find(pattern) {
+                let after = &trimmed[idx + pattern.len()..];
+                let after = after.trim();
+                // Dep-accepting starts with a string or array literal
+                if after.starts_with('\'') || after.starts_with('"') || after.starts_with('[') {
+                    continue;
+                }
+                // Everything else is self-accepting:
+                // accept(), accept(cb), accept(() => ...), accept(mod => ...)
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +395,33 @@ import lodash from "lodash";"#;
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"));
 
         assert!(result.contains("from '/@modules/bar'"));
+    }
+
+    #[test]
+    fn test_extract_import_urls() {
+        let code = r#"import { useState } from '/@modules/react';
+import App from '/src/App.tsx';
+import '/src/styles.css';
+export { foo } from '/src/utils.ts';
+const lazy = import('/src/Lazy.tsx');"#;
+
+        let urls = extract_import_urls(code);
+        // Should only include local modules, not /@modules/
+        assert!(urls.contains(&"/src/App.tsx".to_string()));
+        assert!(urls.contains(&"/src/styles.css".to_string()));
+        assert!(urls.contains(&"/src/utils.ts".to_string()));
+        assert!(urls.contains(&"/src/Lazy.tsx".to_string()));
+        assert!(!urls.iter().any(|u| u.contains("/@modules/")));
+    }
+
+    #[test]
+    fn test_is_self_accepting() {
+        assert!(is_self_accepting_module("import.meta.hot.accept();"));
+        assert!(is_self_accepting_module("import.meta.hot.accept(mod => { });"));
+        assert!(is_self_accepting_module("if (import.meta.hot) { import.meta.hot.accept(); }"));
+        assert!(!is_self_accepting_module("import.meta.hot.accept('./dep', cb);"));
+        assert!(!is_self_accepting_module("import.meta.hot.accept(['./a', './b'], cb);"));
+        assert!(!is_self_accepting_module("const x = 42;"));
     }
 
     #[test]

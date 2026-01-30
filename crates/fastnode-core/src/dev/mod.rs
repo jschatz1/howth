@@ -11,5 +11,5 @@ pub mod transform;
 
 pub use hmr::{HmrEngine, HmrModuleGraph, HmrModuleNode};
 pub use prebundle::PreBundler;
-pub use rewrite::ImportRewriter;
+pub use rewrite::{ImportRewriter, extract_import_urls, is_self_accepting_module};
 pub use transform::ModuleTransformer;

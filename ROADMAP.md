@@ -90,6 +90,61 @@ TypeScript transpilation, bundling, and source maps.
 | Bundler | Done | ESM bundling, tree shaking, code splitting, CSS, plugins |
 | Source Maps | Done | Source map generation |
 | Watch Mode | Done | File watching with transpile-only default |
+| Dev Server (Vite Compat) | In Progress | Vite-compatible unbundled dev server |
+
+### Dev Server — Vite Compatibility
+
+Unbundled ES module serving with HMR, React Fast Refresh, and a Vite-compatible plugin system.
+
+**Done:**
+- [x] Unbundled module serving (per-request resolve → load → SWC transpile → transform → rewrite)
+- [x] Import rewriting (bare specifiers → `/@modules/`, relative → absolute, CSS → `/@style/`)
+- [x] Dependency pre-bundling (scan entry, bundle each dep into `.howth/deps/`)
+- [x] HMR client API (`import.meta.hot` with accept, dispose, invalidate, data, on/send)
+- [x] HMR module graph with boundary detection
+- [x] React Fast Refresh plugin (component detection, preamble/footer injection, `/@react-refresh` virtual module)
+- [x] Plugin enforce ordering (Pre/Normal/Post)
+- [x] Vite plugin hooks (`config`, `configResolved`, `configureServer`, `transformIndexHtml`, `handleHotUpdate`)
+- [x] CSS-as-JS modules with HMR (inject/remove `<style>` tags)
+- [x] WebSocket HMR on `/__hmr` with error overlay
+- [x] File watching with debounce and cache invalidation
+- [x] Module transform caching
+
+**Critical (P1):**
+- [ ] Wire up HMR module graph edges (`update_module_imports()` never called — breaks boundary detection)
+- [ ] Support user-provided `index.html` (currently always generates synthetic HTML)
+- [ ] Config file support (`howth.config.ts`)
+- [ ] JavaScript/TypeScript plugin loading (Rust-only plugins blocks ecosystem compat)
+- [ ] SPA history API fallback (404 on refresh for client-side routes)
+
+**High (P2):**
+- [ ] CSS Modules (`.module.css`)
+- [ ] PostCSS integration (Tailwind, autoprefixer)
+- [ ] `.env` file loading and `import.meta.env`
+- [ ] Dev server proxy configuration (`/api/*` → backend)
+- [ ] CSS preprocessors (Sass/Less/Stylus)
+- [ ] `package.json` `browser` field resolution
+- [ ] tsconfig `paths` resolution
+
+**Medium (P3):**
+- [ ] Rich error overlay with code frame and click-to-open
+- [ ] CORS headers
+- [ ] Wire up plugin middleware to Axum router (registered but never invoked)
+- [ ] `import.meta.glob()` support
+- [ ] Asset query suffixes (`?raw`, `?url`, `?inline`)
+- [ ] `public/` directory support
+- [ ] CJS-to-ESM conversion in pre-bundling
+- [ ] Dependency cache invalidation and force re-optimization
+- [ ] HTTPS/TLS support
+- [ ] SSR support (`transformRequest`, `ssrLoadModule`)
+- [ ] Library build mode (`build.lib`)
+- [ ] Web Worker support (`?worker`, `new Worker`)
+- [ ] `base` path wiring (field exists but unused)
+- [ ] `import.meta.hot.acceptExports()` partial accept
+- [ ] Multi-page app build support
+- [ ] Rollup hooks: `generateBundle`, `writeBundle`, `moduleParsed`, `closeBundle`
+- [ ] CSS `url()` rewriting and `@import` resolution
+- [ ] `package.json` exports wildcard/pattern matching
 
 ---
 
