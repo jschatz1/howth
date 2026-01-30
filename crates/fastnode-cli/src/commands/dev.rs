@@ -31,10 +31,10 @@ use axum::{
     Router,
 };
 use fastnode_core::bundler::{
-    BundleFormat, BundleOptions, Bundler, DevConfig, PluginContainer,
+    AliasPlugin, BundleFormat, BundleOptions, Bundler, DevConfig, PluginContainer, ReplacePlugin,
     plugins::ReactRefreshPlugin,
 };
-use fastnode_core::dev::{HmrEngine, ModuleTransformer, PreBundler, extract_import_urls, is_self_accepting_module};
+use fastnode_core::dev::{HmrEngine, ModuleTransformer, PreBundler, extract_import_urls, is_self_accepting_module, load_config};
 use miette::{IntoDiagnostic, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -56,6 +56,8 @@ pub struct DevAction {
     pub host: String,
     /// Open browser automatically.
     pub open: bool,
+    /// Explicit config file path (overrides auto-discovery).
+    pub config: Option<PathBuf>,
 }
 
 /// Shared server state for Vite-compatible unbundled serving.
@@ -143,6 +145,48 @@ impl HmrMessage {
 pub async fn run(action: DevAction) -> Result<()> {
     let cwd = action.cwd.canonicalize().into_diagnostic()?;
 
+    // Load config file (howth.config.ts, vite.config.ts, etc.)
+    let howth_config = match load_config(&cwd, action.config.as_deref()) {
+        Ok(Some((config_path, config))) => {
+            let rel_path = config_path
+                .strip_prefix(&cwd)
+                .unwrap_or(&config_path);
+            println!("  Loaded config from {}", rel_path.display());
+            Some(config)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            eprintln!("  Warning: Failed to load config: {}", e);
+            None
+        }
+    };
+
+    // Determine effective settings (CLI flags override config file)
+    let effective_port = if action.port != 3000 {
+        // CLI explicitly set (non-default) — CLI wins
+        action.port
+    } else if let Some(ref cfg) = howth_config {
+        cfg.server.port.unwrap_or(action.port)
+    } else {
+        action.port
+    };
+
+    let effective_host = if action.host != "localhost" {
+        action.host.clone()
+    } else if let Some(ref cfg) = howth_config {
+        cfg.server.host.clone().unwrap_or_else(|| action.host.clone())
+    } else {
+        action.host.clone()
+    };
+
+    let effective_open = if action.open {
+        true
+    } else if let Some(ref cfg) = howth_config {
+        cfg.server.open.unwrap_or(false)
+    } else {
+        action.open
+    };
+
     // Initialize plugin system
     let mut plugins = PluginContainer::new(cwd.clone());
     plugins.set_watch(true);
@@ -150,13 +194,46 @@ pub async fn run(action: DevAction) -> Result<()> {
     // Add React Refresh plugin by default
     plugins.add(Box::new(ReactRefreshPlugin::new()));
 
+    // Add plugins from config file
+    if let Some(ref cfg) = howth_config {
+        // Add alias plugin if aliases are configured
+        if !cfg.resolve.alias.is_empty() {
+            let mut alias_plugin = AliasPlugin::new();
+            for (from, to) in &cfg.resolve.alias {
+                alias_plugin = alias_plugin.alias(from, to);
+            }
+            plugins.add(Box::new(alias_plugin));
+        }
+
+        // Add replace plugin if define replacements are configured
+        if !cfg.define.is_empty() {
+            let mut replace_plugin = ReplacePlugin::new();
+            for (from, to) in &cfg.define {
+                replace_plugin = replace_plugin.replace(from, to);
+            }
+            plugins.add(Box::new(replace_plugin));
+        }
+    }
+
     // Run config hooks
     let mut dev_config = DevConfig {
         root: cwd.clone(),
-        port: action.port,
-        host: action.host.clone(),
+        port: effective_port,
+        host: effective_host.clone(),
+        base: howth_config
+            .as_ref()
+            .and_then(|c| c.base.clone())
+            .unwrap_or_else(|| "/".to_string()),
         ..Default::default()
     };
+
+    // Merge define from config into DevConfig
+    if let Some(ref cfg) = howth_config {
+        for (key, value) in &cfg.define {
+            dev_config.define.insert(key.clone(), value.clone());
+        }
+    }
+
     let _ = plugins.call_config(&mut dev_config);
     let _ = plugins.call_config_resolved(&dev_config);
 
@@ -218,7 +295,7 @@ pub async fn run(action: DevAction) -> Result<()> {
         hmr_tx: hmr_tx.clone(),
         entry: action.entry.clone(),
         cwd: cwd.clone(),
-        port: action.port,
+        port: effective_port,
         transformer,
         prebundler,
         plugins,
@@ -245,8 +322,26 @@ pub async fn run(action: DevAction) -> Result<()> {
         }
     });
 
-    // Build entry URL into index HTML
-    let index_html = generate_index_html(&entry_url, action.port);
+    // Load index.html: prefer user's file, fall back to generated template
+    let user_index_path = cwd.join("index.html");
+    let index_html = if user_index_path.exists() {
+        let mut html = std::fs::read_to_string(&user_index_path)
+            .unwrap_or_else(|_| generate_index_html(&entry_url, action.port));
+        // Inject HMR client script before </head> or </body>
+        let hmr_script = r#"<script type="module" src="/@hmr-client"></script>"#;
+        if !html.contains("/@hmr-client") {
+            if let Some(pos) = html.find("</head>") {
+                html.insert_str(pos, &format!("  {}\n  ", hmr_script));
+            } else if let Some(pos) = html.find("</body>") {
+                html.insert_str(pos, &format!("  {}\n  ", hmr_script));
+            } else {
+                html.push_str(&format!("\n{}", hmr_script));
+            }
+        }
+        html
+    } else {
+        generate_index_html(&entry_url, action.port)
+    };
 
     // Apply transform_index_html plugin hook
     let index_html = match state.plugins.call_transform_index_html(&index_html) {
@@ -268,18 +363,18 @@ pub async fn run(action: DevAction) -> Result<()> {
         .with_state((state, index_html));
 
     // Start server
-    let host_ip = if action.host == "localhost" {
+    let host_ip = if effective_host == "localhost" {
         "127.0.0.1".to_string()
     } else {
-        action.host.clone()
+        effective_host.clone()
     };
 
-    let addr: SocketAddr = format!("{}:{}", host_ip, action.port)
+    let addr: SocketAddr = format!("{}:{}", host_ip, effective_port)
         .parse()
         .into_diagnostic()?;
 
     println!();
-    println!("  Dev server running at http://localhost:{}", action.port);
+    println!("  Dev server running at http://localhost:{}", effective_port);
     println!("  Vite-compatible unbundled serving enabled");
     println!("  Hot Module Replacement enabled");
     println!();
@@ -287,8 +382,8 @@ pub async fn run(action: DevAction) -> Result<()> {
     println!();
 
     // Open browser if requested
-    if action.open {
-        let url = format!("http://{}:{}", action.host, action.port);
+    if effective_open {
+        let url = format!("http://{}:{}", effective_host, effective_port);
         let _ = open_browser(&url);
     }
 
@@ -393,8 +488,11 @@ async fn serve_css_module(
 ///
 /// This is the core of the unbundled dev server: each request triggers
 /// the full transform pipeline (resolve → load → transpile → transform → rewrite).
+///
+/// Also handles SPA fallback: non-file routes (no extension) return index.html
+/// so client-side routing (React Router, Vue Router, etc.) works on refresh.
 async fn serve_module(
-    State((state, _)): State<AppState>,
+    State((state, index_html)): State<AppState>,
     AxumPath(path): AxumPath<String>,
 ) -> impl IntoResponse {
     let url_path = format!("/{}", path);
@@ -507,6 +605,15 @@ async fn serve_module(
                         .body(format!("Not found: {}", path))
                         .unwrap(),
                 }
+            } else if ext.is_empty() {
+                // SPA fallback: no file extension means this is likely a client-side
+                // route (e.g., /about, /users/123). Return index.html so the app's
+                // router can handle it.
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "text/html")
+                    .body(index_html.to_string())
+                    .unwrap()
             } else {
                 Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -748,7 +855,7 @@ async fn handle_file_change(state: &DevState, changed: Vec<String>) {
 // Utilities
 // ============================================================================
 
-/// Generate the index HTML for unbundled module serving.
+/// Generate a fallback index HTML when the project has no index.html.
 fn generate_index_html(entry_url: &str, _port: u16) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -757,6 +864,7 @@ fn generate_index_html(entry_url: &str, _port: u16) -> String {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>howth dev</title>
+  <script type="module" src="/@hmr-client"></script>
   <style>
     body {{ margin: 0; font-family: system-ui, sans-serif; }}
     #root {{ }}

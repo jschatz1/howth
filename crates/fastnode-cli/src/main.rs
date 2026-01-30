@@ -227,6 +227,10 @@ enum Commands {
         /// Open browser automatically
         #[arg(long)]
         open: bool,
+
+        /// Path to config file (overrides auto-discovery)
+        #[arg(long, short = 'c', value_name = "FILE")]
+        config: Option<PathBuf>,
     },
 
     /// Build the project
@@ -898,6 +902,7 @@ fn main() -> Result<()> {
         port,
         host,
         open,
+        config,
     }) = &cli.command
     {
         match entry {
@@ -920,6 +925,7 @@ fn main() -> Result<()> {
                     port: *port,
                     host: host.clone(),
                     open: *open,
+                    config: config.clone(),
                 };
 
                 let rt = tokio::runtime::Runtime::new().unwrap();
