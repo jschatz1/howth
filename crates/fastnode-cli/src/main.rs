@@ -231,6 +231,10 @@ enum Commands {
         /// Path to config file (overrides auto-discovery)
         #[arg(long, short = 'c', value_name = "FILE")]
         config: Option<PathBuf>,
+
+        /// Mode (e.g. "development", "production") — controls which .env files are loaded
+        #[arg(long, short = 'm', default_value = "development")]
+        mode: String,
     },
 
     /// Build the project
@@ -903,6 +907,7 @@ fn main() -> Result<()> {
         host,
         open,
         config,
+        mode,
     }) = &cli.command
     {
         match entry {
@@ -917,6 +922,7 @@ fn main() -> Result<()> {
                     host: host.clone(),
                     open: *open,
                     config: config.clone(),
+                    mode: mode.clone(),
                 };
 
                 let rt = tokio::runtime::Runtime::new().unwrap();
