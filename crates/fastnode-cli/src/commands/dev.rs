@@ -357,9 +357,9 @@ pub async fn run(action: DevAction) -> Result<()> {
         .route("/__hmr", get(hmr_websocket))
         .route("/@hmr-client", get(serve_hmr_client))
         .route("/@react-refresh", get(serve_react_refresh))
-        .route("/@modules/{*pkg}", get(serve_prebundled_dep))
-        .route("/@style/{*path}", get(serve_css_module))
-        .route("/{*path}", get(serve_module))
+        .route("/@modules/*pkg", get(serve_prebundled_dep))
+        .route("/@style/*path", get(serve_css_module))
+        .route("/*path", get(serve_module))
         .with_state((state, index_html));
 
     // Start server

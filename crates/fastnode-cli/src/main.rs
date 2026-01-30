@@ -908,20 +908,11 @@ fn main() -> Result<()> {
         match entry {
             Some(entry) => {
                 // Explicit entry file: start the built-in dev server
-                let dev_cwd = entry
-                    .parent()
-                    .map(|p| {
-                        if p.as_os_str().is_empty() {
-                            std::path::PathBuf::from(".")
-                        } else {
-                            p.to_path_buf()
-                        }
-                    })
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-
+                // Use the global --cwd (or current directory) as project root,
+                // not the entry file's parent, so config discovery works correctly.
                 let action = commands::dev::DevAction {
                     entry: entry.clone(),
-                    cwd: dev_cwd,
+                    cwd: cwd.clone(),
                     port: *port,
                     host: host.clone(),
                     open: *open,
