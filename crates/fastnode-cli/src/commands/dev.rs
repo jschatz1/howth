@@ -34,7 +34,7 @@ use fastnode_core::bundler::{
     AliasPlugin, BundleFormat, BundleOptions, Bundler, DevConfig, PluginContainer, ReplacePlugin,
     plugins::ReactRefreshPlugin,
 };
-use fastnode_core::dev::{HmrEngine, ModuleTransformer, PreBundler, extract_import_urls, is_self_accepting_module, load_config};
+use fastnode_core::dev::{HmrEngine, ModuleTransformer, PreBundler, extract_import_urls, is_self_accepting_module, load_config, load_env_files, client_env_replacements};
 use miette::{IntoDiagnostic, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -58,6 +58,8 @@ pub struct DevAction {
     pub open: bool,
     /// Explicit config file path (overrides auto-discovery).
     pub config: Option<PathBuf>,
+    /// Mode (e.g. "development", "production").
+    pub mode: String,
 }
 
 /// Shared server state for Vite-compatible unbundled serving.
@@ -146,18 +148,19 @@ pub async fn run(action: DevAction) -> Result<()> {
     let cwd = action.cwd.canonicalize().into_diagnostic()?;
 
     // Load config file (howth.config.ts, vite.config.ts, etc.)
-    let howth_config = match load_config(&cwd, action.config.as_deref()) {
+    #[allow(unused_variables)]
+    let (howth_config, config_file_path) = match load_config(&cwd, action.config.as_deref()) {
         Ok(Some((config_path, config))) => {
             let rel_path = config_path
                 .strip_prefix(&cwd)
                 .unwrap_or(&config_path);
             println!("  Loaded config from {}", rel_path.display());
-            Some(config)
+            (Some(config), Some(config_path))
         }
-        Ok(None) => None,
+        Ok(None) => (None, None),
         Err(e) => {
             eprintln!("  Warning: Failed to load config: {}", e);
-            None
+            (None, None)
         }
     };
 
@@ -187,6 +190,20 @@ pub async fn run(action: DevAction) -> Result<()> {
         action.open
     };
 
+    // Load .env files
+    let mode = &action.mode;
+    let dot_env = load_env_files(&cwd, mode);
+    let env_replacements = client_env_replacements(&dot_env, mode);
+    let env_var_count = dot_env.iter().filter(|(k, _)| k.starts_with("VITE_") || k.starts_with("HOWTH_")).count();
+    if !dot_env.is_empty() {
+        println!(
+            "  Loaded {} env var{} ({} exposed to client)",
+            dot_env.len(),
+            if dot_env.len() == 1 { "" } else { "s" },
+            env_var_count,
+        );
+    }
+
     // Initialize plugin system
     let mut plugins = PluginContainer::new(cwd.clone());
     plugins.set_watch(true);
@@ -204,16 +221,56 @@ pub async fn run(action: DevAction) -> Result<()> {
             }
             plugins.add(Box::new(alias_plugin));
         }
+    }
 
-        // Add replace plugin if define replacements are configured
-        if !cfg.define.is_empty() {
-            let mut replace_plugin = ReplacePlugin::new();
+    // Merge .env replacements and config define into a single ReplacePlugin
+    {
+        let mut replace_plugin = ReplacePlugin::new();
+
+        // .env replacements first (config define can override)
+        for (from, to) in &env_replacements {
+            replace_plugin = replace_plugin.replace(from, to);
+        }
+
+        // Config define replacements override .env
+        if let Some(ref cfg) = howth_config {
             for (from, to) in &cfg.define {
                 replace_plugin = replace_plugin.replace(from, to);
             }
+        }
+
+        if !env_replacements.is_empty() || howth_config.as_ref().map_or(false, |c| !c.define.is_empty()) {
             plugins.add(Box::new(replace_plugin));
         }
     }
+
+    // Load JS plugins from config (requires native-runtime feature)
+    #[cfg(feature = "native-runtime")]
+    let _js_plugin_host = if howth_config.as_ref().map_or(false, |c| c.has_js_plugins) {
+        if let Some(ref cfg_path) = config_file_path {
+            match super::js_plugin::JsPluginHost::start(cfg_path, &cwd) {
+                Ok(host) => {
+                    let count = host.plugin_count();
+                    let host = Arc::new(host);
+                    for (idx, def) in host.plugin_defs().iter().enumerate() {
+                        plugins.add(Box::new(super::js_plugin::JsPlugin::new(
+                            def, idx, Arc::clone(&host),
+                        )));
+                    }
+                    println!("  Loaded {} JS plugin(s)", count);
+                    Some(host)
+                }
+                Err(e) => {
+                    eprintln!("  Warning: Failed to load JS plugins: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Run config hooks
     let mut dev_config = DevConfig {

@@ -7,6 +7,8 @@ pub mod dev;
 pub mod doctor;
 pub mod exec;
 pub mod init;
+#[cfg(feature = "native-runtime")]
+pub mod js_plugin;
 pub mod link;
 pub mod ping;
 pub mod pkg;

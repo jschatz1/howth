@@ -16,7 +16,7 @@ path = "src/compat.rs"
 
 [features]
 default = []
-native-runtime = ["fastnode-runtime"]
+native-runtime = ["fastnode-runtime", "url"]
 
 [dependencies]
 fastnode-core = { workspace = true, features = ["swc"] }
@@ -35,6 +35,7 @@ axum.workspace = true
 notify.workspace = true
 walkdir.workspace = true
 which = "7"
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

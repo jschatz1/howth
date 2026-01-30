@@ -195,6 +195,7 @@ fn run_native(cwd: &Path, entry: &Path, args: &[String], json: bool) -> Result<(
             cwd: Some(cwd.to_path_buf()),
             main_module: Some(entry_path.clone()),
             args: Some(script_args),
+            ..Default::default()
         })
         .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
 

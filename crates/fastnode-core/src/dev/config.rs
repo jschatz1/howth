@@ -28,6 +28,8 @@ pub struct HowthConfig {
     pub define: HashMap<String, String>,
     /// Base public path.
     pub base: Option<String>,
+    /// Whether the config file contains a `plugins` array (requires V8 runtime to evaluate).
+    pub has_js_plugins: bool,
 }
 
 /// Server configuration from config file.
@@ -125,11 +127,16 @@ fn parse_config_object(source: &str) -> Result<HowthConfig, String> {
     let obj_str = extract_default_export_object(source)
         .ok_or_else(|| "No `export default { ... }` found in config file".to_string())?;
 
+    // Detect if the config has a `plugins` key (which requires V8 to evaluate).
+    // Static parsing can't handle `plugins: [myPlugin()]`, so just detect presence.
+    let has_js_plugins = detect_plugins_key(source);
+
     // Parse the object literal into a serde_json::Value using our JSON5-like parser
     let value = parse_js_object(&obj_str)?;
 
     // Convert to HowthConfig
     let mut config = HowthConfig::default();
+    config.has_js_plugins = has_js_plugins;
 
     if let Some(obj) = value.as_object() {
         // server
@@ -174,6 +181,26 @@ fn parse_config_object(source: &str) -> Result<HowthConfig, String> {
     }
 
     Ok(config)
+}
+
+/// Detect whether the config source contains a `plugins` key with an array value.
+///
+/// This is a heuristic check on the raw source — we look for `plugins` followed by
+/// `:` and `[` within the default export object. The actual plugin objects must be
+/// evaluated by the V8 runtime since they typically involve function calls.
+fn detect_plugins_key(source: &str) -> bool {
+    let stripped = strip_comments(source);
+    // Look for `plugins` as an object key followed by `:` and `[`
+    // This handles `plugins: [...]` with optional whitespace
+    let re_like = "plugins";
+    if let Some(idx) = stripped.find(re_like) {
+        let after = stripped[idx + re_like.len()..].trim_start();
+        if after.starts_with(':') {
+            let after_colon = after[1..].trim_start();
+            return after_colon.starts_with('[');
+        }
+    }
+    false
 }
 
 /// Extract the object literal body from `export default { ... }` or `export default { ... };`.
@@ -707,5 +734,140 @@ mod tests {
         assert!(!result.contains("block"));
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
+    }
+
+    // ========================================================================
+    // Tests for has_js_plugins / detect_plugins_key
+    // ========================================================================
+
+    #[test]
+    fn test_detect_plugins_key_with_array() {
+        let source = r#"
+            export default {
+                plugins: [myPlugin()],
+                server: { port: 3000 },
+            };
+        "#;
+        assert!(detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_detect_plugins_key_empty_array() {
+        let source = r#"
+            export default {
+                plugins: [],
+            };
+        "#;
+        assert!(detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_detect_plugins_key_with_spaces() {
+        let source = r#"
+            export default {
+                plugins :  [
+                    somePlugin(),
+                ],
+            };
+        "#;
+        assert!(detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_detect_plugins_key_absent() {
+        let source = r#"
+            export default {
+                server: { port: 3000 },
+            };
+        "#;
+        assert!(!detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_detect_plugins_key_not_array() {
+        // plugins: 'something' — not an array, should not trigger
+        let source = r#"
+            export default {
+                plugins: 'not-an-array',
+            };
+        "#;
+        assert!(!detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_detect_plugins_key_in_comment_ignored() {
+        // The word "plugins" appears only in a comment
+        let source = r#"
+            // plugins: [shouldNotMatch()]
+            export default {
+                server: { port: 3000 },
+            };
+        "#;
+        assert!(!detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_has_js_plugins_field_set_true() {
+        let source = r#"
+            export default {
+                plugins: [myPlugin()],
+                server: { port: 3000 },
+            };
+        "#;
+        // Static parser will fail on myPlugin() in the array, but has_js_plugins
+        // should still be detected before parsing. We need to test detect_plugins_key
+        // separately since parse_config_object would fail on function calls.
+        assert!(detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_has_js_plugins_false_on_plain_config() {
+        let source = r#"
+            export default {
+                server: { port: 4000 },
+                base: '/app/',
+            };
+        "#;
+        let config = parse_config_object(source).unwrap();
+        assert!(!config.has_js_plugins);
+    }
+
+    #[test]
+    fn test_has_js_plugins_true_with_static_plugins_array() {
+        // A plugins array with static objects (parseable by the static parser)
+        let source = r#"
+            export default {
+                plugins: [],
+                server: { port: 3000 },
+            };
+        "#;
+        let config = parse_config_object(source).unwrap();
+        assert!(config.has_js_plugins);
+    }
+
+    #[test]
+    fn test_detect_plugins_key_block_comment() {
+        // plugins key inside block comment should be stripped
+        let source = r#"
+            /* plugins: [myPlugin()] */
+            export default {
+                server: { port: 3000 },
+            };
+        "#;
+        assert!(!detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_detect_plugins_key_multiple_configs() {
+        // plugins key exists in a real config position
+        let source = r#"
+            import myPlugin from './my-plugin';
+            export default {
+                plugins: [myPlugin({ option: true })],
+                server: { port: 3000, host: 'localhost' },
+                resolve: { alias: { '@': './src' } },
+            };
+        "#;
+        assert!(detect_plugins_key(source));
     }
 }
