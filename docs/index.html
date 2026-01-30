@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>howth - Fast TypeScript builds</title>
+    <title>howth - Fast TypeScript builds, Vite-compatible dev server</title>
+    <meta name="description" content="A complete JavaScript/TypeScript toolchain with Vite-compatible dev server, unbundled ES module serving, React Fast Refresh, and HMR.">
     <style>
         :root {
             --bg: #0d1117;
@@ -13,6 +14,7 @@
             --yellow: #d29922;
             --border: #30363d;
             --code-bg: #161b22;
+            --purple: #bc8cff;
         }
 
         * {
@@ -58,6 +60,7 @@
             justify-content: center;
             gap: 3rem;
             margin-top: 2rem;
+            flex-wrap: wrap;
         }
 
         .stat {
@@ -77,6 +80,27 @@
             letter-spacing: 0.05em;
         }
 
+        nav {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            padding: 1rem 0;
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+        }
+
+        nav a {
+            color: #8b949e;
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        nav a:hover {
+            color: var(--accent);
+        }
+
         section {
             padding: 3rem 0;
             border-bottom: 1px solid var(--border);
@@ -89,6 +113,13 @@
         h2 {
             font-size: 1.5rem;
             margin-bottom: 1.5rem;
+            color: var(--fg);
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            margin-bottom: 0.75rem;
+            margin-top: 1.5rem;
             color: var(--fg);
         }
 
@@ -152,6 +183,7 @@
             padding: 1.5rem;
             font-family: 'SF Mono', 'Fira Code', monospace;
             font-size: 0.9rem;
+            overflow-x: auto;
         }
 
         .install-block .comment {
@@ -178,6 +210,7 @@
         .feature h3 {
             font-size: 1rem;
             margin-bottom: 0.5rem;
+            margin-top: 0;
             display: flex;
             align-items: center;
             gap: 0.5rem;
@@ -200,6 +233,85 @@
         .philosophy strong {
             color: var(--fg);
             font-style: normal;
+        }
+
+        .diagram {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            line-height: 1.8;
+            overflow-x: auto;
+            color: #8b949e;
+        }
+
+        .diagram .highlight {
+            color: var(--green);
+            font-weight: 600;
+        }
+
+        .diagram .accent {
+            color: var(--accent);
+        }
+
+        .diagram .warn {
+            color: var(--yellow);
+        }
+
+        .route-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+            margin-top: 1rem;
+        }
+
+        .route-table th,
+        .route-table td {
+            padding: 0.6rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .route-table th {
+            color: #8b949e;
+            font-weight: 500;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+
+        .route-table code {
+            background: var(--code-bg);
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            color: var(--accent);
+        }
+
+        .code-block {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+            line-height: 1.6;
+            margin-top: 1rem;
+        }
+
+        .code-block .kw { color: var(--purple); }
+        .code-block .str { color: #a5d6ff; }
+        .code-block .fn { color: #d2a8ff; }
+        .code-block .cmt { color: #8b949e; }
+        .code-block .type { color: var(--yellow); }
+
+        .section-subtitle {
+            color: #8b949e;
+            margin-bottom: 1rem;
         }
 
         footer {
@@ -227,6 +339,21 @@
             font-size: 0.75rem;
             font-family: 'SF Mono', 'Fira Code', monospace;
         }
+
+        .badge-new {
+            display: inline-block;
+            padding: 0.15rem 0.4rem;
+            background: rgba(63, 185, 80, 0.15);
+            border: 1px solid rgba(63, 185, 80, 0.4);
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--green);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
     </style>
 </head>
 <body>
@@ -235,7 +362,7 @@
             <img src="earwig.png" alt="howth mascot" width="150" style="margin-bottom: 1rem;">
             <h1>howth</h1>
             <p class="tagline"><em>A commodius vicus of recirculation for your JavaScript.</em></p>
-            <p style="color: #6e7681; font-size: 0.9rem; margin-top: 0.5rem;">Fast TypeScript builds, bundling, and dev server</p>
+            <p style="color: #6e7681; font-size: 0.9rem; margin-top: 0.5rem;">Fast TypeScript builds, Vite-compatible dev server, and complete JS toolchain</p>
             <div class="hero-stats">
                 <div class="stat">
                     <div class="stat-value">1.2ms</div>
@@ -246,15 +373,324 @@
                     <div class="stat-label">Warm Build</div>
                 </div>
                 <div class="stat">
-                    <div class="stat-value">8.7x</div>
+                    <div class="stat-value">29x</div>
                     <div class="stat-label">Faster Tests</div>
                 </div>
             </div>
         </header>
 
+        <nav>
+            <a href="#quick-start">Quick Start</a>
+            <a href="#dev-server">Dev Server</a>
+            <a href="#hmr">HMR</a>
+            <a href="#react-refresh">React Refresh</a>
+            <a href="#plugins">Plugins</a>
+            <a href="#bundler">Bundler</a>
+            <a href="#benchmarks">Benchmarks</a>
+        </nav>
+
+        <section id="quick-start">
+            <h2>Quick Start</h2>
+            <div class="install-block">
+                <div><span class="comment"># Install</span></div>
+                <div><span class="command">cargo install howth</span></div>
+                <br>
+                <div><span class="comment"># Start the Vite-compatible dev server</span></div>
+                <div><span class="command">howth dev src/main.tsx --port 3000 --open</span></div>
+                <br>
+                <div><span class="comment"># Build your project</span></div>
+                <div><span class="command">howth build</span></div>
+                <br>
+                <div><span class="comment"># Bundle for production</span></div>
+                <div><span class="command">howth bundle src/index.ts -o dist/bundle.js --minify</span></div>
+                <br>
+                <div><span class="comment"># Run tests (29x faster than node)</span></div>
+                <div><span class="command">howth test</span></div>
+                <br>
+                <div><span class="comment"># Execute TypeScript directly</span></div>
+                <div><span class="command">howth run script.ts</span></div>
+            </div>
+        </section>
+
+        <section id="dev-server">
+            <h2>Vite-Compatible Dev Server <span class="badge-new">New</span></h2>
+            <p class="section-subtitle">Unbundled ES module serving with instant startup and per-module HMR.</p>
+
+            <p style="margin-bottom: 1.5rem;">
+                <code>howth dev</code> serves individual ES modules on demand instead of bundling everything.
+                Each file is transformed only when the browser requests it. Dependencies from <code>node_modules</code>
+                are pre-bundled on startup for efficient loading.
+            </p>
+
+            <h3>How it works</h3>
+            <div class="diagram">
+<span class="accent">Browser</span> requests <span class="highlight">GET /src/App.tsx</span>
+  <span class="warn">1.</span> <span class="highlight">Resolve</span>  &mdash; Plugin hooks + file system resolution
+  <span class="warn">2.</span> <span class="highlight">Load</span>     &mdash; Plugin hooks or read from disk
+  <span class="warn">3.</span> <span class="highlight">Transpile</span> &mdash; SWC converts TSX &rarr; JS (sub-millisecond)
+  <span class="warn">4.</span> <span class="highlight">Transform</span> &mdash; Plugin hooks (React Refresh, etc.)
+  <span class="warn">5.</span> <span class="highlight">Rewrite</span>   &mdash; Bare imports &rarr; <span class="accent">/@modules/react</span>
+  <span class="warn">6.</span> <span class="highlight">Serve</span>     &mdash; <span class="accent">application/javascript</span> with no-cache
+            </div>
+
+            <h3>Import rewriting</h3>
+            <p style="color: #8b949e; margin-bottom: 0.75rem;">All imports are rewritten so the browser can load them as native ES modules:</p>
+            <div class="code-block">
+<span class="cmt">// What you write:</span>
+<span class="kw">import</span> React <span class="kw">from</span> <span class="str">'react'</span>;
+<span class="kw">import</span> { Button } <span class="kw">from</span> <span class="str">'./Button'</span>;
+<span class="kw">import</span> <span class="str">'./styles.css'</span>;
+
+<span class="cmt">// What the browser receives:</span>
+<span class="kw">import</span> React <span class="kw">from</span> <span class="str">'/@modules/react'</span>;
+<span class="kw">import</span> { Button } <span class="kw">from</span> <span class="str">'/src/Button.tsx'</span>;
+<span class="kw">import</span> <span class="str">'/@style/src/styles.css'</span>;
+            </div>
+
+            <h3>Dependency pre-bundling</h3>
+            <p style="color: #8b949e;">
+                On startup, howth scans your entry point for <code>node_modules</code> imports and pre-bundles
+                each package into <code>.howth/deps/</code>. These are served at <code>/@modules/{pkg}</code> with
+                immutable cache headers &mdash; the browser caches them permanently, so only your source code
+                is re-fetched on changes.
+            </p>
+
+            <h3>Server routes</h3>
+            <table class="route-table">
+                <thead>
+                    <tr>
+                        <th>Route</th>
+                        <th>Purpose</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>/</code></td>
+                        <td>Index HTML with <code>&lt;script type="module"&gt;</code> entry point</td>
+                    </tr>
+                    <tr>
+                        <td><code>/__hmr</code></td>
+                        <td>WebSocket endpoint for hot module replacement</td>
+                    </tr>
+                    <tr>
+                        <td><code>/@hmr-client</code></td>
+                        <td>HMR client runtime (Vite-compatible <code>import.meta.hot</code> API)</td>
+                    </tr>
+                    <tr>
+                        <td><code>/@react-refresh</code></td>
+                        <td>React Fast Refresh runtime</td>
+                    </tr>
+                    <tr>
+                        <td><code>/@modules/{pkg}</code></td>
+                        <td>Pre-bundled npm dependencies (immutable cache)</td>
+                    </tr>
+                    <tr>
+                        <td><code>/@style/{path}</code></td>
+                        <td>CSS files served as JS modules (inject <code>&lt;style&gt;</code> tags)</td>
+                    </tr>
+                    <tr>
+                        <td><code>/{path}</code></td>
+                        <td>On-demand module transform or static file serving</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="hmr">
+            <h2>Hot Module Replacement <span class="badge-new">New</span></h2>
+            <p class="section-subtitle">Vite-compatible <code>import.meta.hot</code> API for granular updates without full page reloads.</p>
+
+            <p style="margin-bottom: 1rem;">
+                When you save a file, howth walks the module graph to find HMR boundaries &mdash;
+                modules that have called <code>import.meta.hot.accept()</code>. Only those modules
+                and their dependents are re-fetched and re-executed. If no boundary is found,
+                a full page reload is triggered.
+            </p>
+
+            <div class="code-block">
+<span class="cmt">// Self-accepting module (re-executes itself on update)</span>
+<span class="kw">if</span> (<span class="type">import</span>.meta.hot) {
+  <span class="type">import</span>.meta.hot.<span class="fn">accept</span>();
+}
+
+<span class="cmt">// Accept updates for specific dependencies</span>
+<span class="kw">if</span> (<span class="type">import</span>.meta.hot) {
+  <span class="type">import</span>.meta.hot.<span class="fn">accept</span>(<span class="str">'./utils.ts'</span>, (newModule) => {
+    console.<span class="fn">log</span>(<span class="str">'utils updated:'</span>, newModule);
+  });
+}
+
+<span class="cmt">// Cleanup before replacement</span>
+<span class="kw">if</span> (<span class="type">import</span>.meta.hot) {
+  <span class="type">import</span>.meta.hot.<span class="fn">dispose</span>((data) => {
+    <span class="fn">clearInterval</span>(data.timer);
+  });
+}
+
+<span class="cmt">// Persist data across updates</span>
+<span class="type">import</span>.meta.hot.data.count = count;
+
+<span class="cmt">// Force full reload</span>
+<span class="type">import</span>.meta.hot.<span class="fn">invalidate</span>();
+
+<span class="cmt">// Custom events (bidirectional with server)</span>
+<span class="type">import</span>.meta.hot.<span class="fn">on</span>(<span class="str">'my-event'</span>, (data) => { <span class="cmt">/* ... */</span> });
+<span class="type">import</span>.meta.hot.<span class="fn">send</span>(<span class="str">'my-event'</span>, { foo: <span class="str">'bar'</span> });
+            </div>
+        </section>
+
+        <section id="react-refresh">
+            <h2>React Fast Refresh <span class="badge-new">New</span></h2>
+            <p class="section-subtitle">Built-in, zero-config component-level HMR for React.</p>
+
+            <div class="features">
+                <div class="feature">
+                    <h3>Instant Updates</h3>
+                    <p>Edit a component and see the change immediately. No full page reload.</p>
+                </div>
+                <div class="feature">
+                    <h3>State Preserved</h3>
+                    <p>Component state (useState, useReducer) is kept across edits. No lost form input.</p>
+                </div>
+                <div class="feature">
+                    <h3>Zero Config</h3>
+                    <p>Enabled by default for .tsx and .jsx files. No plugins to install or configure.</p>
+                </div>
+                <div class="feature">
+                    <h3>SWC-Powered</h3>
+                    <p>Uses SWC for JSX transformation. Same compiler as Next.js and Parcel.</p>
+                </div>
+            </div>
+
+            <p style="color: #8b949e; margin-top: 1.5rem;">
+                howth detects React components in <code>.tsx</code> and <code>.jsx</code> files after SWC transpilation
+                and automatically injects the React Refresh preamble and footer. The refresh runtime is served at
+                <code>/@react-refresh</code> and initialized in the index HTML.
+            </p>
+
+            <h3>CSS Hot Reload</h3>
+            <p style="color: #8b949e;">
+                CSS files imported in JavaScript (<code>import './style.css'</code>) are served as ES modules that
+                inject <code>&lt;style&gt;</code> tags. On edit, the old style tag is removed and a new one is
+                injected &mdash; instant visual updates with no flash of unstyled content.
+            </p>
+        </section>
+
+        <section id="plugins">
+            <h2>Vite-Compatible Plugin System <span class="badge-new">New</span></h2>
+            <p class="section-subtitle">Rollup hooks + Vite dev server hooks. Existing Vite plugins can work without modification.</p>
+
+            <div class="features">
+                <div class="feature">
+                    <h3>Plugin Ordering</h3>
+                    <p><code>enforce: Pre | Normal | Post</code> controls when plugins run in the pipeline.</p>
+                </div>
+                <div class="feature">
+                    <h3>Config Hooks</h3>
+                    <p><code>config()</code> and <code>config_resolved()</code> let plugins modify and read dev server settings.</p>
+                </div>
+                <div class="feature">
+                    <h3>Server Hooks</h3>
+                    <p><code>configure_server()</code> adds custom middleware and routes to the dev server.</p>
+                </div>
+                <div class="feature">
+                    <h3>HTML Transform</h3>
+                    <p><code>transform_index_html()</code> injects scripts, meta tags, or modifies the HTML.</p>
+                </div>
+                <div class="feature">
+                    <h3>HMR Control</h3>
+                    <p><code>handle_hot_update()</code> gives plugins custom control over what happens on file changes.</p>
+                </div>
+                <div class="feature">
+                    <h3>Rollup Compat</h3>
+                    <p><code>resolve_id</code>, <code>load</code>, <code>transform</code>, <code>render_chunk</code> &mdash; all Rollup hooks work.</p>
+                </div>
+            </div>
+
+            <h3>Built-in plugins</h3>
+            <table class="route-table">
+                <thead>
+                    <tr>
+                        <th>Plugin</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>ReactRefreshPlugin</code></td>
+                        <td>React Fast Refresh (auto-enabled in dev)</td>
+                    </tr>
+                    <tr>
+                        <td><code>ReplacePlugin</code></td>
+                        <td>Global identifier replacement (e.g., <code>process.env.NODE_ENV</code>)</td>
+                    </tr>
+                    <tr>
+                        <td><code>AliasPlugin</code></td>
+                        <td>Import path aliases (<code>@/components</code> &rarr; <code>./src/components</code>)</td>
+                    </tr>
+                    <tr>
+                        <td><code>VirtualPlugin</code></td>
+                        <td>Create modules that don't exist on disk</td>
+                    </tr>
+                    <tr>
+                        <td><code>BannerPlugin</code></td>
+                        <td>Add header/footer to bundled output</td>
+                    </tr>
+                    <tr>
+                        <td><code>JsonPlugin</code></td>
+                        <td>Import JSON files as ES modules</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="bundler">
+            <h2>Bundler</h2>
+            <div class="features">
+                <div class="feature">
+                    <h3>Tree Shaking</h3>
+                    <p>Dead code elimination. Only include what's actually used in your bundle.</p>
+                </div>
+                <div class="feature">
+                    <h3>Code Splitting</h3>
+                    <p>Automatic chunk splitting on dynamic imports. Lazy load routes and features.</p>
+                </div>
+                <div class="feature">
+                    <h3>CSS + Assets</h3>
+                    <p>Bundle CSS with minification. Copy assets with content hashes for caching.</p>
+                </div>
+                <div class="feature">
+                    <h3>Multiple Formats</h3>
+                    <p>Output ESM, CommonJS, or IIFE. Target any JavaScript environment.</p>
+                </div>
+            </div>
+        </section>
+
         <section>
+            <h2>Build System</h2>
+            <div class="features">
+                <div class="feature">
+                    <h3>Parallel Hashing</h3>
+                    <p>Content-based caching with parallel file hashing. Only rebuild what changed.</p>
+                </div>
+                <div class="feature">
+                    <h3>Lazy Fingerprinting</h3>
+                    <p>Skip expensive output fingerprinting on first build. Computed lazily on cache hits.</p>
+                </div>
+                <div class="feature">
+                    <h3>Watch Mode</h3>
+                    <p>Transpile-only by default for instant feedback. Typecheck is opt-in.</p>
+                </div>
+                <div class="feature">
+                    <h3>SWC Backend</h3>
+                    <p>Uses SWC for transpilation. Rust-native, no Node.js overhead.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="benchmarks">
             <h2>Transpile Benchmarks</h2>
-            <p style="color: #8b949e; margin-bottom: 1rem;">TypeScript transpilation (Apple M3 Pro)</p>
+            <p class="section-subtitle">TypeScript transpilation (Apple M3 Pro)</p>
             <table class="benchmark-table">
                 <thead>
                     <tr>
@@ -294,7 +730,7 @@
 
         <section>
             <h2>Test Runner Benchmarks</h2>
-            <p style="color: #8b949e; margin-bottom: 1rem;">15 test files, 120 test cases (Apple M3 Pro)</p>
+            <p class="section-subtitle">500 files, 10,000 test cases (Apple M3 Pro)</p>
             <table class="benchmark-table">
                 <thead>
                     <tr>
@@ -308,31 +744,31 @@
                 <tbody>
                     <tr>
                         <td><strong>howth</strong></td>
-                        <td class="time fastest">19ms</td>
-                        <td class="time">20ms</td>
+                        <td class="time fastest">139ms</td>
+                        <td class="time">146ms</td>
                         <td>-</td>
                         <td>
                             <div class="bar-container">
-                                <div class="bar howth" style="width: 12%"></div>
+                                <div class="bar howth" style="width: 3%"></div>
                             </div>
                         </td>
                     </tr>
                     <tr>
                         <td>bun test</td>
-                        <td class="time">20ms</td>
-                        <td class="time">25ms</td>
-                        <td>56.8MB</td>
+                        <td class="time">368ms</td>
+                        <td class="time">394ms</td>
+                        <td>138MB</td>
                         <td>
                             <div class="bar-container">
-                                <div class="bar esbuild" style="width: 12%"></div>
+                                <div class="bar esbuild" style="width: 9%"></div>
                             </div>
                         </td>
                     </tr>
                     <tr>
                         <td>node --test</td>
-                        <td class="time">163ms</td>
-                        <td class="time">189ms</td>
-                        <td>56.8MB</td>
+                        <td class="time">4.08s</td>
+                        <td class="time">6.26s</td>
+                        <td>138MB</td>
                         <td>
                             <div class="bar-container">
                                 <div class="bar tsc" style="width: 100%"></div>
@@ -341,89 +777,22 @@
                     </tr>
                 </tbody>
             </table>
-            <p style="color: #8b949e; margin-top: 0.75rem; font-size: 0.875rem;">howth is <strong style="color: var(--green);">8.7x faster</strong> than node and <strong style="color: var(--green);">1.05x faster</strong> than bun.</p>
-        </section>
-
-        <section>
-            <h2>Quick Start</h2>
-            <div class="install-block">
-                <div><span class="comment"># Install (coming soon)</span></div>
-                <div><span class="command">cargo install howth</span></div>
-                <br>
-                <div><span class="comment"># Build your project</span></div>
-                <div><span class="command">howth build</span></div>
-                <br>
-                <div><span class="comment"># Watch mode (transpile-only for speed)</span></div>
-                <div><span class="command">howth build --watch</span></div>
-                <br>
-                <div><span class="comment"># Bundle for production</span></div>
-                <div><span class="command">howth bundle src/index.ts -o dist/bundle.js</span></div>
-                <br>
-                <div><span class="comment"># Dev server with HMR</span></div>
-                <div><span class="command">howth dev src/index.ts --port 3000</span></div>
-            </div>
-        </section>
-
-        <section>
-            <h2>Build System</h2>
-            <div class="features">
-                <div class="feature">
-                    <h3>Parallel Hashing</h3>
-                    <p>Content-based caching with parallel file hashing. Only rebuild what changed.</p>
-                </div>
-                <div class="feature">
-                    <h3>Lazy Fingerprinting</h3>
-                    <p>Skip expensive output fingerprinting on first build. Computed lazily on cache hits.</p>
-                </div>
-                <div class="feature">
-                    <h3>Watch Mode</h3>
-                    <p>Transpile-only by default for instant feedback. Typecheck is opt-in.</p>
-                </div>
-                <div class="feature">
-                    <h3>SWC Backend</h3>
-                    <p>Uses SWC for transpilation. Rust-native, no Node.js overhead.</p>
-                </div>
-            </div>
-        </section>
-
-        <section>
-            <h2>Bundler</h2>
-            <div class="features">
-                <div class="feature">
-                    <h3>Tree Shaking</h3>
-                    <p>Dead code elimination. Only include what's actually used in your bundle.</p>
-                </div>
-                <div class="feature">
-                    <h3>Code Splitting</h3>
-                    <p>Automatic chunk splitting on dynamic imports. Lazy load routes and features.</p>
-                </div>
-                <div class="feature">
-                    <h3>Dev Server + HMR</h3>
-                    <p>Built-in dev server with hot module replacement. See changes instantly.</p>
-                </div>
-                <div class="feature">
-                    <h3>CSS + Assets</h3>
-                    <p>Bundle CSS with minification. Copy assets with content hashes for caching.</p>
-                </div>
-                <div class="feature">
-                    <h3>Plugin System</h3>
-                    <p>Rollup-compatible plugins. Built-in: replace, alias, banner, virtual modules.</p>
-                </div>
-                <div class="feature">
-                    <h3>Multiple Formats</h3>
-                    <p>Output ESM, CommonJS, or IIFE. Target any JavaScript environment.</p>
-                </div>
-            </div>
+            <p style="color: #8b949e; margin-top: 0.75rem; font-size: 0.875rem;">howth is <strong style="color: var(--green);">29x faster</strong> than node and <strong style="color: var(--green);">2.7x faster</strong> than bun.</p>
         </section>
 
         <section>
             <h2>Philosophy</h2>
             <div class="philosophy">
                 <p>
-                    <strong>howth</strong> and Bun share the same philosophy: in watch mode,
-                    transpile-only is the default for instant feedback. Type checking is opt-in
-                    (<code>--watch typecheck</code>) because correctness can wait for a
-                    separate terminal or CI.
+                    <strong>howth</strong> takes a Vite-like approach to development: serve individual
+                    ES modules on demand, transpile only what the browser requests, and pre-bundle
+                    dependencies once on startup. The result is instant server start, sub-millisecond
+                    HMR updates, and a plugin system that works with the Vite ecosystem.
+                </p>
+                <p style="margin-top: 1rem;">
+                    For production, <strong>howth bundle</strong> produces optimized output with tree
+                    shaking, code splitting, and minification &mdash; the same plugin hooks work in
+                    both dev and build.
                 </p>
             </div>
         </section>

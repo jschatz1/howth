@@ -19,7 +19,7 @@ howth replaces the patchwork of tools in a typical JS/TS project with a single b
 - **`howth test`** — Run tests 29x faster than `node --test` and 2.7x faster than `bun test` at scale.
 - **`howth bundle`** — Tree shaking, code splitting, CSS bundling, minification. Rollup-compatible plugin system.
 - **`howth install`** — Package management with lockfile support, integrity checking, and offline caching.
-- **`howth dev`** — Dev server with hot module replacement.
+- **`howth dev`** — Vite-compatible dev server with unbundled ES module serving, HMR, and React Fast Refresh.
 
 All of these share a single long-running daemon process that keeps compilers, caches, and a warm V8 runtime in memory. The first invocation pays a one-time startup cost; every subsequent command is near-instant because the daemon is already running.
 
@@ -59,7 +59,7 @@ The connection runs deeper: deterministic builds are about always arriving back 
 - Test runner (29x faster than node, 2.7x faster than bun at 10k tests)
 - Package installation and dependency management
 - Bundler with tree shaking and code splitting
-- Dev server with HMR
+- Vite-compatible dev server with unbundled module serving, HMR, and React Fast Refresh
 - Native V8 runtime (via deno_core) with 85% Node.js API coverage
 - Long-running daemon with IPC for persistent caching
 
@@ -313,8 +313,9 @@ howth build --watch          # Watch mode
 # Run tests
 howth test
 
-# Start dev server
-howth dev src/index.ts --port 3000
+# Start dev server (Vite-compatible, unbundled module serving)
+howth dev src/main.tsx --port 3000
+howth dev src/main.tsx --port 3000 --open   # Open browser
 
 # Global flags
 howth -v run script.js       # DEBUG logging
@@ -322,6 +323,163 @@ howth -vv run script.js      # TRACE logging
 howth --json run script.js   # Stable JSON log output
 howth --cwd /path run script.js  # Override working directory
 ```
+
+## Dev Server
+
+`howth dev` is a Vite-compatible development server that serves individual ES modules on demand instead of bundling everything into a single file. This means instant server start, fast HMR updates, and compatibility with the Vite plugin ecosystem.
+
+### Quick Start
+
+```bash
+# Start the dev server
+howth dev src/main.tsx
+
+# With options
+howth dev src/main.tsx --port 3000 --host localhost --open
+```
+
+This starts a server at `http://localhost:3000` that:
+1. Serves your entry point as an ES module via `<script type="module">`
+2. Transpiles TypeScript/JSX on demand using SWC
+3. Rewrites bare imports to pre-bundled dependencies
+4. Enables hot module replacement (HMR) via WebSocket
+
+### How It Works
+
+Unlike traditional dev servers that bundle your entire app on every change, howth serves each module individually:
+
+```
+Browser requests GET /src/App.tsx
+  → Resolve: plugin hooks + file system
+  → Load: plugin hooks or read from disk
+  → Transpile: SWC converts TSX → JS
+  → Transform: plugin hooks (e.g., React Refresh)
+  → Rewrite imports: bare specifiers → /@modules/pkg
+  → Serve as application/javascript
+```
+
+**Dependency pre-bundling**: On startup, howth scans your entry point for `node_modules` imports (like `react`, `lodash`) and pre-bundles each one into `.howth/deps/`. These are served at `/@modules/{pkg}` with immutable cache headers, so the browser caches them permanently.
+
+**Import rewriting**: All imports are rewritten so the browser can load them:
+- `import React from 'react'` → `import React from '/@modules/react'`
+- `import './App.css'` → `import '/@style/src/App.css'`
+- `import { Button } from './Button'` → `import { Button } from '/src/Button.tsx'`
+
+### Hot Module Replacement (HMR)
+
+howth implements the Vite-compatible `import.meta.hot` API. When you save a file, only that module (and its accepting boundaries) are re-fetched — no full page reload needed.
+
+```typescript
+// Your component gets HMR automatically with React Fast Refresh.
+// For non-React code, use the API directly:
+
+if (import.meta.hot) {
+  // Accept self-updates (module re-executes in place)
+  import.meta.hot.accept();
+
+  // Accept updates for specific dependencies
+  import.meta.hot.accept('./utils.ts', (newModule) => {
+    console.log('utils updated:', newModule);
+  });
+
+  // Cleanup before replacement
+  import.meta.hot.dispose((data) => {
+    clearInterval(data.timer);
+  });
+
+  // Persist data across updates
+  import.meta.hot.data.count = count;
+
+  // Force full reload if this module can't self-update
+  import.meta.hot.invalidate();
+
+  // Custom events (bidirectional with server)
+  import.meta.hot.on('my-event', (data) => { /* ... */ });
+  import.meta.hot.send('my-event', { foo: 'bar' });
+}
+```
+
+### React Fast Refresh
+
+React Fast Refresh is built in and enabled by default. When you edit a React component:
+- The component re-renders with new code
+- State is preserved (no reset)
+- No full page reload
+- Works with function components and hooks
+
+No configuration needed — howth detects `.tsx`/`.jsx` files with JSX output and automatically injects the React Refresh runtime.
+
+### CSS Support
+
+CSS files imported in JavaScript are served as ES modules that inject `<style>` tags:
+
+```typescript
+import './styles.css';  // Injects a <style> tag into <head>
+```
+
+CSS updates are applied instantly via HMR — the old `<style>` tag is removed and a new one is injected without a page reload.
+
+### Vite-Compatible Plugin System
+
+howth supports Vite-compatible plugin hooks so existing Vite plugins can work without modification. Plugins can hook into the dev server lifecycle:
+
+```rust
+use fastnode_core::bundler::{Plugin, PluginEnforce, DevConfig, ServerContext, HotUpdateContext};
+
+impl Plugin for MyPlugin {
+    fn name(&self) -> &str { "my-plugin" }
+
+    // Control execution order (Pre runs before Normal, Post runs after)
+    fn enforce(&self) -> PluginEnforce { PluginEnforce::Pre }
+
+    // Modify dev config before server starts
+    fn config(&self, config: &mut DevConfig) -> HookResult<()> { Ok(()) }
+
+    // Read final resolved config
+    fn config_resolved(&self, config: &DevConfig) -> HookResult<()> { Ok(()) }
+
+    // Add middleware/routes to the dev server
+    fn configure_server(&self, server: &mut ServerContext) -> HookResult<()> { Ok(()) }
+
+    // Transform the index HTML (inject scripts, modify DOM)
+    fn transform_index_html(&self, html: &str) -> HookResult<Option<String>> { Ok(None) }
+
+    // Custom HMR logic when files change
+    fn handle_hot_update(&self, ctx: &HotUpdateContext) -> HookResult<Option<Vec<String>>> {
+        Ok(None)
+    }
+
+    // Standard Rollup-compatible hooks also work:
+    // resolve_id, load, transform, render_chunk, build_start, build_end
+}
+```
+
+**Plugin ordering**: Plugins declare `enforce()` returning `Pre`, `Normal` (default), or `Post`. Pre-plugins run first (alias resolution), normal plugins run in insertion order, post-plugins run last (minification, React Refresh injection).
+
+### Dev Server Routes
+
+| Route | Purpose |
+|-------|---------|
+| `/` | Serves `index.html` with entry point `<script type="module">` |
+| `/__hmr` | WebSocket endpoint for HMR |
+| `/@hmr-client` | HMR client runtime (Vite-compatible `import.meta.hot` API) |
+| `/@react-refresh` | React Refresh runtime |
+| `/@modules/{pkg}` | Pre-bundled npm dependencies |
+| `/@style/{path}` | CSS files served as JS modules |
+| `/{path}` | On-demand module transform (TS/JSX → JS) or static files |
+
+### Configuration
+
+The dev server currently uses sensible defaults:
+
+| Option | Default | CLI Flag |
+|--------|---------|----------|
+| Port | 3000 | `--port` |
+| Host | localhost | `--host` |
+| Open browser | false | `--open` |
+| Entry point | (required) | positional arg |
+
+Plugins can modify the configuration via the `config` hook before the server starts.
 
 ## Doctor Command
 

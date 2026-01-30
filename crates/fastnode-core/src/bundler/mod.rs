@@ -43,6 +43,7 @@ mod chunks;
 mod emit;
 mod graph;
 mod plugin;
+pub mod plugins;
 mod resolve;
 mod treeshake;
 
@@ -54,16 +55,22 @@ pub use plugin::{
     AliasPlugin,
     BannerPlugin,
     ChunkInfo,
+    DevConfig,
     HookResult,
+    HotUpdateContext,
     JsonPlugin,
     LoadResult,
+    MiddlewareResponse,
     Plugin,
     PluginContainer,
     PluginContext,
+    PluginEnforce,
     PluginError,
     // Built-in plugins
     ReplacePlugin,
     ResolveIdResult,
+    ServerContext,
+    ServerMiddleware,
     TransformResult,
     VirtualPlugin,
 };

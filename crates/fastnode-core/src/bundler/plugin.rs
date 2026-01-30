@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Result type for plugin hooks.
 pub type HookResult<T> = Result<T, PluginError>;
@@ -151,6 +152,110 @@ impl TransformResult {
     }
 }
 
+/// Plugin enforcement ordering.
+///
+/// Controls where a plugin runs relative to others in the pipeline.
+/// Mirrors Vite's `enforce` option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PluginEnforce {
+    /// Runs before normal plugins (e.g., alias resolution).
+    Pre,
+    /// Default ordering (no enforcement).
+    Normal,
+    /// Runs after normal plugins (e.g., minification).
+    Post,
+}
+
+impl Default for PluginEnforce {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+/// Development server configuration.
+///
+/// Passed to the `config` hook so plugins can modify dev server settings.
+#[derive(Debug, Clone)]
+pub struct DevConfig {
+    /// Root directory of the project.
+    pub root: PathBuf,
+    /// Dev server port.
+    pub port: u16,
+    /// Dev server host.
+    pub host: String,
+    /// Base public path.
+    pub base: String,
+    /// Custom define replacements (like Vite's `define`).
+    pub define: HashMap<String, String>,
+}
+
+impl Default for DevConfig {
+    fn default() -> Self {
+        Self {
+            root: std::env::current_dir().unwrap_or_default(),
+            port: 3000,
+            host: "localhost".to_string(),
+            base: "/".to_string(),
+            define: HashMap::new(),
+        }
+    }
+}
+
+/// Context for the dev server, passed to `configure_server` hook.
+///
+/// Allows plugins to register middleware and custom route handlers.
+pub struct ServerContext {
+    /// Project root.
+    pub root: PathBuf,
+    /// Dev server configuration.
+    pub config: DevConfig,
+    /// Registered middleware (pre-handlers that run before internal handlers).
+    pub middlewares: Vec<ServerMiddleware>,
+}
+
+/// A middleware function registered by a plugin.
+pub struct ServerMiddleware {
+    /// Name for debugging.
+    pub name: String,
+    /// The handler function.
+    pub handler: Arc<dyn Fn(&str, &str) -> Option<MiddlewareResponse> + Send + Sync>,
+}
+
+/// Response from a middleware.
+#[derive(Debug, Clone)]
+pub struct MiddlewareResponse {
+    /// HTTP status code.
+    pub status: u16,
+    /// Content-Type header.
+    pub content_type: String,
+    /// Response body.
+    pub body: String,
+}
+
+impl ServerContext {
+    /// Create a new server context.
+    pub fn new(root: PathBuf, config: DevConfig) -> Self {
+        Self {
+            root,
+            config,
+            middlewares: Vec::new(),
+        }
+    }
+}
+
+/// Context for hot module update events.
+///
+/// Passed to the `handle_hot_update` hook when a file changes.
+#[derive(Debug, Clone)]
+pub struct HotUpdateContext {
+    /// The file that changed (absolute path).
+    pub file: String,
+    /// Timestamp of the update.
+    pub timestamp: u64,
+    /// Modules affected by this change.
+    pub modules: Vec<String>,
+}
+
 /// Chunk information passed to renderChunk.
 #[derive(Debug, Clone)]
 pub struct ChunkInfo {
@@ -167,9 +272,30 @@ pub struct ChunkInfo {
 /// Implement this trait to create custom plugins. All methods have default
 /// implementations that do nothing, so you only need to implement the hooks
 /// you care about.
+///
+/// ## Vite-Compatible Hooks
+///
+/// In addition to Rollup-compatible hooks (`resolve_id`, `load`, `transform`,
+/// `render_chunk`, `build_start`, `build_end`), this trait supports Vite-specific
+/// hooks for dev server integration:
+///
+/// - `enforce` — Plugin ordering (`Pre`, `Normal`, `Post`)
+/// - `config` — Modify dev config before resolution
+/// - `config_resolved` — Read final resolved config
+/// - `configure_server` — Add middleware/routes to dev server
+/// - `transform_index_html` — Transform the index HTML page
+/// - `handle_hot_update` — Custom HMR logic on file changes
 pub trait Plugin: Send + Sync {
     /// Plugin name for debugging and error messages.
     fn name(&self) -> &str;
+
+    /// Plugin ordering: `Pre`, `Normal` (default), or `Post`.
+    ///
+    /// `Pre` plugins run before normal plugins (useful for alias resolution).
+    /// `Post` plugins run after normal plugins (useful for minification).
+    fn enforce(&self) -> PluginEnforce {
+        PluginEnforce::Normal
+    }
 
     /// Called at the start of the build.
     fn build_start(&self, _ctx: &PluginContext) -> HookResult<()> {
@@ -226,12 +352,64 @@ pub trait Plugin: Send + Sync {
     fn build_end(&self, _ctx: &PluginContext) -> HookResult<()> {
         Ok(())
     }
+
+    // ========================================================================
+    // Vite-compatible hooks (dev server only)
+    // ========================================================================
+
+    /// Modify the dev config before it is resolved.
+    ///
+    /// Called once at dev server startup. Plugins can mutate the config.
+    fn config(&self, _config: &mut DevConfig) -> HookResult<()> {
+        Ok(())
+    }
+
+    /// Called after config is resolved (read-only).
+    ///
+    /// Plugins can store the final config for later use.
+    fn config_resolved(&self, _config: &DevConfig) -> HookResult<()> {
+        Ok(())
+    }
+
+    /// Configure the dev server.
+    ///
+    /// Called once at dev server startup. Plugins can add middleware,
+    /// custom routes, or other server-side logic.
+    fn configure_server(&self, _server: &mut ServerContext) -> HookResult<()> {
+        Ok(())
+    }
+
+    /// Transform the index HTML page.
+    ///
+    /// Called when the dev server serves the index HTML. Plugins can inject
+    /// scripts, stylesheets, or modify the HTML in any way.
+    ///
+    /// Return `Some(html)` to replace the HTML, or `None` to pass through.
+    fn transform_index_html(&self, _html: &str) -> HookResult<Option<String>> {
+        Ok(None)
+    }
+
+    /// Handle a hot module update.
+    ///
+    /// Called when a file changes during dev. Plugins can filter or modify
+    /// which modules are considered affected.
+    ///
+    /// Return `Some(modules)` to override the affected modules list,
+    /// or `None` to use the default behavior.
+    fn handle_hot_update(&self, _ctx: &HotUpdateContext) -> HookResult<Option<Vec<String>>> {
+        Ok(None)
+    }
 }
 
 /// A container for managing multiple plugins.
+///
+/// Plugins are sorted by their `enforce()` ordering: `Pre` → `Normal` → `Post`.
+/// Within the same enforcement level, insertion order is preserved.
 pub struct PluginContainer {
     plugins: Vec<Box<dyn Plugin>>,
     ctx: PluginContext,
+    /// Whether plugins need re-sorting after insertion.
+    needs_sort: bool,
 }
 
 impl PluginContainer {
@@ -240,12 +418,26 @@ impl PluginContainer {
         Self {
             plugins: Vec::new(),
             ctx: PluginContext::new(cwd),
+            needs_sort: false,
         }
     }
 
-    /// Add a plugin.
+    /// Add a plugin. Plugins are automatically sorted by enforce order.
     pub fn add(&mut self, plugin: Box<dyn Plugin>) {
+        let enforce = plugin.enforce();
+        if enforce != PluginEnforce::Normal {
+            self.needs_sort = true;
+        }
         self.plugins.push(plugin);
+    }
+
+    /// Sort plugins by enforce order (Pre → Normal → Post).
+    /// Uses a stable sort to preserve insertion order within each level.
+    fn ensure_sorted(&mut self) {
+        if self.needs_sort {
+            self.plugins.sort_by_key(|p| p.enforce());
+            self.needs_sort = false;
+        }
     }
 
     /// Set watch mode.
@@ -256,6 +448,11 @@ impl PluginContainer {
     /// Get the context (for modification).
     pub fn context_mut(&mut self) -> &mut PluginContext {
         &mut self.ctx
+    }
+
+    /// Get the context (read-only).
+    pub fn context(&self) -> &PluginContext {
+        &self.ctx
     }
 
     /// Call build_start on all plugins.
@@ -326,6 +523,59 @@ impl PluginContainer {
     /// Check if any plugins are registered.
     pub fn has_plugins(&self) -> bool {
         !self.plugins.is_empty()
+    }
+
+    // ========================================================================
+    // Vite-compatible hook dispatchers
+    // ========================================================================
+
+    /// Call `config` on all plugins, letting each mutate the config.
+    pub fn call_config(&self, config: &mut DevConfig) -> HookResult<()> {
+        for plugin in &self.plugins {
+            plugin.config(config)?;
+        }
+        Ok(())
+    }
+
+    /// Call `config_resolved` on all plugins.
+    pub fn call_config_resolved(&self, config: &DevConfig) -> HookResult<()> {
+        for plugin in &self.plugins {
+            plugin.config_resolved(config)?;
+        }
+        Ok(())
+    }
+
+    /// Call `configure_server` on all plugins.
+    pub fn call_configure_server(&self, server: &mut ServerContext) -> HookResult<()> {
+        for plugin in &self.plugins {
+            plugin.configure_server(server)?;
+        }
+        Ok(())
+    }
+
+    /// Call `transform_index_html` on all plugins (chained).
+    pub fn call_transform_index_html(&self, html: &str) -> HookResult<String> {
+        let mut current = html.to_string();
+        for plugin in &self.plugins {
+            if let Some(transformed) = plugin.transform_index_html(&current)? {
+                current = transformed;
+            }
+        }
+        Ok(current)
+    }
+
+    /// Call `handle_hot_update` on all plugins.
+    /// Returns the first non-None result, or None if no plugin handled it.
+    pub fn call_handle_hot_update(
+        &self,
+        ctx: &HotUpdateContext,
+    ) -> HookResult<Option<Vec<String>>> {
+        for plugin in &self.plugins {
+            if let Some(modules) = plugin.handle_hot_update(ctx)? {
+                return Ok(Some(modules));
+            }
+        }
+        Ok(None)
     }
 }
 
