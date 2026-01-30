@@ -221,17 +221,49 @@ globalThis.__howthExtractPlugins = () => {
   })));
 };
 
+// Pending promise from the last async hook call.
+globalThis.__howthPendingPromise = null;
+globalThis.__howthAsyncResult = 'null';
+
 globalThis.__howthCallHook = (pluginIdx, hookName, argsJson) => {
   const plugin = globalThis.__howthPlugins[pluginIdx];
   if (!plugin || typeof plugin[hookName] !== 'function') return 'null';
   try {
     const args = argsJson ? JSON.parse(argsJson) : [];
     const result = plugin[hookName](...args);
+    // Detect Promise/thenable returns — stash the promise and signal caller
+    if (result && typeof result.then === 'function') {
+      globalThis.__howthPendingPromise = result;
+      return '__ASYNC__';
+    }
     if (result === undefined || result === null) return 'null';
     if (typeof result === 'string') return JSON.stringify({ code: result });
     return JSON.stringify(result);
   } catch (err) {
     return JSON.stringify({ __error: err.message || String(err) });
+  }
+};
+
+// Async hook resolver: awaits the stashed Promise and stores the result.
+// Called from Rust when __howthCallHook returns '__ASYNC__'.
+globalThis.__howthResolveAsync = async () => {
+  const promise = globalThis.__howthPendingPromise;
+  globalThis.__howthPendingPromise = null;
+  if (!promise) {
+    globalThis.__howthAsyncResult = 'null';
+    return;
+  }
+  try {
+    const result = await promise;
+    if (result === undefined || result === null) {
+      globalThis.__howthAsyncResult = 'null';
+    } else if (typeof result === 'string') {
+      globalThis.__howthAsyncResult = JSON.stringify({ code: result });
+    } else {
+      globalThis.__howthAsyncResult = JSON.stringify(result);
+    }
+  } catch (err) {
+    globalThis.__howthAsyncResult = JSON.stringify({ __error: err.message || String(err) });
   }
 };
 "#;
@@ -308,7 +340,10 @@ async fn run_v8_thread(
         .send(Ok(plugin_defs))
         .map_err(|_| "Main thread disconnected before receiving plugin metadata".to_string())?;
 
-    // Enter the request/response loop
+    // Enter the request/response loop.
+    // req_rx.recv() blocks the thread until a request arrives.
+    // After receiving, we're back in an async context and can await
+    // the event loop for async (Promise-returning) hooks.
     loop {
         let request = match req_rx.recv() {
             Ok(req) => req,
@@ -318,7 +353,7 @@ async fn run_v8_thread(
         match request {
             PluginRequest::Shutdown => break,
             PluginRequest::CallHook { plugin_idx, hook } => {
-                let response = execute_hook(&mut runtime, plugin_idx, &hook);
+                let response = execute_hook(&mut runtime, plugin_idx, &hook).await;
                 if resp_tx.send(response).is_err() {
                     break; // Main thread disconnected
                 }
@@ -349,13 +384,9 @@ fn parse_plugin_metadata(json: &str) -> Result<Vec<JsPluginDef>, String> {
         .collect())
 }
 
-/// Execute a single hook call in the V8 runtime.
-fn execute_hook(
-    runtime: &mut fastnode_runtime::Runtime,
-    plugin_idx: usize,
-    hook: &HookCall,
-) -> PluginResponse {
-    let (hook_name, args_json) = match hook {
+/// Build the JS argument string for a hook call.
+fn hook_call_args(hook: &HookCall) -> (&'static str, String) {
+    match hook {
         HookCall::ResolveId { source, importer } => {
             let args = serde_json::json!([source, importer]);
             ("resolveId", args.to_string())
@@ -374,9 +405,29 @@ fn execute_hook(
         }
         HookCall::BuildStart => ("buildStart", "[]".to_string()),
         HookCall::BuildEnd => ("buildEnd", "[]".to_string()),
-    };
+    }
+}
 
-    let escaped_args = args_json.replace('\\', "\\\\").replace('\'', "\\'");
+/// Escape a JSON string for embedding in a JS single-quoted string literal.
+fn escape_for_js(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// Execute a single hook call in the V8 runtime.
+///
+/// Tries the sync path first (`__howthCallHook`). If the hook returns a Promise
+/// (detected by the `__ASYNC__` sentinel), falls back to the async path:
+/// calls `__howthResolveAsync`, runs the V8 event loop to resolve the Promise,
+/// then reads the result from `globalThis.__howthAsyncResult`.
+async fn execute_hook(
+    runtime: &mut fastnode_runtime::Runtime,
+    plugin_idx: usize,
+    hook: &HookCall,
+) -> PluginResponse {
+    let (hook_name, args_json) = hook_call_args(hook);
+    let escaped_args = escape_for_js(&args_json);
+
+    // Try sync path first
     let js_code = format!(
         "globalThis.__howthCallHook({}, '{}', '{}')",
         plugin_idx, hook_name, escaped_args
@@ -387,7 +438,51 @@ fn execute_hook(
         Err(e) => return PluginResponse::Error(format!("V8 eval error: {}", e)),
     };
 
-    // Parse the JSON response
+    // If the hook returned a Promise, use the async path
+    if result_str == "__ASYNC__" {
+        return execute_hook_async(runtime, hook).await;
+    }
+
+    // Parse the sync JSON response
+    parse_hook_response(&result_str, hook)
+}
+
+/// Async fallback: resolve a Promise-returning hook via the V8 event loop.
+///
+/// The Promise was already stashed in `globalThis.__howthPendingPromise` by
+/// `__howthCallHook`. This function calls `__howthResolveAsync()` which
+/// awaits that promise and writes the result to `__howthAsyncResult`.
+async fn execute_hook_async(
+    runtime: &mut fastnode_runtime::Runtime,
+    hook: &HookCall,
+) -> PluginResponse {
+    // Reset the async result slot
+    if let Err(e) = runtime
+        .execute_script("globalThis.__howthAsyncResult = 'null';")
+        .await
+    {
+        return PluginResponse::Error(format!("V8 async reset error: {}", e));
+    }
+
+    // Call the async resolver (awaits the stashed Promise)
+    if let Err(e) = runtime
+        .execute_script("globalThis.__howthResolveAsync()")
+        .await
+    {
+        return PluginResponse::Error(format!("V8 async call error: {}", e));
+    }
+
+    // Run the event loop to resolve the Promise
+    if let Err(e) = runtime.run_event_loop().await {
+        return PluginResponse::Error(format!("V8 event loop error: {}", e));
+    }
+
+    // Read the resolved result
+    let result_str = match runtime.eval_to_string("globalThis.__howthAsyncResult") {
+        Ok(s) => s,
+        Err(e) => return PluginResponse::Error(format!("V8 async result read error: {}", e)),
+    };
+
     parse_hook_response(&result_str, hook)
 }
 
@@ -1822,6 +1917,554 @@ mod tests {
                 assert_eq!(result.code, "hello");
             }
             other => panic!("Expected Transform(Some), got {:?}", other),
+        }
+    }
+
+    // ========================================================================
+    // Async hook tests (Promise-returning plugins)
+    // ========================================================================
+
+    /// 1: Async transform hook that returns a Promise resolving to a string.
+    #[test]
+    fn test_js_plugin_host_async_transform_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-string',
+                    async transform(code, id) {
+                        return 'async-result';
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "original".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Transform(Some(result)) => {
+                assert_eq!(result.code, "async-result");
+            }
+            other => panic!("Expected Transform(Some), got {:?}", other),
+        }
+    }
+
+    /// 1: Async transform hook returning an object with code and map.
+    #[test]
+    fn test_js_plugin_host_async_transform_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-obj',
+                    async transform(code, id) {
+                        return { code: code.replace('X', 'Y'), map: 'async-map' };
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "const X = 1;".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Transform(Some(result)) => {
+                assert_eq!(result.code, "const Y = 1;");
+                assert_eq!(result.map.as_deref(), Some("async-map"));
+            }
+            other => panic!("Expected Transform(Some), got {:?}", other),
+        }
+    }
+
+    /// 1: Async resolveId hook.
+    #[test]
+    fn test_js_plugin_host_async_resolve_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-resolve',
+                    async resolveId(source, importer) {
+                        if (source === 'virtual:async') {
+                            return { id: '\0virtual:async' };
+                        }
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        // Hit
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::ResolveId {
+                    source: "virtual:async".to_string(),
+                    importer: None,
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::ResolveId(Some(result)) => {
+                assert_eq!(result.id, "\0virtual:async");
+            }
+            other => panic!("Expected ResolveId(Some), got {:?}", other),
+        }
+
+        // Miss (returns undefined → null)
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::ResolveId {
+                    source: "react".to_string(),
+                    importer: None,
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::ResolveId(None) => {}
+            other => panic!("Expected ResolveId(None), got {:?}", other),
+        }
+    }
+
+    /// 1: Async load hook.
+    #[test]
+    fn test_js_plugin_host_async_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-load',
+                    async load(id) {
+                        if (id === '\0virtual:data') {
+                            return { code: 'export default { value: 42 };' };
+                        }
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Load {
+                    id: "\0virtual:data".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Load(Some(result)) => {
+                assert!(result.code.contains("42"));
+            }
+            other => panic!("Expected Load(Some), got {:?}", other),
+        }
+    }
+
+    /// 1: Async transformIndexHtml hook.
+    #[test]
+    fn test_js_plugin_host_async_transform_index_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-html',
+                    async transformIndexHtml(html) {
+                        return { code: html.replace('</head>', '<meta name="async">\n</head>') };
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::TransformIndexHtml {
+                    html: "<html><head></head></html>".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::TransformIndexHtml(Some(html)) => {
+                assert!(html.contains("<meta name=\"async\">"));
+            }
+            other => panic!("Expected TransformIndexHtml(Some), got {:?}", other),
+        }
+    }
+
+    /// 0: Async hook that resolves to null/undefined.
+    #[test]
+    fn test_js_plugin_host_async_returns_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-null',
+                    async transform(code, id) {
+                        return null;
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "x".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Transform(None) => {}
+            other => panic!("Expected Transform(None), got {:?}", other),
+        }
+    }
+
+    /// 0: Async hook that resolves to undefined (implicit return).
+    #[test]
+    fn test_js_plugin_host_async_returns_undefined() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-undef',
+                    async transform(code, id) {
+                        // no return
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "x".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Transform(None) => {}
+            other => panic!("Expected Transform(None), got {:?}", other),
+        }
+    }
+
+    /// -1: Async hook that rejects (throws).
+    #[test]
+    fn test_js_plugin_host_async_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-error',
+                    async transform(code, id) {
+                        throw new Error('Async transform failed!');
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "x".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Error(msg) => {
+                assert!(
+                    msg.contains("Async transform failed!"),
+                    "Got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    /// -1: Async hook that rejects with a non-Error value.
+    #[test]
+    fn test_js_plugin_host_async_rejects_non_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-throw-string',
+                    async transform(code, id) {
+                        throw 'string error';
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "x".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Error(msg) => {
+                assert!(
+                    msg.contains("string error"),
+                    "Got: {}",
+                    msg
+                );
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    /// 1: Mix of sync and async hooks on the same plugin.
+    #[test]
+    fn test_js_plugin_host_mixed_sync_async() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'mixed',
+                    resolveId(source) {
+                        if (source === 'sync:mod') return { id: '\0sync:mod' };
+                    },
+                    async load(id) {
+                        if (id === '\0sync:mod') {
+                            return { code: 'export default "loaded async";' };
+                        }
+                    },
+                    transform(code, id) {
+                        return code.replace('SYNC', 'REPLACED');
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        // Sync resolveId
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::ResolveId {
+                    source: "sync:mod".to_string(),
+                    importer: None,
+                },
+            })
+            .unwrap();
+        match resp {
+            PluginResponse::ResolveId(Some(r)) => assert_eq!(r.id, "\0sync:mod"),
+            other => panic!("Expected ResolveId(Some), got {:?}", other),
+        }
+
+        // Async load
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Load {
+                    id: "\0sync:mod".to_string(),
+                },
+            })
+            .unwrap();
+        match resp {
+            PluginResponse::Load(Some(r)) => assert!(r.code.contains("loaded async")),
+            other => panic!("Expected Load(Some), got {:?}", other),
+        }
+
+        // Sync transform
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "const x = 'SYNC';".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+        match resp {
+            PluginResponse::Transform(Some(r)) => assert_eq!(r.code, "const x = 'REPLACED';"),
+            other => panic!("Expected Transform(Some), got {:?}", other),
+        }
+    }
+
+    /// 1: Async hook using Promise.resolve() explicitly.
+    #[test]
+    fn test_js_plugin_host_explicit_promise_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'promise-resolve',
+                    transform(code, id) {
+                        return Promise.resolve({ code: 'promised' });
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "x".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Transform(Some(result)) => {
+                assert_eq!(result.code, "promised");
+            }
+            other => panic!("Expected Transform(Some), got {:?}", other),
+        }
+    }
+
+    /// -1: Async hook using Promise.reject() explicitly.
+    #[test]
+    fn test_js_plugin_host_explicit_promise_reject() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'promise-reject',
+                    transform(code, id) {
+                        return Promise.reject(new Error('rejected!'));
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::Transform {
+                    code: "x".to_string(),
+                    id: "test.ts".to_string(),
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Error(msg) => {
+                assert!(msg.contains("rejected!"), "Got: {}", msg);
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    /// 1: Multiple async calls in sequence on same host.
+    #[test]
+    fn test_js_plugin_host_async_sequential_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-counter',
+                    async transform(code, id) {
+                        if (!globalThis.__counter) globalThis.__counter = 0;
+                        globalThis.__counter++;
+                        return { code: code + '_' + globalThis.__counter };
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        for i in 1..=3 {
+            let resp = host
+                .call(PluginRequest::CallHook {
+                    plugin_idx: 0,
+                    hook: HookCall::Transform {
+                        code: "call".to_string(),
+                        id: "test.ts".to_string(),
+                    },
+                })
+                .unwrap();
+
+            match resp {
+                PluginResponse::Transform(Some(result)) => {
+                    assert_eq!(result.code, format!("call_{}", i));
+                }
+                other => panic!("Call {}: Expected Transform(Some), got {:?}", i, other),
+            }
         }
     }
 }
