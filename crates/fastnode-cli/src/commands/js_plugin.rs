@@ -20,8 +20,8 @@
 //! ```
 
 use fastnode_core::bundler::{
-    HookResult, LoadResult, Plugin, PluginContext, PluginEnforce, PluginError, ResolveIdResult,
-    TransformResult,
+    HookResult, HotUpdateContext, LoadResult, Plugin, PluginContext, PluginEnforce, PluginError,
+    ResolveIdResult, TransformResult,
 };
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
@@ -66,6 +66,11 @@ pub enum HookCall {
     },
     BuildStart,
     BuildEnd,
+    HandleHotUpdate {
+        file: String,
+        timestamp: u64,
+        modules: Vec<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -74,6 +79,7 @@ pub enum PluginResponse {
     Load(Option<LoadResult>),
     Transform(Option<TransformResult>),
     TransformIndexHtml(Option<String>),
+    HandleHotUpdate(Option<Vec<String>>),
     Ok,
     Error(String),
 }
@@ -93,6 +99,7 @@ pub struct JsPluginDef {
     pub has_transform_index_html: bool,
     pub has_build_start: bool,
     pub has_build_end: bool,
+    pub has_handle_hot_update: bool,
 }
 
 // ============================================================================
@@ -218,6 +225,7 @@ globalThis.__howthExtractPlugins = () => {
     has_transformIndexHtml: typeof p.transformIndexHtml === 'function',
     has_buildStart: typeof p.buildStart === 'function',
     has_buildEnd: typeof p.buildEnd === 'function',
+    has_handleHotUpdate: typeof p.handleHotUpdate === 'function',
   })));
 };
 
@@ -380,6 +388,7 @@ fn parse_plugin_metadata(json: &str) -> Result<Vec<JsPluginDef>, String> {
             has_transform_index_html: v["has_transformIndexHtml"].as_bool().unwrap_or(false),
             has_build_start: v["has_buildStart"].as_bool().unwrap_or(false),
             has_build_end: v["has_buildEnd"].as_bool().unwrap_or(false),
+            has_handle_hot_update: v["has_handleHotUpdate"].as_bool().unwrap_or(false),
         })
         .collect())
 }
@@ -405,6 +414,18 @@ fn hook_call_args(hook: &HookCall) -> (&'static str, String) {
         }
         HookCall::BuildStart => ("buildStart", "[]".to_string()),
         HookCall::BuildEnd => ("buildEnd", "[]".to_string()),
+        HookCall::HandleHotUpdate {
+            ref file,
+            timestamp,
+            ref modules,
+        } => {
+            let ctx = serde_json::json!({
+                "file": file,
+                "timestamp": timestamp,
+                "modules": modules,
+            });
+            ("handleHotUpdate", serde_json::json!([ctx]).to_string())
+        }
     }
 }
 
@@ -494,6 +515,7 @@ fn parse_hook_response(json_str: &str, hook: &HookCall) -> PluginResponse {
             HookCall::Load { .. } => PluginResponse::Load(None),
             HookCall::Transform { .. } => PluginResponse::Transform(None),
             HookCall::TransformIndexHtml { .. } => PluginResponse::TransformIndexHtml(None),
+            HookCall::HandleHotUpdate { .. } => PluginResponse::HandleHotUpdate(None),
             HookCall::BuildStart | HookCall::BuildEnd => PluginResponse::Ok,
         };
     }
@@ -549,6 +571,19 @@ fn parse_hook_response(json_str: &str, hook: &HookCall) -> PluginResponse {
                 PluginResponse::TransformIndexHtml(None)
             }
         }
+        HookCall::HandleHotUpdate { .. } => {
+            // The hook can return an array of module IDs to override the affected modules,
+            // or null/undefined to use default behavior.
+            if let Some(arr) = value.as_array() {
+                let modules: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                PluginResponse::HandleHotUpdate(Some(modules))
+            } else {
+                PluginResponse::HandleHotUpdate(None)
+            }
+        }
         HookCall::BuildStart | HookCall::BuildEnd => PluginResponse::Ok,
     }
 }
@@ -569,6 +604,7 @@ pub struct JsPlugin {
     has_transform_index_html: bool,
     has_build_start: bool,
     has_build_end: bool,
+    has_handle_hot_update: bool,
 }
 
 impl JsPlugin {
@@ -590,6 +626,7 @@ impl JsPlugin {
             has_transform_index_html: def.has_transform_index_html,
             has_build_start: def.has_build_start,
             has_build_end: def.has_build_end,
+            has_handle_hot_update: def.has_handle_hot_update,
         }
     }
 }
@@ -714,6 +751,24 @@ impl Plugin for JsPlugin {
             _ => Ok(()),
         }
     }
+
+    fn handle_hot_update(&self, ctx: &HotUpdateContext) -> HookResult<Option<Vec<String>>> {
+        if !self.has_handle_hot_update {
+            return Ok(None);
+        }
+        match self.host.call(PluginRequest::CallHook {
+            plugin_idx: self.plugin_idx,
+            hook: HookCall::HandleHotUpdate {
+                file: ctx.file.clone(),
+                timestamp: ctx.timestamp,
+                modules: ctx.modules.clone(),
+            },
+        })? {
+            PluginResponse::HandleHotUpdate(result) => Ok(result),
+            PluginResponse::Error(e) => Err(plugin_error(&self.name, e)),
+            _ => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -734,7 +789,8 @@ mod tests {
             "has_transform": true,
             "has_transformIndexHtml": false,
             "has_buildStart": false,
-            "has_buildEnd": false
+            "has_buildEnd": false,
+            "has_handleHotUpdate": false
         }]"#;
 
         let defs = parse_plugin_metadata(json).unwrap();
@@ -752,8 +808,8 @@ mod tests {
     #[test]
     fn test_parse_plugin_metadata_multiple_plugins() {
         let json = r#"[
-            {"name": "plugin-a", "enforce": "pre", "has_resolveId": false, "has_load": true, "has_transform": false, "has_transformIndexHtml": false, "has_buildStart": true, "has_buildEnd": true},
-            {"name": "plugin-b", "enforce": "post", "has_resolveId": true, "has_load": false, "has_transform": true, "has_transformIndexHtml": true, "has_buildStart": false, "has_buildEnd": false}
+            {"name": "plugin-a", "enforce": "pre", "has_resolveId": false, "has_load": true, "has_transform": false, "has_transformIndexHtml": false, "has_buildStart": true, "has_buildEnd": true, "has_handleHotUpdate": false},
+            {"name": "plugin-b", "enforce": "post", "has_resolveId": true, "has_load": false, "has_transform": true, "has_transformIndexHtml": true, "has_buildStart": false, "has_buildEnd": false, "has_handleHotUpdate": true}
         ]"#;
 
         let defs = parse_plugin_metadata(json).unwrap();
@@ -770,6 +826,8 @@ mod tests {
         assert!(defs[1].has_resolve_id);
         assert!(defs[1].has_transform);
         assert!(defs[1].has_transform_index_html);
+        assert!(!defs[0].has_handle_hot_update);
+        assert!(defs[1].has_handle_hot_update);
     }
 
     #[test]
@@ -792,6 +850,7 @@ mod tests {
         assert!(!defs[0].has_transform_index_html);
         assert!(!defs[0].has_build_start);
         assert!(!defs[0].has_build_end);
+        assert!(!defs[0].has_handle_hot_update);
     }
 
     #[test]
@@ -1021,6 +1080,7 @@ mod tests {
             has_transform_index_html: false,
             has_build_start: false,
             has_build_end: false,
+            has_handle_hot_update: false,
         };
 
         // We can't construct a real host without V8, but we can test enforce parsing
@@ -1044,6 +1104,7 @@ mod tests {
             has_transform_index_html: false,
             has_build_start: false,
             has_build_end: false,
+            has_handle_hot_update: false,
         };
         let enforce = match def.enforce.as_deref() {
             Some("pre") => PluginEnforce::Pre,
@@ -1064,6 +1125,7 @@ mod tests {
             has_transform_index_html: false,
             has_build_start: false,
             has_build_end: false,
+            has_handle_hot_update: false,
         };
         let enforce = match def.enforce.as_deref() {
             Some("pre") => PluginEnforce::Pre,
@@ -1084,6 +1146,7 @@ mod tests {
             has_transform_index_html: false,
             has_build_start: false,
             has_build_end: false,
+            has_handle_hot_update: false,
         };
         let enforce = match def.enforce.as_deref() {
             Some("pre") => PluginEnforce::Pre,
@@ -2427,6 +2490,70 @@ mod tests {
         }
     }
 
+    // ========================================================================
+    // parse_hook_response tests for HandleHotUpdate
+    // ========================================================================
+
+    #[test]
+    fn test_parse_hook_response_null_handle_hot_update() {
+        let hook = HookCall::HandleHotUpdate {
+            file: "/src/App.tsx".to_string(),
+            timestamp: 123,
+            modules: vec![],
+        };
+        match parse_hook_response("null", &hook) {
+            PluginResponse::HandleHotUpdate(None) => {}
+            other => panic!("Expected HandleHotUpdate(None), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_hook_response_handle_hot_update_array() {
+        let hook = HookCall::HandleHotUpdate {
+            file: "/src/App.tsx".to_string(),
+            timestamp: 123,
+            modules: vec![],
+        };
+        let json = r#"["/src/App.tsx", "/src/utils.ts"]"#;
+        match parse_hook_response(json, &hook) {
+            PluginResponse::HandleHotUpdate(Some(modules)) => {
+                assert_eq!(modules, vec!["/src/App.tsx", "/src/utils.ts"]);
+            }
+            other => panic!("Expected HandleHotUpdate(Some), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_hook_response_handle_hot_update_empty_array() {
+        let hook = HookCall::HandleHotUpdate {
+            file: "/src/App.tsx".to_string(),
+            timestamp: 123,
+            modules: vec![],
+        };
+        let json = "[]";
+        match parse_hook_response(json, &hook) {
+            PluginResponse::HandleHotUpdate(Some(modules)) => {
+                assert!(modules.is_empty());
+            }
+            other => panic!("Expected HandleHotUpdate(Some([])), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_hook_response_handle_hot_update_non_array() {
+        let hook = HookCall::HandleHotUpdate {
+            file: "/src/App.tsx".to_string(),
+            timestamp: 123,
+            modules: vec![],
+        };
+        // Object instead of array — should return None
+        let json = r#"{"something": "else"}"#;
+        match parse_hook_response(json, &hook) {
+            PluginResponse::HandleHotUpdate(None) => {}
+            other => panic!("Expected HandleHotUpdate(None), got {:?}", other),
+        }
+    }
+
     /// 1: Multiple async calls in sequence on same host.
     #[test]
     fn test_js_plugin_host_async_sequential_calls() {
@@ -2465,6 +2592,305 @@ mod tests {
                 }
                 other => panic!("Call {}: Expected Transform(Some), got {:?}", i, other),
             }
+        }
+    }
+
+    // ========================================================================
+    // handleHotUpdate integration tests
+    // ========================================================================
+
+    /// 1: handleHotUpdate hook filters modules.
+    #[test]
+    fn test_js_plugin_host_handle_hot_update_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'hmr-filter',
+                    handleHotUpdate(ctx) {
+                        // Only keep .tsx modules
+                        return ctx.modules.filter(m => m.endsWith('.tsx'));
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        assert_eq!(host.plugin_count(), 1);
+        assert!(host.plugin_defs()[0].has_handle_hot_update);
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::HandleHotUpdate {
+                    file: "/src/styles.css".to_string(),
+                    timestamp: 1000,
+                    modules: vec![
+                        "/src/App.tsx".to_string(),
+                        "/src/styles.css".to_string(),
+                        "/src/Header.tsx".to_string(),
+                    ],
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::HandleHotUpdate(Some(modules)) => {
+                assert_eq!(modules, vec!["/src/App.tsx", "/src/Header.tsx"]);
+            }
+            other => panic!("Expected HandleHotUpdate(Some), got {:?}", other),
+        }
+    }
+
+    /// 1: handleHotUpdate receives file and timestamp in context.
+    #[test]
+    fn test_js_plugin_host_handle_hot_update_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'hmr-context',
+                    handleHotUpdate(ctx) {
+                        // Return the file and timestamp as module IDs for verification
+                        return [ctx.file, String(ctx.timestamp)];
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::HandleHotUpdate {
+                    file: "/src/App.tsx".to_string(),
+                    timestamp: 1706644800,
+                    modules: vec![],
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::HandleHotUpdate(Some(modules)) => {
+                assert_eq!(modules[0], "/src/App.tsx");
+                assert_eq!(modules[1], "1706644800");
+            }
+            other => panic!("Expected HandleHotUpdate(Some), got {:?}", other),
+        }
+    }
+
+    /// 0: handleHotUpdate returns null (use default behavior).
+    #[test]
+    fn test_js_plugin_host_handle_hot_update_returns_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'hmr-null',
+                    handleHotUpdate(ctx) {
+                        return null;
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::HandleHotUpdate {
+                    file: "/src/App.tsx".to_string(),
+                    timestamp: 1000,
+                    modules: vec!["/src/App.tsx".to_string()],
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::HandleHotUpdate(None) => {}
+            other => panic!("Expected HandleHotUpdate(None), got {:?}", other),
+        }
+    }
+
+    /// 0: handleHotUpdate returns undefined (no explicit return).
+    #[test]
+    fn test_js_plugin_host_handle_hot_update_returns_undefined() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'hmr-undef',
+                    handleHotUpdate(ctx) {
+                        // no return
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::HandleHotUpdate {
+                    file: "/src/App.tsx".to_string(),
+                    timestamp: 1000,
+                    modules: vec![],
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::HandleHotUpdate(None) => {}
+            other => panic!("Expected HandleHotUpdate(None), got {:?}", other),
+        }
+    }
+
+    /// 0: handleHotUpdate returns empty array (suppress all updates).
+    #[test]
+    fn test_js_plugin_host_handle_hot_update_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'hmr-suppress',
+                    handleHotUpdate(ctx) {
+                        return [];
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::HandleHotUpdate {
+                    file: "/src/App.tsx".to_string(),
+                    timestamp: 1000,
+                    modules: vec!["/src/App.tsx".to_string()],
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::HandleHotUpdate(Some(modules)) => {
+                assert!(modules.is_empty());
+            }
+            other => panic!("Expected HandleHotUpdate(Some([])), got {:?}", other),
+        }
+    }
+
+    /// -1: handleHotUpdate throws an error.
+    #[test]
+    fn test_js_plugin_host_handle_hot_update_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'hmr-error',
+                    handleHotUpdate(ctx) {
+                        throw new Error('HMR processing failed!');
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::HandleHotUpdate {
+                    file: "/src/App.tsx".to_string(),
+                    timestamp: 1000,
+                    modules: vec![],
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::Error(msg) => {
+                assert!(msg.contains("HMR processing failed!"), "Got: {}", msg);
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    /// -1: Plugin without handleHotUpdate hook (should not be detected).
+    #[test]
+    fn test_js_plugin_host_no_handle_hot_update_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'no-hmr',
+                    transform(code) { return code; },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        assert!(!host.plugin_defs()[0].has_handle_hot_update);
+    }
+
+    /// 1: Async handleHotUpdate hook.
+    #[test]
+    fn test_js_plugin_host_async_handle_hot_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_content = r#"
+            export default {
+                plugins: [{
+                    name: 'async-hmr',
+                    async handleHotUpdate(ctx) {
+                        return ctx.modules.filter(m => m.endsWith('.tsx'));
+                    },
+                }],
+            };
+        "#;
+        std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
+
+        let config_path = dir.path().join("howth.config.js");
+        let host = JsPluginHost::start(&config_path, dir.path()).unwrap();
+
+        let resp = host
+            .call(PluginRequest::CallHook {
+                plugin_idx: 0,
+                hook: HookCall::HandleHotUpdate {
+                    file: "/src/styles.css".to_string(),
+                    timestamp: 2000,
+                    modules: vec![
+                        "/src/App.tsx".to_string(),
+                        "/src/styles.css".to_string(),
+                    ],
+                },
+            })
+            .unwrap();
+
+        match resp {
+            PluginResponse::HandleHotUpdate(Some(modules)) => {
+                assert_eq!(modules, vec!["/src/App.tsx"]);
+            }
+            other => panic!("Expected HandleHotUpdate(Some), got {:?}", other),
         }
     }
 }

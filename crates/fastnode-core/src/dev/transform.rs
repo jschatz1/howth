@@ -75,12 +75,12 @@ impl ModuleTransformer {
             "ts" | "tsx" | "jsx" | "mts" | "cts" => {
                 let transpiled = self.transpile(&source, &file_path)?;
                 let transformed = self.apply_plugin_transforms(&transpiled, &file_path_str, plugins)?;
-                let rewritten = self.rewriter.rewrite(&transformed, &file_path);
+                let rewritten = self.rewriter.rewrite(&transformed, &file_path, plugins);
                 (rewritten, "application/javascript")
             }
             "js" | "mjs" | "cjs" => {
                 let transformed = self.apply_plugin_transforms(&source, &file_path_str, plugins)?;
-                let rewritten = self.rewriter.rewrite(&transformed, &file_path);
+                let rewritten = self.rewriter.rewrite(&transformed, &file_path, plugins);
                 (rewritten, "application/javascript")
             }
             "css" => {
@@ -89,8 +89,9 @@ impl ModuleTransformer {
                 (css_module, "application/javascript")
             }
             "json" => {
-                let json_module = format!("export default {};", source.trim());
-                (json_module, "application/javascript")
+                let json_module = json_to_esm(&source);
+                let transformed = self.apply_plugin_transforms(&json_module, &file_path_str, plugins)?;
+                (transformed, "application/javascript")
             }
             _ => {
                 return Err(ModuleTransformError {
@@ -296,6 +297,51 @@ export default css;
     )
 }
 
+/// Convert a JSON string to an ES module with named exports for top-level keys.
+///
+/// Follows the Vite convention:
+/// - `export default { ... }` for the full JSON value
+/// - `export const key = value` for each top-level key (if the JSON root is an object)
+///
+/// This enables both `import data from './data.json'` and
+/// `import { name, version } from './package.json'`.
+fn json_to_esm(source: &str) -> String {
+    let trimmed = source.trim();
+
+    // Try to parse as a JSON object for named exports
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed)
+    {
+        let mut out = format!("const __json__ = {};\nexport default __json__;\n", trimmed);
+        for (key, value) in &map {
+            // Only export keys that are valid JS identifiers
+            if is_valid_js_ident(key) {
+                out.push_str(&format!(
+                    "export const {} = {};\n",
+                    key,
+                    serde_json::to_string(value).unwrap_or_else(|_| "undefined".to_string())
+                ));
+            }
+        }
+        out
+    } else {
+        // Non-object JSON (array, string, number, etc.) — default export only
+        format!("export default {};\n", trimmed)
+    }
+}
+
+/// Check if a string is a valid JavaScript identifier (simplified).
+fn is_valid_js_ident(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' && first != '$' {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
 /// Error during module transformation.
 #[derive(Debug)]
 pub struct ModuleTransformError {
@@ -329,5 +375,113 @@ mod tests {
         assert!(module.contains("body { color: red; }"));
         assert!(module.contains("document.createElement('style')"));
         assert!(module.contains("export default css"));
+    }
+
+    // ========================================================================
+    // json_to_esm tests
+    // ========================================================================
+
+    /// 1: Object JSON produces default + named exports.
+    #[test]
+    fn test_json_to_esm_object() {
+        let json = r#"{"name": "howth", "version": "1.0.0"}"#;
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export default __json__"));
+        assert!(esm.contains("export const name = \"howth\""));
+        assert!(esm.contains("export const version = \"1.0.0\""));
+    }
+
+    /// 1: Nested objects are exported as JSON.
+    #[test]
+    fn test_json_to_esm_nested() {
+        let json = r#"{"config": {"port": 3000}, "debug": true}"#;
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export default __json__"));
+        assert!(esm.contains("export const config = {\"port\":3000}"));
+        assert!(esm.contains("export const debug = true"));
+    }
+
+    /// 1: Array JSON produces default export only.
+    #[test]
+    fn test_json_to_esm_array() {
+        let json = r#"[1, 2, 3]"#;
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export default [1, 2, 3]"));
+        assert!(!esm.contains("export const"));
+    }
+
+    /// 1: String JSON produces default export only.
+    #[test]
+    fn test_json_to_esm_string() {
+        let json = r#""hello""#;
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export default \"hello\""));
+    }
+
+    /// 1: Number JSON produces default export only.
+    #[test]
+    fn test_json_to_esm_number() {
+        let json = "42";
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export default 42"));
+    }
+
+    /// 0: Empty object produces default export, no named exports.
+    #[test]
+    fn test_json_to_esm_empty_object() {
+        let json = "{}";
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export default __json__"));
+        // No named exports for empty object
+        assert!(!esm.contains("export const"));
+    }
+
+    /// 0: Whitespace-padded JSON is trimmed.
+    #[test]
+    fn test_json_to_esm_whitespace() {
+        let json = "  { \"x\": 1 }  \n";
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export default __json__"));
+        assert!(esm.contains("export const x = 1"));
+    }
+
+    /// -1: Keys that are not valid JS identifiers are skipped.
+    #[test]
+    fn test_json_to_esm_invalid_keys() {
+        let json = r#"{"valid_key": 1, "123invalid": 2, "kebab-case": 3, "$ok": 4}"#;
+        let esm = json_to_esm(json);
+        assert!(esm.contains("export const valid_key = 1"));
+        assert!(!esm.contains("export const 123invalid"));
+        assert!(!esm.contains("export const kebab-case"));
+        assert!(esm.contains("export const $ok = 4"));
+    }
+
+    /// -1: Invalid JSON falls through to raw export.
+    #[test]
+    fn test_json_to_esm_invalid_json() {
+        let json = "not valid json";
+        let esm = json_to_esm(json);
+        // Should still produce something — raw export default
+        assert!(esm.contains("export default not valid json"));
+    }
+
+    // ========================================================================
+    // is_valid_js_ident tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_valid_js_ident() {
+        assert!(is_valid_js_ident("foo"));
+        assert!(is_valid_js_ident("_private"));
+        assert!(is_valid_js_ident("$dollar"));
+        assert!(is_valid_js_ident("camelCase"));
+        assert!(is_valid_js_ident("snake_case"));
+        assert!(is_valid_js_ident("x1"));
+
+        assert!(!is_valid_js_ident(""));
+        assert!(!is_valid_js_ident("123"));
+        assert!(!is_valid_js_ident("kebab-case"));
+        assert!(!is_valid_js_ident("has space"));
+        assert!(!is_valid_js_ident("1starts_with_number"));
     }
 }

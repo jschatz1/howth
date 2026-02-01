@@ -616,7 +616,7 @@ impl ModuleLoader for HowthModuleLoader {
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, AnyError> {
         // Handle node: built-in modules
-        if specifier.starts_with("node:") {
+        if specifier.starts_with("node:") || specifier.starts_with("howth:") {
             return ModuleSpecifier::parse(&format!("howth-builtin:///{}", specifier))
                 .map_err(|e| AnyError::msg(format!("Invalid builtin module: {}", e)));
         }
@@ -740,6 +740,12 @@ impl HowthModuleLoader {
             }
             "node:test" | "test" => {
                 "test, describe, it, before, after, beforeEach, afterEach, mock"
+            }
+            "howth:test" => {
+                "describe, context, it, specify, before, after, beforeEach, afterEach"
+            }
+            "node:http2" | "http2" => {
+                "constants, connect, createServer, createSecureServer, getDefaultSettings, getPackedSettings, getUnpackedSettings, sensitiveHeaders"
             }
             "node:assert" | "assert" => {
                 "ok, equal, notEqual, strictEqual, notStrictEqual, deepEqual, notDeepEqual, deepStrictEqual, notDeepStrictEqual, throws, doesNotThrow, rejects, doesNotReject, fail, ifError, match, doesNotMatch, strict, AssertionError"

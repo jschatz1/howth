@@ -11,7 +11,7 @@ pub mod prebundle;
 pub mod rewrite;
 pub mod transform;
 
-pub use config::{HowthConfig, load_config, find_config_file};
+pub use config::{HowthConfig, load_config, find_config_file, load_tsconfig_paths};
 pub use env::{load_env_files, client_env_replacements};
 pub use hmr::{HmrEngine, HmrModuleGraph, HmrModuleNode};
 pub use prebundle::PreBundler;

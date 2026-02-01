@@ -12,6 +12,7 @@
 //! ```
 
 mod module_loader;
+pub mod napi;
 mod ops;
 mod runtime;
 

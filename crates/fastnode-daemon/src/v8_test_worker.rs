@@ -18,6 +18,41 @@ use std::sync::mpsc;
 use std::thread;
 use tracing::{debug, warn};
 
+fn derive_test_root(files: &[TranspiledTestFile]) -> Option<String> {
+    let file_path = files.first()?.path.as_str();
+    let path = PathBuf::from(file_path);
+    let mut root_components: Vec<std::ffi::OsString> = Vec::new();
+    for component in path.components() {
+        let part = component.as_os_str();
+        if part == "test" || part == "ai_test" {
+            let mut root = PathBuf::new();
+            for c in &root_components {
+                root.push(c);
+            }
+            return Some(root.to_string_lossy().to_string());
+        }
+        root_components.push(part.to_os_string());
+    }
+    path.parent().map(|p| p.to_string_lossy().to_string())
+}
+
+fn js_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Request sent to the V8 worker thread.
 struct V8Request {
     id: String,
@@ -37,7 +72,11 @@ impl V8TestWorker {
     pub fn spawn() -> io::Result<Self> {
         let (tx, rx) = mpsc::channel::<V8Request>();
 
-        let temp_dir = std::env::temp_dir().join("howth-v8-test-worker");
+        let worker_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let temp_dir = std::env::temp_dir().join(format!("howth-v8-test-worker-{worker_id}"));
         std::fs::create_dir_all(&temp_dir)?;
         let temp_dir_clone = temp_dir.clone();
 
@@ -157,28 +196,61 @@ async fn run_tests_in_v8(
 ) -> io::Result<WorkerResponse> {
     let start = std::time::Instant::now();
 
-    // Populate virtual module map with transpiled code (no disk I/O)
+    let test_root = derive_test_root(files);
+
+    // Populate virtual module map with transpiled code (no disk I/O).
+    // Prepend each file with a globalThis.__howth_main_module_path assignment
+    // so that globalRequire resolves relative imports against the original
+    // source path, not the virtual temp path.
     let mut virtual_paths = Vec::with_capacity(files.len());
     {
         let mut vm = virtual_modules.borrow_mut();
         for (i, file) in files.iter().enumerate() {
             let temp_path = temp_dir.join(format!("{id}-{i}.mjs"));
             let path_str = temp_path.to_string_lossy().to_string();
-            vm.insert(path_str, file.code.clone());
+            let code = format!(
+                "globalThis.__howth_main_module_path = {};\n{}",
+                js_string_literal(&file.path),
+                file.code
+            );
+            vm.insert(path_str, code);
             virtual_paths.push(temp_path);
         }
     }
 
-    // Build a runner module that imports all test files then runs the harness.
+    // Build a runner module that uses dynamic import() inside try/catch
+    // so errors during file loading are captured instead of crashing the module.
     let mut runner_code = String::new();
-    for vpath in &virtual_paths {
+    if let Some(ref root) = test_root {
+        runner_code.push_str("globalThis.__howth_test_root = ");
+        runner_code.push_str(&js_string_literal(root));
+        runner_code.push_str(";\n");
+        // Set cwd to the project root so dotenv and other tools find config files
+        runner_code.push_str("process.chdir(");
+        runner_code.push_str(&js_string_literal(root));
+        runner_code.push_str(");\n");
+    }
+    runner_code.push_str("try {\n");
+    for (i, vpath) in virtual_paths.iter().enumerate() {
         let filename = vpath.file_name().unwrap().to_string_lossy();
-        runner_code.push_str(&format!("import './{filename}';\n"));
+        let original_path = if i < files.len() { &files[i].path } else { "" };
+        runner_code.push_str(&format!(
+            "  console.error(\"[howth] importing [{i}/{total}] {path}\");\n  await import(\"./{filename}\");\n",
+            i = i,
+            total = files.len(),
+            path = original_path.rsplit('/').next().unwrap_or(original_path),
+            filename = filename,
+        ));
     }
     runner_code.push_str(
-        r#"
-const report = await globalThis.__howth_run_tests();
-globalThis.__howth_test_result_json = JSON.stringify(report);
+        r#"  const report = await globalThis.__howth_run_tests();
+  globalThis.__howth_test_result_json = JSON.stringify(report);
+} catch (e) {
+  globalThis.__howth_test_result_json = JSON.stringify({
+    ok: false, total: 0, passed: 0, failed: 1, skipped: 0, duration_ms: 0,
+    tests: [{ name: "test-runner", status: "fail", duration_ms: 0, error: String(e && e.stack || e) }],
+  });
+}
 "#,
     );
 

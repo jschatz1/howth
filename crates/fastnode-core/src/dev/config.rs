@@ -131,8 +131,23 @@ fn parse_config_object(source: &str) -> Result<HowthConfig, String> {
     // Static parsing can't handle `plugins: [myPlugin()]`, so just detect presence.
     let has_js_plugins = detect_plugins_key(source);
 
-    // Parse the object literal into a serde_json::Value using our JSON5-like parser
-    let value = parse_js_object(&obj_str)?;
+    // Parse the object literal into a serde_json::Value using our JSON5-like parser.
+    // If parsing fails but we detected JS plugins, return a default config with the
+    // flag set so the V8 runtime can load the full config.
+    let value = match parse_js_object(&obj_str) {
+        Ok(v) => v,
+        Err(e) => {
+            if has_js_plugins {
+                // Config has JS plugins (e.g., function calls, method shorthand) that
+                // the static parser can't handle. Return a minimal config so V8 loading
+                // is triggered.
+                let mut config = HowthConfig::default();
+                config.has_js_plugins = true;
+                return Ok(config);
+            }
+            return Err(e);
+        }
+    };
 
     // Convert to HowthConfig
     let mut config = HowthConfig::default();
@@ -545,6 +560,147 @@ impl JsObjectParser {
     }
 }
 
+/// Load path aliases from `tsconfig.json` (or `jsconfig.json`) in the given root directory.
+///
+/// Reads `compilerOptions.baseUrl` and `compilerOptions.paths`, converting
+/// TypeScript path patterns like `@/*: ["./src/*"]` to simple alias mappings
+/// like `@ → ./src` (matching Vite/howth alias behavior).
+///
+/// Returns `None` if no tsconfig/jsconfig exists or has no paths configured.
+pub fn load_tsconfig_paths(root: &Path) -> Option<HashMap<String, String>> {
+    // Try tsconfig.json first, then jsconfig.json
+    let tsconfig_path = root.join("tsconfig.json");
+    let jsconfig_path = root.join("jsconfig.json");
+
+    let config_path = if tsconfig_path.exists() {
+        tsconfig_path
+    } else if jsconfig_path.exists() {
+        jsconfig_path
+    } else {
+        return None;
+    };
+
+    let source = std::fs::read_to_string(&config_path).ok()?;
+
+    // Strip comments (tsconfig.json allows // and /* */ comments)
+    let stripped = strip_json_comments(&source);
+
+    let value: serde_json::Value = serde_json::from_str(&stripped).ok()?;
+
+    let compiler_options = value.get("compilerOptions")?.as_object()?;
+
+    let base_url = compiler_options
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".");
+
+    let paths = compiler_options.get("paths")?.as_object()?;
+
+    if paths.is_empty() {
+        return None;
+    }
+
+    let mut aliases = HashMap::new();
+
+    for (pattern, targets) in paths {
+        // Convert "@/*" → "@", "@components/*" → "@components"
+        let alias_key = pattern.trim_end_matches("/*").to_string();
+
+        // Skip exact matches without glob (e.g., "jquery" → ["node_modules/jquery/..."])
+        // These are module resolution overrides, not aliases
+        if !pattern.contains('*') && !pattern.ends_with('/') {
+            // Still support exact path mappings: "utils" → ["./src/utils"]
+            if let Some(target) = targets
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_str())
+            {
+                let resolved = resolve_tsconfig_target(base_url, target);
+                aliases.insert(alias_key, resolved);
+            }
+            continue;
+        }
+
+        // Use first target path (TypeScript allows fallbacks, we take the primary)
+        if let Some(target) = targets
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+        {
+            let target_base = target.trim_end_matches("/*");
+            let resolved = resolve_tsconfig_target(base_url, target_base);
+            aliases.insert(alias_key, resolved);
+        }
+    }
+
+    if aliases.is_empty() {
+        None
+    } else {
+        Some(aliases)
+    }
+}
+
+/// Resolve a tsconfig path target relative to baseUrl.
+///
+/// Ensures the result starts with `./` for relative paths.
+fn resolve_tsconfig_target(base_url: &str, target: &str) -> String {
+    // If target is already absolute or starts with ./, use as-is
+    if target.starts_with('/') || target.starts_with("./") || target.starts_with("../") {
+        return target.to_string();
+    }
+
+    // Resolve relative to baseUrl
+    let base = base_url.trim_end_matches('/');
+    if base == "." || base == "./" {
+        format!("./{}", target)
+    } else {
+        format!("{}/{}", base, target)
+    }
+}
+
+/// Strip single-line (//) and multi-line (/* */) comments from JSON.
+///
+/// tsconfig.json and jsconfig.json allow comments per the JSONC spec.
+fn strip_json_comments(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let chars: Vec<char> = source.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_string = false;
+
+    while i < len {
+        if in_string {
+            result.push(chars[i]);
+            if chars[i] == '"' && (i == 0 || chars[i - 1] != '\\') {
+                in_string = false;
+            }
+            i += 1;
+        } else if i + 1 < len && chars[i] == '/' && chars[i + 1] == '/' {
+            // Single-line comment: skip to end of line
+            while i < len && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if i + 1 < len && chars[i] == '/' && chars[i + 1] == '*' {
+            // Multi-line comment: skip to */
+            i += 2;
+            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            if i + 1 < len {
+                i += 2; // skip */
+            }
+        } else {
+            if chars[i] == '"' {
+                in_string = true;
+            }
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,6 +1011,307 @@ mod tests {
             };
         "#;
         assert!(!detect_plugins_key(source));
+    }
+
+    // ========================================================================
+    // tsconfig.json paths tests
+    // ========================================================================
+
+    /// 1: Standard tsconfig with @/* path alias.
+    #[test]
+    fn test_load_tsconfig_paths_standard() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                    "@/*": ["./src/*"]
+                }
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+    }
+
+    /// 1: Multiple path aliases.
+    #[test]
+    fn test_load_tsconfig_paths_multiple() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": "./",
+                "paths": {
+                    "@/*": ["./src/*"],
+                    "@components/*": ["./src/components/*"],
+                    "~/*": ["./*"]
+                }
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+        assert_eq!(aliases.get("@components").map(|s| s.as_str()), Some("./src/components"));
+        assert_eq!(aliases.get("~").map(|s| s.as_str()), Some("./."));
+    }
+
+    /// 1: jsconfig.json fallback.
+    #[test]
+    fn test_load_tsconfig_paths_jsconfig() {
+        let dir = tempfile::tempdir().unwrap();
+        let jsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                    "@/*": ["./src/*"]
+                }
+            }
+        }"#;
+        std::fs::write(dir.path().join("jsconfig.json"), jsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+    }
+
+    /// 1: tsconfig.json takes priority over jsconfig.json.
+    #[test]
+    fn test_load_tsconfig_paths_tsconfig_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": { "@/*": ["./src/*"] }
+            }
+        }"#;
+        let jsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": { "@/*": ["./lib/*"] }
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+        std::fs::write(dir.path().join("jsconfig.json"), jsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+    }
+
+    /// 1: tsconfig with comments (JSONC).
+    #[test]
+    fn test_load_tsconfig_paths_with_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            // This is a comment
+            "compilerOptions": {
+                "baseUrl": ".",
+                /* Multi-line
+                   comment */
+                "paths": {
+                    "@/*": ["./src/*"] // inline comment
+                }
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+    }
+
+    /// 1: Exact path mapping (no glob).
+    #[test]
+    fn test_load_tsconfig_paths_exact_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                    "utils": ["./src/utils"]
+                }
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("utils").map(|s| s.as_str()), Some("./src/utils"));
+    }
+
+    /// 1: baseUrl is a subdirectory.
+    #[test]
+    fn test_load_tsconfig_paths_base_url_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": "./src",
+                "paths": {
+                    "@/*": ["./components/*"]
+                }
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./components"));
+    }
+
+    /// 0: No tsconfig.json or jsconfig.json.
+    #[test]
+    fn test_load_tsconfig_paths_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_tsconfig_paths(dir.path()).is_none());
+    }
+
+    /// 0: tsconfig without paths.
+    #[test]
+    fn test_load_tsconfig_paths_no_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "target": "es2020"
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        assert!(load_tsconfig_paths(dir.path()).is_none());
+    }
+
+    /// 0: tsconfig with empty paths object.
+    #[test]
+    fn test_load_tsconfig_paths_empty_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {}
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        assert!(load_tsconfig_paths(dir.path()).is_none());
+    }
+
+    /// 0: tsconfig without compilerOptions.
+    #[test]
+    fn test_load_tsconfig_paths_no_compiler_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{ "include": ["src"] }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        assert!(load_tsconfig_paths(dir.path()).is_none());
+    }
+
+    /// -1: Invalid JSON in tsconfig.
+    #[test]
+    fn test_load_tsconfig_paths_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tsconfig.json"), "not json").unwrap();
+
+        assert!(load_tsconfig_paths(dir.path()).is_none());
+    }
+
+    /// -1: No baseUrl (should default to ".").
+    #[test]
+    fn test_load_tsconfig_paths_no_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let tsconfig = r#"{
+            "compilerOptions": {
+                "paths": {
+                    "@/*": ["./src/*"]
+                }
+            }
+        }"#;
+        std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
+
+        let aliases = load_tsconfig_paths(dir.path()).unwrap();
+        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+    }
+
+    // ========================================================================
+    // resolve_tsconfig_target tests
+    // ========================================================================
+
+    #[test]
+    fn test_resolve_tsconfig_target_relative() {
+        assert_eq!(resolve_tsconfig_target(".", "src"), "./src");
+        assert_eq!(resolve_tsconfig_target("./", "src"), "./src");
+    }
+
+    #[test]
+    fn test_resolve_tsconfig_target_already_relative() {
+        assert_eq!(resolve_tsconfig_target(".", "./src"), "./src");
+        assert_eq!(resolve_tsconfig_target(".", "../lib"), "../lib");
+    }
+
+    #[test]
+    fn test_resolve_tsconfig_target_absolute() {
+        assert_eq!(resolve_tsconfig_target(".", "/abs/path"), "/abs/path");
+    }
+
+    #[test]
+    fn test_resolve_tsconfig_target_subdir_base() {
+        assert_eq!(resolve_tsconfig_target("./src", "components"), "./src/components");
+    }
+
+    // ========================================================================
+    // strip_json_comments tests
+    // ========================================================================
+
+    #[test]
+    fn test_strip_json_comments_single_line() {
+        let input = r#"{ "key": "value" // comment
+        }"#;
+        let result = strip_json_comments(input);
+        assert!(result.contains("\"key\""));
+        assert!(!result.contains("comment"));
+    }
+
+    #[test]
+    fn test_strip_json_comments_multi_line() {
+        let input = r#"{ /* comment */ "key": "value" }"#;
+        let result = strip_json_comments(input);
+        assert!(result.contains("\"key\""));
+        assert!(!result.contains("comment"));
+    }
+
+    #[test]
+    fn test_strip_json_comments_in_string_preserved() {
+        let input = r#"{ "key": "http://example.com" }"#;
+        let result = strip_json_comments(input);
+        assert!(result.contains("http://example.com"));
+    }
+
+    /// Config with JS plugin functions should still return Ok with has_js_plugins=true.
+    #[test]
+    fn test_parse_config_with_plugin_functions_graceful_fallback() {
+        let source = r#"
+            export default {
+                plugins: [{
+                    name: 'test-replace',
+                    transform(code, id) {
+                        return code.replace('__TEST__', '"replaced"');
+                    },
+                }],
+                server: { port: 3456 },
+            };
+        "#;
+        // Static parser can't handle method shorthand, but should still succeed
+        // with has_js_plugins = true
+        let config = parse_config_object(source).unwrap();
+        assert!(config.has_js_plugins, "Should detect JS plugins even when static parsing fails");
+    }
+
+    /// Config with function calls in plugins array falls back gracefully.
+    #[test]
+    fn test_parse_config_with_plugin_call_expression() {
+        let source = r#"
+            export default {
+                plugins: [myPlugin({ option: true })],
+                server: { port: 3000 },
+            };
+        "#;
+        let config = parse_config_object(source).unwrap();
+        assert!(config.has_js_plugins);
     }
 
     #[test]

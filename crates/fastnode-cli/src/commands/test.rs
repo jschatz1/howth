@@ -355,11 +355,22 @@ fn get_test_script(cwd: &Path) -> Option<String> {
     let content = std::fs::read_to_string(&package_json_path).ok()?;
     let package: Value = serde_json::from_str(&content).ok()?;
 
-    package
+    let script = package
         .get("scripts")?
         .get("test")?
-        .as_str()
-        .map(|s| s.to_string())
+        .as_str()?;
+
+    // Avoid infinite recursion if the test script invokes howth test
+    let trimmed = script.trim();
+    if trimmed == "howth test"
+        || trimmed == "fastnode test"
+        || trimmed.starts_with("howth test ")
+        || trimmed.starts_with("fastnode test ")
+    {
+        return None;
+    }
+
+    Some(script.to_string())
 }
 
 /// Run the test script from package.json.

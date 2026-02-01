@@ -64,7 +64,7 @@ use fastnode_proto::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Handle a request and produce a response (sync version).
 ///
@@ -792,8 +792,17 @@ async fn handle_run_tests(
 
     let result = match v8_result {
         Ok(result) => result,
+        Err(v8_err) if v8_err.kind() == std::io::ErrorKind::TimedOut => {
+            // Don't fall back to Node.js on timeout — the tests need
+            // infrastructure (Redis, Postgres) which isn't running.
+            warn!("V8 test worker timed out: {v8_err}");
+            return Response::error(
+                codes::TEST_WORKER_TIMEOUT,
+                format!("Test worker timed out. Ensure required services (Redis, Postgres) are running. ({v8_err})"),
+            );
+        }
         Err(v8_err) => {
-            debug!("V8 test worker failed ({v8_err}), falling back to Node.js worker");
+            warn!("V8 test worker failed ({v8_err}), falling back to Node.js worker");
             // Fallback to Node.js worker
             match run_tests_node_worker(state, transpiled).await {
                 Ok(r) => r,
@@ -855,9 +864,10 @@ fn try_v8_test_worker(
         std::io::Error::new(std::io::ErrorKind::Other, "V8 worker mutex poisoned")
     })?;
 
-    if guard.is_none() {
-        *guard = Some(crate::v8_test_worker::V8TestWorker::spawn()?);
-    }
+    // Recreate the V8 worker for each test run to ensure clean module state.
+    // The V8 runtime's module cache and global state don't reset between runs,
+    // causing issues with stale require() caches and test infrastructure.
+    *guard = Some(crate::v8_test_worker::V8TestWorker::spawn()?);
 
     let worker = guard.as_ref().unwrap();
     let id = format!("v8-{}", std::time::SystemTime::now()

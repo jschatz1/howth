@@ -7,7 +7,9 @@ description = "Native JavaScript runtime for howth (V8-based via deno_core)"
 
 [dependencies]
 deno_core = "0.311"
-deno_node = "0.166"
+deno_napi = "0.100"
+napi_sym = { path = "../napi-sym" }
+log = "0.4"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tokio.workspace = true
 hyper = { version = "1.4", features = ["server", "http1"] }
@@ -26,7 +28,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 aes = "0.8"
-cipher = { version = "0.4", features = ["block-padding"] }
+cipher = { version = "0.4", features = ["block-padding", "alloc"] }
 cbc = "0.1"
 ctr = "0.9"
 aes-gcm = "0.10"

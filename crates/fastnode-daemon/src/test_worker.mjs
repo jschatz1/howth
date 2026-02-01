@@ -75,7 +75,7 @@ async function handleMessage(msg) {
   const tempFiles = [];
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
-    const tmp = join(TEMP_PREFIX, `${process.pid}-${id}-${i}.mjs`);
+    const tmp = join(TEMP_PREFIX, `${process.pid}-${id}-${i}.cjs`);
     writeFileSync(tmp, f.code);
     tempFiles.push(tmp);
   }

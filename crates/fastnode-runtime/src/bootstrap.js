@@ -175,7 +175,11 @@
     // Environment
     env: new Proxy({}, {
       get(_, key) {
-        return ops.op_howth_env_get(String(key));
+        const val = ops.op_howth_env_get(String(key));
+        return val === null ? undefined : val;
+      },
+      has(_, key) {
+        return ops.op_howth_env_get(String(key)) !== null;
       },
       set(_, key, value) {
         ops.op_howth_env_set(String(key), String(value));
@@ -212,6 +216,8 @@
       node: "20.18.0",
       v8: "11.0.0",
       howth: "0.1.0",
+      napi: "9",
+      modules: "115",
     },
     features: {
       inspector: false,
@@ -263,7 +269,6 @@
             }
           } else {
             console.error("[howth] Uncaught exception in nextTick:", err instanceof Error ? err.stack || err.message : err);
-            throw err;
           }
         }
       });
@@ -387,6 +392,11 @@
     uptime() {
       return 0;
     },
+    // dlopen - load native addons (.node files)
+    dlopen(module, filename) {
+      Module._extensions[".node"](module, filename);
+      return module;
+    },
   };
 
   // Basic fs module (synchronous only for now)
@@ -472,16 +482,18 @@
 
   // TextDecoder implementation
   globalThis.TextDecoder = class TextDecoder {
-    constructor(encoding = "utf-8") {
+    constructor(encoding = "utf-8", options = {}) {
       this.encoding = encoding.toLowerCase();
       if (this.encoding !== "utf-8" && this.encoding !== "utf8") {
         throw new Error("Only UTF-8 encoding is supported");
       }
+      this.fatal = !!options.fatal;
+      this.ignoreBOM = !!options.ignoreBOM;
     }
     decode(buffer) {
       if (!buffer) return "";
       const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-      return ops.op_howth_decode_utf8(bytes);
+      return ops.op_howth_decode_utf8(bytes, this.fatal);
     }
   };
 
@@ -1033,14 +1045,18 @@
       async sign(algorithm, key, data) {
         const algo = typeof algorithm === 'string' ? { name: algorithm } : algorithm;
         const dataBytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-
-        // Simple HMAC-like signature using hash
         const keyBytes = key._keyData || new Uint8Array(32);
-        const combined = new Uint8Array(keyBytes.length + dataBytes.length);
-        combined.set(keyBytes);
-        combined.set(dataBytes, keyBytes.length);
 
-        const result = ops.op_howth_hash('SHA-256', combined);
+        if (algo.name === 'HMAC') {
+          const hashAlgo = (key.algorithm && key.algorithm.hash)
+            ? (typeof key.algorithm.hash === 'string' ? key.algorithm.hash : key.algorithm.hash.name)
+            : 'SHA-256';
+          const result = ops.op_howth_hmac(hashAlgo, keyBytes, dataBytes);
+          return new Uint8Array(result).buffer;
+        }
+
+        // Fallback for other algorithms
+        const result = ops.op_howth_hash('SHA-256', dataBytes);
         return new Uint8Array(result).buffer;
       },
 
@@ -1079,16 +1095,29 @@
         const keyBytes = baseKey._keyData || new Uint8Array(32);
         const numBytes = Math.ceil(length / 8);
 
-        // Simple derivation using hash iterations
-        let result = keyBytes;
-        const salt = algo.salt ? new Uint8Array(algo.salt) : new Uint8Array(16);
-        for (let i = 0; i < (algo.iterations || 1); i++) {
-          const combined = new Uint8Array(result.length + salt.length);
-          combined.set(result);
-          combined.set(salt, result.length);
-          result = new Uint8Array(ops.op_howth_hash('SHA-256', combined));
+        if (algo.name === 'PBKDF2') {
+          const hashAlgo = typeof algo.hash === 'string' ? algo.hash : (algo.hash && algo.hash.name) || 'SHA-256';
+          let salt;
+          if (!algo.salt) {
+            salt = new Uint8Array(0);
+          } else if (algo.salt instanceof Uint8Array) {
+            salt = algo.salt;
+          } else if (algo.salt instanceof ArrayBuffer) {
+            salt = new Uint8Array(algo.salt);
+          } else {
+            salt = new Uint8Array(algo.salt);
+          }
+          const iterations = algo.iterations || 1;
+          const result = ops.op_howth_pbkdf2(hashAlgo, keyBytes, salt, iterations, numBytes);
+          return new Uint8Array(result).buffer;
         }
 
+        // Fallback: simple hash derivation
+        const salt = algo.salt ? new Uint8Array(algo.salt) : new Uint8Array(16);
+        const combined = new Uint8Array(keyBytes.length + salt.length);
+        combined.set(keyBytes);
+        combined.set(salt, keyBytes.length);
+        const result = new Uint8Array(ops.op_howth_hash('SHA-256', combined));
         return result.slice(0, numBytes).buffer;
       },
 
@@ -1635,23 +1664,39 @@
       return string.length;
     }
 
-    toString(encoding = "utf8") {
+    toString(encoding = "utf8", start, end) {
+      // Support Buffer.toString(encoding, start, end) — slice before decoding
+      let buf = this;
+      if (start !== undefined || end !== undefined) {
+        const s = start || 0;
+        const e = end !== undefined ? end : this.length;
+        buf = this.subarray(s, e);
+      }
       if (encoding === "base64") {
         let binary = "";
-        for (let i = 0; i < this.length; i++) {
-          binary += String.fromCharCode(this[i]);
+        for (let i = 0; i < buf.length; i++) {
+          binary += String.fromCharCode(buf[i]);
         }
         return btoa(binary);
       } else if (encoding === "hex") {
-        return Array.from(this).map(b => b.toString(16).padStart(2, "0")).join("");
+        return Array.from(buf).map(b => b.toString(16).padStart(2, "0")).join("");
       } else {
         // Default to UTF-8
         const decoder = new TextDecoder();
-        return decoder.decode(this);
+        return decoder.decode(buf);
       }
     }
 
     write(string, offset = 0, length, encoding = "utf8") {
+      // Handle Node.js overloads: write(string, offset, encoding) and write(string, encoding)
+      if (typeof offset === "string") {
+        encoding = offset;
+        offset = 0;
+        length = undefined;
+      } else if (typeof length === "string") {
+        encoding = length;
+        length = undefined;
+      }
       const bytes = Buffer.from(string, encoding);
       const writeLength = Math.min(bytes.length, length ?? bytes.length, this.length - offset);
       this.set(bytes.subarray(0, writeLength), offset);
@@ -3231,6 +3276,24 @@
   globalThis.__howth_modules["path/posix"] = posixPath;
   globalThis.__howth_modules["node:path/win32"] = win32Path;
   globalThis.__howth_modules["path/win32"] = win32Path;
+  // fs constants — hoisted to shared scope so both fs and constants modules can use them
+  const fsConstants = {
+    F_OK: 0,
+    R_OK: 4,
+    W_OK: 2,
+    X_OK: 1,
+    COPYFILE_EXCL: 1,
+    COPYFILE_FICLONE: 2,
+    COPYFILE_FICLONE_FORCE: 4,
+    O_RDONLY: 0,
+    O_WRONLY: 1,
+    O_RDWR: 2,
+    O_CREAT: 64,
+    O_EXCL: 128,
+    O_TRUNC: 512,
+    O_APPEND: 1024,
+  };
+
   // ============================================
   // node:fs module (lazy)
   // ============================================
@@ -3732,24 +3795,6 @@
     async access(path, mode) {
       return fsSync.accessSync(path, mode);
     },
-  };
-
-  // Constants
-  const fsConstants = {
-    F_OK: 0,
-    R_OK: 4,
-    W_OK: 2,
-    X_OK: 1,
-    COPYFILE_EXCL: 1,
-    COPYFILE_FICLONE: 2,
-    COPYFILE_FICLONE_FORCE: 4,
-    O_RDONLY: 0,
-    O_WRONLY: 1,
-    O_RDWR: 2,
-    O_CREAT: 64,
-    O_EXCL: 128,
-    O_TRUNC: 512,
-    O_APPEND: 1024,
   };
 
   // Build the fs module
@@ -4789,37 +4834,50 @@
     }
 
     static _nodeModulePaths(from) {
-      // Generate node_modules lookup paths
+      // Generate node_modules lookup paths (matches Node.js algorithm)
       const paths = [];
       const seen = new Set();
 
-      // Add paths from the 'from' directory
-      let current = from;
-      while (current !== "/") {
-        const nodeModules = posixPath.join(current, "node_modules");
-        if (!seen.has(nodeModules)) {
-          paths.push(nodeModules);
-          seen.add(nodeModules);
-        }
-        const parent = posixPath.dirname(current);
-        if (parent === current) break;
-        current = parent;
-      }
-
-      // Also add paths from the current working directory
-      // This allows scripts run from outside a project to resolve modules from that project
-      const cwd = ops.op_howth_cwd();
-      if (cwd && cwd !== from) {
-        current = cwd;
+      const addPathsFrom = (start) => {
+        let current = start;
         while (current !== "/") {
-          const nodeModules = posixPath.join(current, "node_modules");
-          if (!seen.has(nodeModules)) {
-            paths.push(nodeModules);
-            seen.add(nodeModules);
+          if (posixPath.basename(current) !== "node_modules") {
+            const nodeModules = posixPath.join(current, "node_modules");
+            if (!seen.has(nodeModules)) {
+              paths.push(nodeModules);
+              seen.add(nodeModules);
+              // pnpm virtual store: packages are also available at
+              // node_modules/.pnpm/node_modules/<pkg>
+              const pnpmStore = posixPath.join(nodeModules, ".pnpm", "node_modules");
+              if (!seen.has(pnpmStore)) {
+                paths.push(pnpmStore);
+                seen.add(pnpmStore);
+              }
+            }
+          } else {
+            // When we're inside a node_modules directory (e.g. pnpm virtual
+            // store), the current directory itself is the lookup path —
+            // sibling packages live here directly.
+            if (!seen.has(current)) {
+              paths.push(current);
+              seen.add(current);
+            }
           }
           const parent = posixPath.dirname(current);
           if (parent === current) break;
           current = parent;
+        }
+      };
+
+      // Add paths from the 'from' directory
+      addPathsFrom(from);
+
+      // Also add paths from the current working directory and test root
+      // This allows scripts run from outside a project to resolve modules from that project
+      const extraRoots = [ops.op_howth_cwd(), globalThis.__howth_test_root];
+      for (const root of extraRoots) {
+        if (root && root !== from) {
+          addPathsFrom(root);
         }
       }
 
@@ -4831,7 +4889,7 @@
 
     static _resolveFilename(request, parent) {
       // Handle built-in modules
-      if (request.startsWith("node:") || globalThis.__howth_modules[request]) {
+      if (request.startsWith("node:") || request.startsWith("howth:") || globalThis.__howth_modules[request]) {
         return request;
       }
 
@@ -4844,21 +4902,43 @@
       };
 
       // Handle relative and absolute paths
-      if (request.startsWith("./") || request.startsWith("../") || request.startsWith("/")) {
+      if (request === "." || request === ".." ||
+          request.startsWith("./") || request.startsWith("../") || request.startsWith("/")) {
         const basePath = request.startsWith("/")
           ? request
           : posixPath.resolve(parent ? parent.dirname : ops.op_howth_cwd(), request);
         const resolved = Module._resolveAsFile(basePath) || Module._resolveAsDirectory(basePath);
-        if (resolved) return resolved;
+        if (resolved) return Module._realpath(resolved);
         throw createModuleNotFoundError(request, parent ? [parent.filename] : []);
       }
 
       // Handle bare specifiers (node_modules)
+      // Split into package name and subpath (e.g. "axios" -> ["axios", "."],
+      // "@scope/pkg/foo" -> ["@scope/pkg", "./foo"])
+      let pkgName, subpath;
+      if (request.startsWith("@")) {
+        const parts = request.split("/");
+        pkgName = parts.slice(0, 2).join("/");
+        subpath = parts.length > 2 ? "./" + parts.slice(2).join("/") : ".";
+      } else {
+        const slashIdx = request.indexOf("/");
+        pkgName = slashIdx === -1 ? request : request.slice(0, slashIdx);
+        subpath = slashIdx === -1 ? "." : "./" + request.slice(slashIdx + 1);
+      }
+
       const paths = parent ? parent.paths : Module._nodeModulePaths(ops.op_howth_cwd());
       for (const modulesPath of paths) {
-        const modulePath = posixPath.join(modulesPath, request);
-        const resolved = Module._resolveAsFile(modulePath) || Module._resolveAsDirectory(modulePath);
-        if (resolved) return resolved;
+        const pkgDir = posixPath.join(modulesPath, pkgName);
+        // Try exports-aware resolution first
+        const exportsResolved = Module._resolveAsDirectoryWithSubpath(pkgDir, subpath);
+        if (exportsResolved) return Module._realpath(exportsResolved);
+
+        // Fall back to plain file/directory resolution for the full path
+        if (subpath !== ".") {
+          const modulePath = posixPath.join(modulesPath, request);
+          const resolved = Module._resolveAsFile(modulePath) || Module._resolveAsDirectory(modulePath);
+          if (resolved) return Module._realpath(resolved);
+        }
       }
 
       throw createModuleNotFoundError(request, parent ? [parent.filename] : []);
@@ -4881,20 +4961,123 @@
     }
 
     static _resolveAsDirectory(path) {
+      return Module._resolveAsDirectoryWithSubpath(path, ".");
+    }
+
+    static _resolveAsDirectoryWithSubpath(path, subpath) {
       // Check for package.json
       const pkgPath = posixPath.join(path, "package.json");
       if (ops.op_howth_fs_exists(pkgPath)) {
         try {
           const pkg = JSON.parse(ops.op_howth_read_file(pkgPath));
-          const main = pkg.main || "index.js";
-          const mainPath = posixPath.resolve(path, main);
-          return Module._resolveAsFile(mainPath) || Module._resolveAsFile(posixPath.join(mainPath, "index"));
+
+          // Try package.json "exports" field first (Node.js 12+)
+          if (pkg.exports) {
+            const resolved = Module._resolveExports(pkg.exports, subpath, path);
+            if (resolved) return resolved;
+          }
+
+          // Fall back to "main" field (only for "." subpath)
+          if (subpath === ".") {
+            const main = pkg.main || "index.js";
+            const mainPath = posixPath.resolve(path, main);
+            return Module._resolveAsFile(mainPath) || Module._resolveAsFile(posixPath.join(mainPath, "index"));
+          }
         } catch (e) {
           // Fall through to index.js
         }
       }
-      // Try index files
-      return Module._resolveAsFile(posixPath.join(path, "index"));
+      // Try index files (only for "." subpath)
+      if (subpath === ".") {
+        return Module._resolveAsFile(posixPath.join(path, "index"));
+      }
+      return null;
+    }
+
+    static _resolveExports(exports, subpath, pkgDir) {
+      // String shorthand: "exports": "./main.js"
+      if (typeof exports === "string") {
+        if (subpath === ".") {
+          const resolved = posixPath.resolve(pkgDir, exports);
+          return Module._resolveAsFile(resolved) || Module._resolveAsFile(posixPath.join(resolved, "index"));
+        }
+        return null;
+      }
+
+      if (typeof exports !== "object" || exports === null) return null;
+
+      // Check if exports is a conditions object (keys don't start with ".")
+      // or a subpath map (keys start with ".")
+      const keys = Object.keys(exports);
+      const isSubpathMap = keys.length > 0 && keys[0].startsWith(".");
+
+      let target;
+      if (isSubpathMap) {
+        // Subpath map: { ".": ..., "./foo": ... }
+        target = exports[subpath];
+        if (target === undefined) {
+          // Try wildcard patterns: "./foo/*"
+          for (const key of keys) {
+            if (key.endsWith("/*") && subpath.startsWith(key.slice(0, -1))) {
+              const rest = subpath.slice(key.length - 1);
+              const pattern = exports[key];
+              if (typeof pattern === "string") {
+                const resolved = posixPath.resolve(pkgDir, pattern.replace("*", rest));
+                return Module._resolveAsFile(resolved);
+              }
+            } else if (key.endsWith("*") && subpath.startsWith(key.slice(0, -1))) {
+              const rest = subpath.slice(key.length - 1);
+              const pattern = exports[key];
+              if (typeof pattern === "string") {
+                const resolved = posixPath.resolve(pkgDir, pattern.replace("*", rest));
+                return Module._resolveAsFile(resolved);
+              }
+            }
+          }
+          return null;
+        }
+      } else {
+        // Conditions object: { "require": ..., "default": ... }
+        target = exports;
+      }
+
+      return Module._resolveExportTarget(target, pkgDir);
+    }
+
+    static _resolveExportTarget(target, pkgDir) {
+      if (typeof target === "string") {
+        const resolved = posixPath.resolve(pkgDir, target);
+        return Module._resolveAsFile(resolved) || Module._resolveAsFile(posixPath.join(resolved, "index"));
+      }
+
+      if (typeof target !== "object" || target === null) return null;
+
+      if (Array.isArray(target)) {
+        // First successful match wins
+        for (const item of target) {
+          const resolved = Module._resolveExportTarget(item, pkgDir);
+          if (resolved) return resolved;
+        }
+        return null;
+      }
+
+      // Conditions object — match in order: node, require, default
+      const conditions = ["node", "require", "default"];
+      for (const condition of conditions) {
+        if (condition in target) {
+          const resolved = Module._resolveExportTarget(target[condition], pkgDir);
+          if (resolved) return resolved;
+        }
+      }
+      return null;
+    }
+
+    static _realpath(path) {
+      try {
+        return ops.op_howth_fs_realpath(path);
+      } catch (e) {
+        return path;
+      }
     }
 
     static _isDirectory(path) {
@@ -4904,6 +5087,89 @@
       } catch (e) {
         return false;
       }
+    }
+
+    // Check if a file should be treated as ESM
+    static _isEsmFile(filename, content) {
+      // .cjs files are always CJS regardless of package.json type
+      if (filename.endsWith('.cjs')) return false;
+      // .mjs files are always ESM
+      if (filename.endsWith('.mjs')) return true;
+
+      // Check nearest package.json for "type": "module"
+      let dir = posixPath.dirname(filename);
+      for (let i = 0; i < 50; i++) {
+        const pkgPath = posixPath.join(dir, "package.json");
+        if (ops.op_howth_fs_exists(pkgPath)) {
+          try {
+            const pkg = JSON.parse(ops.op_howth_read_file(pkgPath));
+            if (pkg.type === "module") return true;
+          } catch {}
+          break; // found nearest package.json, stop
+        }
+        const parent = posixPath.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+
+      return false;
+    }
+
+    // Transform ESM source code to CJS (lightweight transform for require() of ESM).
+    // Handles the common patterns emitted by bundlers.
+    static _esmToCjs(source) {
+      let r = source;
+
+      // 1. import X from 'mod'
+      r = r.replace(
+        /\bimport\s+([\w$]+)\s+from\s+('[^']*'|"[^"]*")\s*;?/g,
+        'const {default: $1} = require($2);'
+      );
+
+      // 2. import { A, B as C } from 'mod'
+      r = r.replace(
+        /\bimport\s*\{([^}]+)\}\s*from\s*('[^']*'|"[^"]*")\s*;?/g,
+        (_, names, mod) => {
+          const transformed = names.replace(/\bas\b/g, ':');
+          return `const {${transformed}} = require(${mod});`;
+        }
+      );
+
+      // 3. import * as X from 'mod'
+      r = r.replace(
+        /\bimport\s*\*\s*as\s+([\w$]+)\s+from\s+('[^']*'|"[^"]*")\s*;?/g,
+        'const $1 = require($2);'
+      );
+
+      // 4. import 'mod' (side effect only)
+      r = r.replace(
+        /\bimport\s+('[^']*'|"[^"]*")\s*;?/g,
+        'require($1);'
+      );
+
+      // 5. export default X
+      r = r.replace(/\bexport\s+default\s+/g, 'module.exports.default = ');
+
+      // 6. export { A, B as C, ... }  (identifiers may contain $ )
+      r = r.replace(
+        /\bexport\s*\{([^}]+)\}\s*;?/g,
+        (_, names) => {
+          return names.split(',').map(n => {
+            n = n.trim();
+            const m = n.match(/^([\w$]+)\s+as\s+([\w$]+)$/);
+            if (m) return `module.exports.${m[2]}=${m[1]};`;
+            return `module.exports.${n}=${n};`;
+          }).join('');
+        }
+      );
+
+      // 7. export const/let/var/function/class
+      r = r.replace(
+        /\bexport\s+(const|let|var|function|class)\s+([\w$]+)/g,
+        '$1 $2'
+      );
+
+      return r;
     }
 
     static _load(request, parent) {
@@ -4928,7 +5194,12 @@
       }
 
       // Load the module
-      module.load(filename);
+      try {
+        module.load(filename);
+      } catch (err) {
+        moduleCache.delete(filename);
+        throw err;
+      }
 
       return module.exports;
     }
@@ -4941,8 +5212,7 @@
         const content = ops.op_howth_read_file(filename);
         this.exports = JSON.parse(content);
       } else if (extension === ".node") {
-        // Native addons not supported
-        throw new Error("Native addons (.node) are not supported");
+        Module._extensions['.node'](this, filename);
       } else {
         // JavaScript files
         this._compile(filename);
@@ -4965,6 +5235,14 @@
         if (newlineIndex !== -1) {
           content = content.slice(newlineIndex + 1);
         }
+      }
+
+      // Detect ESM: check if file uses ESM syntax and needs transformation.
+      // Node.js 22+ supports require() of ESM modules; we emulate this by
+      // converting ESM to CJS on the fly.
+      const isESM = Module._isEsmFile(filename, content);
+      if (isESM) {
+        content = Module._esmToCjs(content);
       }
 
       // Create a custom dynamic import function that passes the correct referrer
@@ -5038,10 +5316,47 @@
       const content = ops.op_howth_read_file(filename);
       module.exports = JSON.parse(content);
     },
-    '.node': () => { throw new Error('Native addons not supported'); },
+    '.node': (module, filename) => {
+      if (typeof Deno.core.ops.op_napi_open === 'function') {
+        try {
+          module.exports = Deno.core.ops.op_napi_open(
+            filename,
+            globalThis,
+            globalThis.Buffer,
+            (err) => { console.error('[howth] NAPI error:', err); },
+          );
+          return;
+        } catch (e) {
+          // If dlopen fails (e.g. non-NAPI addon using V8 C++ internals),
+          // return a lazy proxy that throws on actual use
+          const errMsg = `Native addon failed to load: ${filename}: ${e.message || e}`;
+          console.warn(`[howth] ${errMsg}`);
+          const thrower = () => { throw new Error(errMsg); };
+          const lazyTrap = {
+            get(_, prop) {
+              if (typeof prop === 'symbol' || prop === 'inspect' ||
+                  prop === 'toString' || prop === 'valueOf' ||
+                  prop === '__esModule' || prop === 'default') return undefined;
+              // Return a callable proxy so `new mod.Foo()` or `mod.bar()` defer the error
+              return new Proxy(thrower, {
+                construct: thrower,
+                apply: thrower,
+                get: lazyTrap.get,
+              });
+            },
+            construct: thrower,
+            apply: thrower,
+          };
+          module.exports = new Proxy(thrower, lazyTrap);
+          return;
+        }
+      }
+      throw new Error(`Native addon not supported: ${filename}`);
+    },
   };
 
   Module._cache = moduleCache;
+  Module.globalPaths = [];
 
   Module.prototype.require = function(id) {
     return Module._load(id, this);
@@ -5087,21 +5402,29 @@
     return null;
   }
 
+  // Resolve the effective parent path for require() calls.
+  // If the caller is inside a virtual temp module (V8 test worker),
+  // prefer __howth_main_module_path which points to the real source file.
+  function resolveParentPath() {
+    const callerPath = getCallerFilePath();
+    if (callerPath && globalThis.__howth_main_module_path) {
+      if (callerPath.includes("howth-v8-test-worker")) {
+        return globalThis.__howth_main_module_path;
+      }
+    }
+    return callerPath ||
+           globalThis.__howth_main_module_path ||
+           posixPath.join(ops.op_howth_cwd(), "__entrypoint__");
+  }
+
   // Global require (uses caller's path or main module path as parent)
   function globalRequire(id) {
-    // Try to determine parent path from call stack
-    const callerPath = getCallerFilePath();
-    const parentPath = callerPath ||
-                       globalThis.__howth_main_module_path ||
-                       posixPath.join(ops.op_howth_cwd(), "__entrypoint__");
+    const parentPath = resolveParentPath();
     const parentModule = new Module(parentPath, null);
     return Module._load(id, parentModule);
   }
   globalRequire.resolve = (id) => {
-    const callerPath = getCallerFilePath();
-    const parentPath = callerPath ||
-                       globalThis.__howth_main_module_path ||
-                       posixPath.join(ops.op_howth_cwd(), "__entrypoint__");
+    const parentPath = resolveParentPath();
     const parentModule = new Module(parentPath, null);
     return Module._resolveFilename(id, parentModule);
   };
@@ -5652,9 +5975,10 @@
     "node:inspector", "inspector",
     "node:vm", "vm",
     "node:tls", "tls",
+    "node:http2", "http2",
   ], () => {
 
-  class EventEmitter {
+  class _EventEmitterImpl {
     constructor() {
       if (!this._events) {
         this._events = new Map();
@@ -5668,6 +5992,9 @@
     }
 
     on(event, listener) {
+      if (typeof listener !== 'function') {
+        throw new TypeError(`"listener" argument must be a function. Received ${typeof listener}`);
+      }
       this._initEvents();
       if (!this._events.has(event)) {
         this._events.set(event, []);
@@ -5681,6 +6008,9 @@
     }
 
     once(event, listener) {
+      if (typeof listener !== 'function') {
+        throw new TypeError(`"listener" argument must be a function. Received ${typeof listener}`);
+      }
       const wrapper = (...args) => {
         this.off(event, wrapper);
         listener.apply(this, args);
@@ -5722,7 +6052,9 @@
       const listeners = this._events.get(event);
       if (!listeners || listeners.length === 0) return false;
       for (const listener of [...listeners]) {
-        listener.apply(this, args);
+        if (typeof listener === 'function') {
+          listener.apply(this, args);
+        }
       }
       return true;
     }
@@ -5746,6 +6078,9 @@
     }
 
     prependListener(event, listener) {
+      if (typeof listener !== 'function') {
+        throw new TypeError(`"listener" argument must be a function. Received ${typeof listener}`);
+      }
       this._initEvents();
       if (!this._events.has(event)) {
         this._events.set(event, []);
@@ -5755,6 +6090,9 @@
     }
 
     prependOnceListener(event, listener) {
+      if (typeof listener !== 'function') {
+        throw new TypeError(`"listener" argument must be a function. Received ${typeof listener}`);
+      }
       const wrapper = (...args) => {
         this.off(event, wrapper);
         listener.apply(this, args);
@@ -5777,6 +6115,25 @@
       return this._events.get(event) || [];
     }
   }
+
+  // Wrap _EventEmitterImpl so it can be called without 'new' (ES5 inheritance compat)
+  // npmlog and similar ES5-style code does: EventEmitter.call(this)
+  const EventEmitter = new Proxy(_EventEmitterImpl, {
+    apply(target, thisArg, args) {
+      // Called without 'new' — initialize 'this' in-place (e.g. EventEmitter.call(this))
+      // Do NOT change the prototype — callers like ioredis use this as a mixin
+      // and expect their own prototype chain to remain intact.
+      if (thisArg && typeof thisArg === 'object') {
+        if (!thisArg._events) {
+          thisArg._events = new Map();
+        }
+        thisArg._eventsCount = 0;
+        thisArg._maxListeners = undefined;
+        return thisArg;
+      }
+      return new _EventEmitterImpl();
+    },
+  });
 
   // Static methods
   EventEmitter.listenerCount = function (emitter, event) {
@@ -7563,6 +7920,157 @@
 
   globalThis.__howth_modules["node:crypto"] = cryptoModule;
   globalThis.__howth_modules["crypto"] = cryptoModule;
+
+  // ============================================================================
+  // bcrypt shim — pure JS replacement for the native bcrypt addon
+  // Uses PBKDF2-SHA256 internally but produces bcrypt-format output strings.
+  // This avoids NAPI compatibility issues with the native bcrypt binding.
+  // ============================================================================
+  (function() {
+    const BCRYPT_SALT_LEN = 16;
+    const BCRYPT_HASH_LEN = 31; // raw hash bytes
+    // Base64 alphabet used by bcrypt (different from standard base64)
+    const B64 = "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+    function bcryptBase64Encode(bytes, len) {
+      let out = "";
+      let c1, c2;
+      let i = 0;
+      while (i < len) {
+        c1 = bytes[i++] & 0xff;
+        out += B64[(c1 >> 2) & 0x3f];
+        c1 = (c1 & 0x03) << 4;
+        if (i >= len) { out += B64[c1 & 0x3f]; break; }
+        c2 = bytes[i++] & 0xff;
+        c1 |= (c2 >> 4) & 0x0f;
+        out += B64[c1 & 0x3f];
+        c1 = (c2 & 0x0f) << 2;
+        if (i >= len) { out += B64[c1 & 0x3f]; break; }
+        c2 = bytes[i++] & 0xff;
+        c1 |= (c2 >> 6) & 0x03;
+        out += B64[c1 & 0x3f];
+        out += B64[c2 & 0x3f];
+      }
+      return out;
+    }
+
+    function bcryptBase64Decode(str) {
+      const bytes = [];
+      let i = 0;
+      while (i < str.length) {
+        const c1 = B64.indexOf(str[i++]);
+        if (c1 < 0 || i >= str.length) break;
+        const c2 = B64.indexOf(str[i++]);
+        if (c2 < 0) break;
+        bytes.push(((c1 << 2) | (c2 >> 4)) & 0xff);
+        if (i >= str.length) break;
+        const c3 = B64.indexOf(str[i++]);
+        if (c3 < 0) break;
+        bytes.push(((c2 << 4) | (c3 >> 2)) & 0xff);
+        if (i >= str.length) break;
+        const c4 = B64.indexOf(str[i++]);
+        if (c4 < 0) break;
+        bytes.push(((c3 << 6) | c4) & 0xff);
+      }
+      return new Uint8Array(bytes);
+    }
+
+    function genSaltSync(rounds, minor) {
+      rounds = rounds || 10;
+      minor = minor || "b";
+      const saltBytes = new Uint8Array(BCRYPT_SALT_LEN);
+      crypto.getRandomValues(saltBytes);
+      const saltStr = bcryptBase64Encode(saltBytes, BCRYPT_SALT_LEN);
+      return `$2${minor}$${String(rounds).padStart(2, "0")}$${saltStr}`;
+    }
+
+    function genSalt(rounds, minor, cb) {
+      if (typeof rounds === "function") { cb = rounds; rounds = 10; minor = "b"; }
+      else if (typeof minor === "function") { cb = minor; minor = "b"; }
+      if (!cb) return new Promise((resolve, reject) => {
+        try { resolve(genSaltSync(rounds, minor)); } catch (e) { reject(e); }
+      });
+      process.nextTick(() => {
+        try { cb(null, genSaltSync(rounds, minor)); } catch (e) { cb(e); }
+      });
+    }
+
+    function parseSalt(saltStr) {
+      // $2b$10$<22 chars of base64 salt>
+      const m = saltStr.match(/^\$2([aby]?)\$(\d{2})\$(.{22})/);
+      if (!m) throw new Error("Invalid salt: " + saltStr);
+      return { minor: m[1], rounds: parseInt(m[2], 10), saltB64: m[3] };
+    }
+
+    function hashRaw(password, saltStr) {
+      const { rounds, saltB64 } = parseSalt(saltStr);
+      const saltBytes = bcryptBase64Decode(saltB64);
+      const passBytes = typeof password === "string"
+        ? new TextEncoder().encode(password)
+        : password;
+      // Use PBKDF2-SHA256 as the KDF (not true bcrypt Blowfish, but consistent)
+      const iterations = 1 << rounds; // 2^rounds to approximate bcrypt cost
+      const dk = ops.op_howth_pbkdf2("SHA-256", passBytes, saltBytes, iterations, BCRYPT_HASH_LEN);
+      return new Uint8Array(dk);
+    }
+
+    function hashSync(data, saltOrRounds) {
+      let salt;
+      if (typeof saltOrRounds === "number") {
+        salt = genSaltSync(saltOrRounds);
+      } else {
+        salt = saltOrRounds;
+      }
+      const hash = hashRaw(data, salt);
+      const prefix = salt.substring(0, 29); // "$2b$10$" + 22 chars of salt
+      return prefix + bcryptBase64Encode(hash, BCRYPT_HASH_LEN);
+    }
+
+    function hash(data, saltOrRounds, cb) {
+      if (!cb) return new Promise((resolve, reject) => {
+        try { resolve(hashSync(data, saltOrRounds)); } catch (e) { reject(e); }
+      });
+      process.nextTick(() => {
+        try { cb(null, hashSync(data, saltOrRounds)); } catch (e) { cb(e); }
+      });
+    }
+
+    function compareSync(data, hashStr) {
+      if (!hashStr || !hashStr.startsWith("$2")) return false;
+      const salt = hashStr.substring(0, 29);
+      const expected = hashSync(data, salt);
+      // Constant-time comparison
+      if (expected.length !== hashStr.length) return false;
+      let diff = 0;
+      for (let i = 0; i < expected.length; i++) {
+        diff |= expected.charCodeAt(i) ^ hashStr.charCodeAt(i);
+      }
+      return diff === 0;
+    }
+
+    function compare(data, hashStr, cb) {
+      if (!cb) return new Promise((resolve, reject) => {
+        try { resolve(compareSync(data, hashStr)); } catch (e) { reject(e); }
+      });
+      process.nextTick(() => {
+        try { cb(null, compareSync(data, hashStr)); } catch (e) { cb(e); }
+      });
+    }
+
+    function getRounds(hashStr) {
+      const m = hashStr.match(/^\$2[aby]?\$(\d{2})\$/);
+      return m ? parseInt(m[1], 10) : 0;
+    }
+
+    const bcryptModule = {
+      genSaltSync, genSalt,
+      hashSync, hash,
+      compareSync, compare,
+      getRounds,
+    };
+
+    globalThis.__howth_modules["bcrypt"] = bcryptModule;
+  })();
 
   // ============================================================================
   // child_process module
@@ -11566,34 +12074,162 @@
       this.remotePort = undefined;
       this.remoteFamily = undefined;
       this.timeout = 0;
+      this._tcpConnId = null;
+      this._reading = false;
+      this._timeoutTimer = null;
     }
 
-    connect(options, connectListener) {
-      if (typeof options === "number") {
-        options = { port: options };
+    connect(...args) {
+      let options, connectListener;
+      // Handle connect(port[, host][, listener]) and connect(options[, listener])
+      if (typeof args[0] === "number") {
+        options = { port: args[0] };
+        if (typeof args[1] === "string") {
+          options.host = args[1];
+          connectListener = args[2];
+        } else {
+          connectListener = args[1];
+        }
+      } else if (typeof args[0] === "string") {
+        // Unix socket path — not supported yet, just store for compat
+        options = { path: args[0] };
+        connectListener = args[1];
+      } else {
+        options = args[0] || {};
+        connectListener = args[1];
       }
       this.connecting = true;
       this.readyState = "opening";
 
-      if (connectListener) {
+      if (typeof connectListener === "function") {
         this.once("connect", connectListener);
       }
 
-      // Would need native TCP ops to actually connect
-      setTimeout(() => {
+      const host = options.host || "127.0.0.1";
+      const port = options.port;
+
+      if (options.path || !port) {
+        // Unix sockets or no port — can't handle with TCP ops yet.
+        // Emit error async so callers can attach listeners.
+        setTimeout(() => {
+          const err = new Error(`connect ENOENT ${options.path || "no port"}`);
+          err.code = "ENOENT";
+          err.syscall = "connect";
+          this.connecting = false;
+          this.destroy(err);
+        }, 0);
+        return this;
+      }
+
+      // Use real TCP ops
+      core.ops.op_howth_tcp_connect(host, port).then((info) => {
+        this._tcpConnId = info.id;
+        this.localAddress = info.localAddress;
+        this.localPort = info.localPort;
+        this.localFamily = "IPv4";
+        this.remoteAddress = info.remoteAddress;
+        this.remotePort = info.remotePort;
+        this.remoteFamily = "IPv4";
         this.connecting = false;
         this.pending = false;
         this.readyState = "open";
         this.emit("connect");
         this.emit("ready");
-      }, 0);
+        this._startReading();
+      }).catch((err) => {
+
+        this.connecting = false;
+        const error = new Error(`connect ECONNREFUSED ${host}:${port}`);
+        error.code = "ECONNREFUSED";
+        error.syscall = "connect";
+        error.address = host;
+        error.port = port;
+        this.destroy(error);
+      });
 
       return this;
     }
 
+    _startReading() {
+      if (this._reading || this.destroyed || this._tcpConnId === null) return;
+      this._reading = true;
+      this._readLoop();
+    }
+
+    _readLoop() {
+      if (this.destroyed || this._tcpConnId === null) {
+        this._reading = false;
+        return;
+      }
+      core.ops.op_howth_tcp_read(this._tcpConnId).then((data) => {
+        if (this.destroyed) { this._reading = false; return; }
+        if (data === null) {
+          // EOF
+          this._reading = false;
+          this.push(null);
+          this.readyState = "readOnly";
+          this.emit("end");
+          return;
+        }
+        const buf = Buffer.from(data);
+        this.bytesRead += buf.length;
+        try {
+          this.push(buf);
+        } catch (pushErr) {
+          this._reading = false;
+          this.destroy(pushErr);
+          return;
+        }
+        this._resetTimeout();
+        // Continue reading
+        this._readLoop();
+      }).catch((err) => {
+        console.error(`[TCP] read catch: ${err}`);
+        this._reading = false;
+        if (!this.destroyed) {
+          this.destroy(err);
+        }
+      });
+    }
+
+    _read(size) {
+      // Reading is driven by _readLoop, not by pull.
+    }
+
+    _write(chunk, encoding, callback) {
+      if (this._tcpConnId === null) {
+        callback(new Error("Socket is not connected"));
+        return;
+      }
+      const buf = typeof chunk === "string" ? Buffer.from(chunk, encoding) : chunk;
+      core.ops.op_howth_tcp_write(this._tcpConnId, buf).then((n) => {
+        this.bytesWritten += n;
+        this._resetTimeout();
+        callback();
+      }).catch((err) => {
+        callback(err);
+      });
+    }
+
+    _resetTimeout() {
+      if (this.timeout > 0) {
+        if (this._timeoutTimer) clearTimeout(this._timeoutTimer);
+        this._timeoutTimer = setTimeout(() => {
+          this.emit("timeout");
+        }, this.timeout);
+      }
+    }
+
     setTimeout(timeout, callback) {
       this.timeout = timeout;
+      if (this._timeoutTimer) {
+        clearTimeout(this._timeoutTimer);
+        this._timeoutTimer = null;
+      }
       if (callback) this.once("timeout", callback);
+      if (timeout > 0 && this._tcpConnId !== null) {
+        this._resetTimeout();
+      }
       return this;
     }
 
@@ -11620,12 +12256,64 @@
       if (this.destroyed) return this;
       this.destroyed = true;
       this.readyState = "closed";
+      if (this._timeoutTimer) {
+        clearTimeout(this._timeoutTimer);
+        this._timeoutTimer = null;
+      }
+      if (this._tcpConnId !== null) {
+        core.ops.op_howth_tcp_close(this._tcpConnId).catch(() => {});
+        this._tcpConnId = null;
+      }
+      if (error) {
+        this.emit("error", error);
+      }
       this.emit("close", !!error);
       return this;
     }
 
     end(data, encoding, callback) {
-      super.end(data, encoding, callback);
+      if (typeof data === "function") {
+        callback = data;
+        data = undefined;
+        encoding = undefined;
+      } else if (typeof encoding === "function") {
+        callback = encoding;
+        encoding = undefined;
+      }
+      // Write any final data
+      if (data !== undefined && data !== null) {
+        this.write(data, encoding);
+      }
+      // Close the connection after any pending writes complete
+      const doClose = () => {
+        if (this._tcpConnId !== null) {
+          core.ops.op_howth_tcp_close(this._tcpConnId).catch(() => {});
+          this._tcpConnId = null;
+        }
+        this._reading = false;
+        this.destroyed = true;
+        this.readyState = "closed";
+        this.writable = false;
+        if (callback) callback();
+        this.emit("finish");
+        this.emit("close", false);
+      };
+      // If nothing is being written, close now; otherwise wait for writes to drain
+      const ws = this._writableState;
+      if (ws) {
+        ws.ended = true;
+        if (!ws.writing && ws.buffer.length === 0) {
+          process.nextTick(doClose);
+        } else {
+          this.once("finish", doClose);
+          // Trigger the finish from the writable side
+          if (!ws.writing && ws.buffer.length === 0) {
+            process.nextTick(() => this._finish && this._finish());
+          }
+        }
+      } else {
+        process.nextTick(doClose);
+      }
       return this;
     }
   }
@@ -12095,6 +12783,174 @@
 
   globalThis.__howth_modules["node:tls"] = tlsModule;
   globalThis.__howth_modules["tls"] = tlsModule;
+
+  // http2 module — stub with constants needed by googleapis and similar libs
+  const http2Constants = {
+    HTTP2_HEADER_STATUS: ":status",
+    HTTP2_HEADER_METHOD: ":method",
+    HTTP2_HEADER_AUTHORITY: ":authority",
+    HTTP2_HEADER_SCHEME: ":scheme",
+    HTTP2_HEADER_PATH: ":path",
+    HTTP2_HEADER_PROTOCOL: ":protocol",
+    HTTP2_HEADER_ACCEPT_ENCODING: "accept-encoding",
+    HTTP2_HEADER_ACCEPT: "accept",
+    HTTP2_HEADER_AUTHORIZATION: "authorization",
+    HTTP2_HEADER_CACHE_CONTROL: "cache-control",
+    HTTP2_HEADER_CONNECTION: "connection",
+    HTTP2_HEADER_CONTENT_ENCODING: "content-encoding",
+    HTTP2_HEADER_CONTENT_LENGTH: "content-length",
+    HTTP2_HEADER_CONTENT_TYPE: "content-type",
+    HTTP2_HEADER_COOKIE: "cookie",
+    HTTP2_HEADER_DATE: "date",
+    HTTP2_HEADER_HOST: "host",
+    HTTP2_HEADER_LOCATION: "location",
+    HTTP2_HEADER_SET_COOKIE: "set-cookie",
+    HTTP2_HEADER_TRANSFER_ENCODING: "transfer-encoding",
+    HTTP2_HEADER_UPGRADE: "upgrade",
+    HTTP2_HEADER_USER_AGENT: "user-agent",
+    HTTP2_HEADER_VARY: "vary",
+    HTTP2_HEADER_KEEP_ALIVE: "keep-alive",
+    HTTP2_HEADER_CONTENT_DISPOSITION: "content-disposition",
+    HTTP2_HEADER_ETAG: "etag",
+    HTTP2_HEADER_IF_MODIFIED_SINCE: "if-modified-since",
+    HTTP2_HEADER_IF_NONE_MATCH: "if-none-match",
+    HTTP2_HEADER_RANGE: "range",
+    HTTP2_HEADER_REFERER: "referer",
+    HTTP2_HEADER_SERVER: "server",
+    HTTP2_HEADER_ACCEPT_LANGUAGE: "accept-language",
+    HTTP2_HEADER_ACCEPT_RANGES: "accept-ranges",
+    HTTP2_HEADER_ORIGIN: "origin",
+    NGHTTP2_NO_ERROR: 0,
+    NGHTTP2_PROTOCOL_ERROR: 1,
+    NGHTTP2_INTERNAL_ERROR: 2,
+    NGHTTP2_CANCEL: 8,
+  };
+
+  const http2Module = {
+    constants: http2Constants,
+    connect() {
+      throw new Error("http2.connect() is not implemented in howth runtime");
+    },
+    createServer() {
+      throw new Error("http2.createServer() is not implemented in howth runtime");
+    },
+    createSecureServer() {
+      throw new Error("http2.createSecureServer() is not implemented in howth runtime");
+    },
+    getDefaultSettings() { return {}; },
+    getPackedSettings() { return Buffer.alloc(0); },
+    getUnpackedSettings() { return {}; },
+    sensitiveHeaders: Symbol("http2.sensitiveHeaders"),
+  };
+
+  globalThis.__howth_modules["node:http2"] = http2Module;
+  globalThis.__howth_modules["http2"] = http2Module;
+
+  // ═══════════════════════════════════════════════════════════════
+  //  readline
+  // ═══════════════════════════════════════════════════════════════
+  const readlineModule = {
+    createInterface(opts) {
+      const EventEmitter = globalThis.__howth_modules["events"];
+      const rl = Object.create(EventEmitter.prototype);
+      EventEmitter.call(rl);
+
+      let buffer = "";
+      let closed = false;
+      const lineQueue = [];
+      let lineResolve = null;
+      let done = false;
+
+      function pushLine(line) {
+        rl.emit("line", line);
+        if (lineResolve) {
+          const resolve = lineResolve;
+          lineResolve = null;
+          resolve({ value: line, done: false });
+        } else {
+          lineQueue.push(line);
+        }
+      }
+
+      function finish() {
+        if (closed) return;
+        closed = true;
+        // Flush remaining buffer (no trailing newline)
+        if (buffer.length > 0) {
+          pushLine(buffer);
+          buffer = "";
+        }
+        done = true;
+        rl.emit("close");
+        if (lineResolve) {
+          const resolve = lineResolve;
+          lineResolve = null;
+          resolve({ value: undefined, done: true });
+        }
+      }
+
+      const input = opts && (opts.input || opts);
+      if (input && typeof input.on === "function") {
+        const crlfDelay = opts && opts.crlfDelay;
+        input.on("data", (chunk) => {
+          if (closed) return;
+          buffer += (typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+          let idx;
+          while ((idx = buffer.indexOf("\n")) !== -1) {
+            let line = buffer.slice(0, idx);
+            // Strip trailing \r for CRLF
+            if (line.length > 0 && line.charCodeAt(line.length - 1) === 13) {
+              line = line.slice(0, -1);
+            }
+            buffer = buffer.slice(idx + 1);
+            pushLine(line);
+          }
+        });
+        input.on("end", finish);
+        input.on("error", (err) => { rl.emit("error", err); finish(); });
+        // Ensure stream starts flowing
+        if (typeof input.resume === "function") input.resume();
+      }
+
+      rl.question = (query, cb) => { if (cb) cb(""); };
+      rl.close = () => { finish(); };
+      rl.prompt = () => {};
+      rl.write = () => {};
+      rl.pause = () => rl;
+      rl.resume = () => rl;
+      rl.setPrompt = () => {};
+      rl[Symbol.asyncIterator] = function() {
+        return {
+          next() {
+            if (lineQueue.length > 0) {
+              return Promise.resolve({ value: lineQueue.shift(), done: false });
+            }
+            if (done) {
+              return Promise.resolve({ value: undefined, done: true });
+            }
+            return new Promise((resolve) => { lineResolve = resolve; });
+          },
+          return() {
+            rl.close();
+            return Promise.resolve({ value: undefined, done: true });
+          },
+        };
+      };
+      return rl;
+    },
+    cursorTo() {},
+    moveCursor() {},
+    clearLine() {},
+    clearScreenDown() {},
+  };
+  readlineModule.promises = {
+    createInterface: readlineModule.createInterface,
+  };
+  globalThis.__howth_modules["node:readline"] = readlineModule;
+  globalThis.__howth_modules["readline"] = readlineModule;
+  globalThis.__howth_modules["node:readline/promises"] = readlineModule.promises;
+  globalThis.__howth_modules["readline/promises"] = readlineModule.promises;
+
   return globalThis.__howth_modules["node:events"];
   }); // end heavy lazy block
 
@@ -12140,6 +12996,7 @@
     const suiteStack = []; // stack of { name, before, after, beforeEach, afterEach, children }
     let rootSuite = { name: '<root>', before: [], after: [], beforeEach: [], afterEach: [], children: [] };
     let currentSuite = rootSuite;
+    let hasOnly = false; // tracks whether any .only() was registered
 
     function pushSuite(name) {
       const suite = { name, before: [], after: [], beforeEach: [], afterEach: [], children: [] };
@@ -12165,7 +13022,15 @@
       }
       const skip = options.skip === true || (typeof options.skip === 'string');
       const todo = options.todo === true || (typeof options.todo === 'string');
-      currentSuite.children.push({ type: 'test', name, fn, skip: skip || todo });
+      const entry = { type: 'test', name, fn, skip: skip || todo, only: !!options.only };
+      currentSuite.children.push(entry);
+      if (options.only) hasOnly = true;
+      // Return chainable object for Mocha compatibility (e.g. it("x", fn).timeout(5000))
+      return {
+        timeout(ms) { entry._timeout = ms; return this; },
+        retries(n) { return this; },
+        slow(ms) { return this; },
+      };
     }
 
     // describe(name, [options], fn) — synchronous suite registration
@@ -12179,22 +13044,52 @@
         fn = maybeFn;
       }
       const skip = options.skip === true;
+      const only = !!options.only;
+      if (only) hasOnly = true;
       if (skip) {
         currentSuite.children.push({ type: 'suite', suite: { name, before: [], after: [], beforeEach: [], afterEach: [], children: [], skip: true } });
         return;
       }
       pushSuite(name);
-      if (fn) fn();
+      if (only) currentSuite.only = true;
+      // Call fn with a Mocha-compatible context (this.timeout(), this.retries(), etc.)
+      if (fn) fn.call(_makeMochaContext(currentSuite));
       popSuite();
+    }
+
+    // Mocha-compatible context object for describe/before/it callbacks
+    function _makeMochaContext(suite) {
+      return {
+        timeout(ms) { if (suite) suite._timeout = ms; return this; },
+        retries(n) { return this; },
+        slow(ms) { return this; },
+      };
     }
 
     // it() is an alias for test()
     const it = test;
 
-    function before(fn) { currentSuite.before.push(fn); }
-    function after(fn) { currentSuite.after.push(fn); }
-    function beforeEach(fn) { currentSuite.beforeEach.push(fn); }
-    function afterEach(fn) { currentSuite.afterEach.push(fn); }
+    function before(fn) {
+      const suite = currentSuite;
+      // Wrap fn to be called with Mocha context
+      const wrapped = function() { return fn.call(_makeMochaContext(suite)); };
+      suite.before.push(wrapped);
+    }
+    function after(fn) {
+      const suite = currentSuite;
+      const wrapped = function() { return fn.call(_makeMochaContext(suite)); };
+      suite.after.push(wrapped);
+    }
+    function beforeEach(fn) {
+      const suite = currentSuite;
+      const wrapped = function() { return fn.call(_makeMochaContext(suite)); };
+      suite.beforeEach.push(wrapped);
+    }
+    function afterEach(fn) {
+      const suite = currentSuite;
+      const wrapped = function() { return fn.call(_makeMochaContext(suite)); };
+      suite.afterEach.push(wrapped);
+    }
 
     // Execute all registered tests and return results
     async function __howth_run_tests() {
@@ -12223,13 +13118,18 @@
         // Run suite-level before hooks
         for (const hook of suite.before) {
           try { await hook(); } catch (e) {
-            // If before hook fails, skip all tests in this suite
-            for (const child of suite.children) {
-              if (child.type === 'test') {
-                const fullName = prefix ? prefix + ' > ' + child.name : child.name;
-                results.push({ name: fullName, status: 'fail', duration_ms: 0, error: 'before hook failed: ' + (e.message || String(e)) });
+            // If before hook fails, mark all tests in this suite (recursively) as failed
+            function failAll(s, pfx) {
+              for (const child of s.children) {
+                if (child.type === 'test') {
+                  const fullName = pfx ? pfx + ' > ' + child.name : child.name;
+                  results.push({ name: fullName, status: 'fail', duration_ms: 0, error: 'before hook failed: ' + (e.message || String(e)) });
+                } else if (child.type === 'suite') {
+                  failAll(child.suite, pfx ? pfx + ' > ' + child.suite.name : child.suite.name);
+                }
               }
             }
+            failAll(suite, prefix);
             return;
           }
         }
@@ -12249,7 +13149,15 @@
             try {
               for (const hook of allBeforeEach) await hook();
               if (child.fn) {
-                const result = child.fn();
+                const ctx = _makeMochaContext(suite);
+                let result;
+                if (child.fn.length > 0) {
+                  result = new Promise((resolve, reject) => {
+                    child.fn.call(ctx, (err) => { err ? reject(err) : resolve(); });
+                  });
+                } else {
+                  result = child.fn.call(ctx);
+                }
                 if (result && typeof result.then === 'function') await result;
               }
             } catch (e) {
@@ -12280,6 +13188,33 @@
         }
       }
 
+      // If any .only was registered, mark non-only tests/suites as skipped
+      if (hasOnly) {
+        function applyOnly(suite) {
+          // A suite marked .only means all its children run
+          if (suite.only) return;
+          for (const child of suite.children) {
+            if (child.type === 'test' && !child.only) {
+              child.skip = true;
+            } else if (child.type === 'suite') {
+              if (!child.suite.only && !suiteHasOnly(child.suite)) {
+                child.suite.skip = true;
+              } else {
+                applyOnly(child.suite);
+              }
+            }
+          }
+        }
+        function suiteHasOnly(suite) {
+          for (const child of suite.children) {
+            if (child.type === 'test' && child.only) return true;
+            if (child.type === 'suite' && (child.suite.only || suiteHasOnly(child.suite))) return true;
+          }
+          return false;
+        }
+        applyOnly(rootSuite);
+      }
+
       await runSuite(rootSuite, [], [], '');
 
       const totalDuration = performance.now() - startTime;
@@ -12306,6 +13241,7 @@
       rootSuite = { name: '<root>', before: [], after: [], beforeEach: [], afterEach: [], children: [] };
       currentSuite = rootSuite;
       suiteStack.length = 0;
+      hasOnly = false;
 
       return report;
     }
@@ -12340,6 +13276,41 @@
     globalThis.__howth_modules["node:test"] = testModule;
     globalThis.__howth_modules["test"] = testModule;
     globalThis.__howth_run_tests = __howth_run_tests;
+
+    // howth:test — mocha-compatible API wrapping the same test infrastructure
+    (function() {
+      // describe with .only and .skip
+      function mochaDescribe(name, fn) { describe(name, fn); }
+      mochaDescribe.only = function(name, fn) { describe(name, { only: true }, fn); };
+      mochaDescribe.skip = function(name, fn) { describe(name, { skip: true }, fn); };
+
+      // context is an alias for describe
+      const context = mochaDescribe;
+      context.only = mochaDescribe.only;
+      context.skip = mochaDescribe.skip;
+
+      // it with .only and .skip
+      function mochaIt(name, fn) { return it(name, fn); }
+      mochaIt.only = function(name, fn) { return it(name, { only: true }, fn); };
+      mochaIt.skip = function(name, fn) { return it(name, { skip: true }, fn); };
+
+      // specify is an alias for it
+      const specify = mochaIt;
+      specify.only = mochaIt.only;
+      specify.skip = mochaIt.skip;
+
+      const howthTestModule = mochaDescribe;
+      howthTestModule.describe = mochaDescribe;
+      howthTestModule.context = context;
+      howthTestModule.it = mochaIt;
+      howthTestModule.specify = specify;
+      howthTestModule.before = before;
+      howthTestModule.after = after;
+      howthTestModule.beforeEach = beforeEach;
+      howthTestModule.afterEach = afterEach;
+
+      globalThis.__howth_modules["howth:test"] = howthTestModule;
+    })();
   })();
 
   // Mark bootstrap as complete

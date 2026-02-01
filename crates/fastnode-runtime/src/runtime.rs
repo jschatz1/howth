@@ -1,7 +1,7 @@
 //! Runtime implementation using deno_core.
 
 use crate::module_loader::HowthModuleLoader;
-use deno_core::{extension, op2, JsRuntime, ModuleSpecifier, RuntimeOptions as DenoRuntimeOptions};
+use deno_core::{extension, op2, JsBuffer, JsRuntime, ModuleSpecifier, RuntimeOptions as DenoRuntimeOptions};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write, Seek, SeekFrom};
@@ -11,6 +11,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event};
+
+/// Permissive NAPI permissions — howth has no permission system.
+struct HowthNapiPermissions;
+
+impl deno_napi::NapiPermissions for HowthNapiPermissions {
+    fn check(&mut self, path: &str) -> Result<PathBuf, deno_core::error::AnyError> {
+        Ok(PathBuf::from(path))
+    }
+}
 
 /// Format an IO error in Node.js style.
 /// Node.js format: `CODE: message, syscall 'path'`
@@ -132,6 +141,7 @@ extension!(
         op_howth_random_uuid,
         op_howth_hash,
         op_howth_hmac,
+        op_howth_pbkdf2,
         op_howth_cipher,
         op_howth_cipher_gcm,
         op_howth_sign,
@@ -203,6 +213,11 @@ extension!(
         op_howth_http_accept,
         op_howth_http_respond,
         op_howth_http_close,
+        // TCP client ops
+        op_howth_tcp_connect,
+        op_howth_tcp_read,
+        op_howth_tcp_write,
+        op_howth_tcp_close,
     ],
 );
 
@@ -225,7 +240,11 @@ fn op_howth_print_error(#[string] msg: &str) {
 #[op2]
 #[string]
 fn op_howth_read_file(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
-    std::fs::read_to_string(path).map_err(|e| format_fs_error(e, "open", path))
+    let bytes = std::fs::read(path).map_err(|e| format_fs_error(e, "open", path))?;
+    match String::from_utf8(bytes) {
+        Ok(s) => Ok(s),
+        Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
 }
 
 /// Write string to a file.
@@ -269,10 +288,12 @@ pub struct DirEntry {
 #[op2]
 #[serde]
 fn op_howth_fs_readdir(#[string] path: &str) -> Result<Vec<DirEntry>, deno_core::error::AnyError> {
-    let entries = std::fs::read_dir(path)
+    let mut raw_entries: Vec<_> = std::fs::read_dir(path)
         .map_err(|e| format_fs_error(e, "scandir", path))?
         .filter_map(|entry| entry.ok())
-        .map(|entry| {
+        .collect();
+    raw_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    let entries = raw_entries.into_iter().map(|entry| {
             let file_type = entry.file_type().ok();
             let is_symlink = file_type.map(|ft| ft.is_symlink()).unwrap_or(false);
             // For symlinks, follow the link to determine the target type
@@ -1094,8 +1115,9 @@ fn run_worker_script(filename: &str, _worker_data: &str) -> Result<(), Box<dyn s
     let rt = Runtime::new()?;
 
     rt.block_on(async {
-        // Create the extension
+        // Create the extensions
         let ext = howth_runtime::init_ops();
+        let napi_ext = deno_napi::deno_napi::init_ops::<HowthNapiPermissions>();
 
         // Create module loader
         let module_loader = Rc::new(HowthModuleLoader::new(
@@ -1105,12 +1127,13 @@ fn run_worker_script(filename: &str, _worker_data: &str) -> Result<(), Box<dyn s
         // Create runtime options
         let options = DenoRuntimeOptions {
             module_loader: Some(module_loader),
-            extensions: vec![ext],
+            extensions: vec![ext, napi_ext],
             ..Default::default()
         };
 
         // Create the JS runtime
         let mut runtime = JsRuntime::new(options);
+        runtime.op_state().borrow_mut().put(HowthNapiPermissions);
 
         // Execute bootstrap
         let bootstrap_code = include_str!("bootstrap.js");
@@ -1905,6 +1928,121 @@ async fn op_howth_http_close(server_id: u32) -> Result<(), deno_core::error::Any
     Ok(())
 }
 
+// ── TCP Client implementation ──────────────────────────────────────────────
+
+/// Global connection ID counter for TCP clients.
+static NEXT_TCP_CONN_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Separate storage for read and write halves so they can be borrowed independently
+/// without holding a lock across await points.
+static TCP_READERS: std::sync::OnceLock<Mutex<HashMap<u32, tokio::net::tcp::OwnedReadHalf>>> =
+    std::sync::OnceLock::new();
+static TCP_WRITERS: std::sync::OnceLock<Mutex<HashMap<u32, tokio::net::tcp::OwnedWriteHalf>>> =
+    std::sync::OnceLock::new();
+
+fn get_tcp_readers() -> &'static Mutex<HashMap<u32, tokio::net::tcp::OwnedReadHalf>> {
+    TCP_READERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn get_tcp_writers() -> &'static Mutex<HashMap<u32, tokio::net::tcp::OwnedWriteHalf>> {
+    TCP_WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Connect to a TCP server.  Returns { id, localAddress, localPort, remoteAddress, remotePort }.
+#[op2(async)]
+#[serde]
+async fn op_howth_tcp_connect(
+    #[string] host: String,
+    port: u16,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    let addr = format!("{}:{}", host, port);
+    let stream = tokio::net::TcpStream::connect(&addr)
+        .await
+        .map_err(|e| deno_core::error::AnyError::msg(format!("TCP connect failed ({}): {}", addr, e)))?;
+
+    let local = stream.local_addr().ok();
+    let remote = stream.peer_addr().ok();
+
+    let conn_id = NEXT_TCP_CONN_ID.fetch_add(1, Ordering::SeqCst);
+    let (read_half, write_half) = stream.into_split();
+
+    get_tcp_readers().lock().await.insert(conn_id, read_half);
+    get_tcp_writers().lock().await.insert(conn_id, write_half);
+
+    Ok(serde_json::json!({
+        "id": conn_id,
+        "localAddress": local.map(|a| a.ip().to_string()).unwrap_or_default(),
+        "localPort": local.map(|a| a.port()).unwrap_or(0),
+        "remoteAddress": remote.map(|a| a.ip().to_string()).unwrap_or_default(),
+        "remotePort": remote.map(|a| a.port()).unwrap_or(0),
+    }))
+}
+
+/// Read from a TCP connection. Takes the read half out of the map during I/O
+/// to avoid holding the lock across an await. Returns data as an array of
+/// numbers (for Buffer construction on the JS side) or null on EOF.
+#[op2(async)]
+#[serde]
+async fn op_howth_tcp_read(conn_id: u32) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use tokio::io::AsyncReadExt;
+
+    // Take the read half out so we don't hold the lock during I/O.
+    let mut reader = {
+        let mut readers = get_tcp_readers().lock().await;
+        readers
+            .remove(&conn_id)
+            .ok_or_else(|| deno_core::error::AnyError::msg("TCP connection not found"))?
+    };
+
+    let mut buf = vec![0u8; 65536];
+    let result = reader.read(&mut buf).await;
+
+    // Put the reader back (even on error, so close can clean up).
+    get_tcp_readers().lock().await.insert(conn_id, reader);
+
+    let n = result
+        .map_err(|e| deno_core::error::AnyError::msg(format!("TCP read failed: {}", e)))?;
+
+    if n == 0 {
+        Ok(serde_json::Value::Null)
+    } else {
+        buf.truncate(n);
+        Ok(serde_json::json!(buf))
+    }
+}
+
+/// Write data to a TCP connection. Takes the write half out during I/O.
+#[op2(async)]
+async fn op_howth_tcp_write(
+    conn_id: u32,
+    #[buffer] data: JsBuffer,
+) -> Result<u32, deno_core::error::AnyError> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut writer = {
+        let mut writers = get_tcp_writers().lock().await;
+        writers
+            .remove(&conn_id)
+            .ok_or_else(|| deno_core::error::AnyError::msg("TCP connection not found"))?
+    };
+
+    let len = data.len();
+    let result = writer.write_all(&data).await;
+
+    // Put the writer back.
+    get_tcp_writers().lock().await.insert(conn_id, writer);
+
+    result.map_err(|e| deno_core::error::AnyError::msg(format!("TCP write failed: {}", e)))?;
+    Ok(len as u32)
+}
+
+/// Close a TCP connection.
+#[op2(async)]
+async fn op_howth_tcp_close(conn_id: u32) -> Result<(), deno_core::error::AnyError> {
+    get_tcp_readers().lock().await.remove(&conn_id);
+    get_tcp_writers().lock().await.remove(&conn_id);
+    Ok(())
+}
+
 /// Base64 encode helper.
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2158,10 +2296,19 @@ fn op_howth_encode_utf8(#[string] text: &str) -> Vec<u8> {
 }
 
 /// Decode UTF-8 bytes to string.
+/// When `fatal` is true, returns an error on invalid UTF-8 (TextDecoder fatal mode).
+/// When `fatal` is false (default), replaces invalid sequences with U+FFFD.
 #[op2]
 #[string]
-fn op_howth_decode_utf8(#[buffer] bytes: &[u8]) -> Result<String, deno_core::error::AnyError> {
-    String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
+fn op_howth_decode_utf8(
+    #[buffer] bytes: &[u8],
+    fatal: bool,
+) -> Result<String, deno_core::error::AnyError> {
+    if fatal {
+        String::from_utf8(bytes.to_vec()).map_err(|e| e.into())
+    } else {
+        Ok(String::from_utf8_lossy(bytes).into_owned())
+    }
 }
 
 /// Generate random bytes.
@@ -2269,7 +2416,7 @@ fn op_howth_hash(
             // MD5 is not available via sha2 crate; keep a simple implementation
             // for backwards compat. For now, use the md-5 crate if available,
             // otherwise fall back to a non-cryptographic placeholder.
-            // deno_node pulls in md-5 transitively.
+            // MD5 is handled in JavaScript via createHash polyfill.
             Err(deno_core::error::AnyError::msg(
                 "MD5 hashing should be handled in JavaScript"
             ))
@@ -2321,6 +2468,69 @@ fn op_howth_hmac(
             algorithm
         ))),
     }
+}
+
+/// PBKDF2 key derivation.
+#[op2]
+#[serde]
+fn op_howth_pbkdf2(
+    #[string] algorithm: &str,
+    #[buffer] password: &[u8],
+    #[buffer] salt: &[u8],
+    iterations: u32,
+    key_length: u32,
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use hmac::{Hmac, Mac};
+
+    // PBKDF2 implementation using HMAC
+    let hash_len = match algorithm.to_lowercase().as_str() {
+        "sha-256" | "sha256" => 32usize,
+        "sha-1" | "sha1" => 20usize,
+        "sha-384" | "sha384" => 48usize,
+        "sha-512" | "sha512" => 64usize,
+        _ => {
+            return Err(deno_core::error::AnyError::msg(format!(
+                "Unsupported PBKDF2 hash: {}",
+                algorithm
+            )))
+        }
+    };
+
+    let dk_len = key_length as usize;
+    let mut dk = vec![0u8; dk_len];
+    let num_blocks = (dk_len + hash_len - 1) / hash_len;
+
+    for block_num in 1..=num_blocks {
+        // U_1 = PRF(password, salt || INT_32_BE(i))
+        let mut u = {
+            let mut mac = Hmac::<sha2::Sha256>::new_from_slice(password)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("PBKDF2 key error: {}", e)))?;
+            mac.update(salt);
+            mac.update(&(block_num as u32).to_be_bytes());
+            mac.finalize().into_bytes().to_vec()
+        };
+
+        let mut result = u.clone();
+
+        // U_2 .. U_c
+        for _ in 1..iterations {
+            let mut mac = Hmac::<sha2::Sha256>::new_from_slice(password)
+                .map_err(|e| deno_core::error::AnyError::msg(format!("PBKDF2 key error: {}", e)))?;
+            mac.update(&u);
+            u = mac.finalize().into_bytes().to_vec();
+
+            // XOR
+            for (r, x) in result.iter_mut().zip(u.iter()) {
+                *r ^= x;
+            }
+        }
+
+        let offset = (block_num - 1) * hash_len;
+        let len = std::cmp::min(hash_len, dk_len - offset);
+        dk[offset..offset + len].copy_from_slice(&result[..len]);
+    }
+
+    Ok(dk)
 }
 
 /// Symmetric cipher operation (CBC, CTR modes).
@@ -2645,10 +2855,16 @@ impl Runtime {
         });
 
         let mut js_runtime = JsRuntime::new(DenoRuntimeOptions {
-            extensions: vec![howth_runtime::init_ops()],
+            extensions: vec![
+                howth_runtime::init_ops(),
+                deno_napi::deno_napi::init_ops::<HowthNapiPermissions>(),
+            ],
             module_loader: Some(module_loader),
             ..Default::default()
         });
+
+        // Insert NAPI permissions into OpState so op_napi_open can access them
+        js_runtime.op_state().borrow_mut().put(HowthNapiPermissions);
 
         // Set up cwd if provided
         if let Some(cwd) = options.cwd {

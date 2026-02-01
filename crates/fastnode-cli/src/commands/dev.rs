@@ -23,7 +23,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, State,
+        Path as AxumPath, RawQuery, State,
     },
     http::StatusCode,
     response::{Html, IntoResponse, Response},
@@ -211,12 +211,28 @@ pub async fn run(action: DevAction) -> Result<()> {
     // Add React Refresh plugin by default
     plugins.add(Box::new(ReactRefreshPlugin::new()));
 
-    // Add plugins from config file
-    if let Some(ref cfg) = howth_config {
-        // Add alias plugin if aliases are configured
-        if !cfg.resolve.alias.is_empty() {
-            let mut alias_plugin = AliasPlugin::new();
+    // Build alias map: tsconfig.json paths (lower priority) + config file aliases (higher priority)
+    {
+        let mut all_aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+        // Load tsconfig.json / jsconfig.json paths first (lower priority)
+        if let Some(tsconfig_aliases) = fastnode_core::dev::config::load_tsconfig_paths(&cwd) {
+            for (key, value) in tsconfig_aliases {
+                all_aliases.insert(key, value);
+            }
+            println!("  Loaded tsconfig.json path aliases");
+        }
+
+        // Config file aliases override tsconfig paths
+        if let Some(ref cfg) = howth_config {
             for (from, to) in &cfg.resolve.alias {
+                all_aliases.insert(from.clone(), to.clone());
+            }
+        }
+
+        if !all_aliases.is_empty() {
+            let mut alias_plugin = AliasPlugin::new();
+            for (from, to) in &all_aliases {
                 alias_plugin = alias_plugin.alias(from, to);
             }
             plugins.add(Box::new(alias_plugin));
@@ -551,10 +567,15 @@ async fn serve_css_module(
 async fn serve_module(
     State((state, index_html)): State<AppState>,
     AxumPath(path): AxumPath<String>,
+    RawQuery(query): RawQuery,
 ) -> impl IntoResponse {
     let url_path = format!("/{}", path);
 
-    // Strip query parameters (e.g., ?t=1234 for cache busting)
+    // Check for ?import query (asset imports from JS)
+    // Note: AxumPath does NOT include query parameters, so we use RawQuery
+    let is_asset_import = query.as_deref().map_or(false, |q| q.contains("import"));
+
+    // Strip query parameters from path (e.g., ?t=1234 for cache busting)
     let url_path = url_path.split('?').next().unwrap_or(&url_path);
 
     // Check if this is a JS/TS module request
@@ -633,6 +654,17 @@ async fn serve_module(
                     .body(format!("/* CSS not found: {} */", path))
                     .unwrap(),
             }
+        }
+        _ if is_asset_import => {
+            // Asset import from JS: return a JS module that exports the URL
+            let asset_url = url_path.to_string();
+            let js_module = format!("export default \"{}\";\n", asset_url);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/javascript")
+                .header("Cache-Control", "no-cache")
+                .body(js_module)
+                .unwrap()
         }
         _ => {
             // Static file serving
