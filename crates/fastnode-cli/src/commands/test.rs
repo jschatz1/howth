@@ -41,16 +41,40 @@ const EXCLUDE_DIRS: &[&str] = &[
 /// If no script exists, discovers test files and tries to run via
 /// the daemon's warm Node worker pool for speed. Falls back to
 /// direct `node --test` if daemon is not running.
-pub fn run(config: &Config) -> Result<()> {
+pub fn run(config: &Config, paths: &[String]) -> Result<()> {
     let cwd = &config.cwd;
 
-    // Check for package.json test script first
-    if let Some(script) = get_test_script(cwd) {
-        return run_test_script(cwd, &script);
+    // Check for package.json test script first (only if no explicit paths given)
+    if paths.is_empty() {
+        if let Some(script) = get_test_script(cwd) {
+            return run_test_script(cwd, &script);
+        }
     }
 
-    // Discover test files
-    let test_files = discover_test_files(cwd);
+    // Discover test files from explicit paths or cwd
+    let test_files = if paths.is_empty() {
+        discover_test_files(cwd)
+    } else {
+        let mut files = Vec::new();
+        for p in paths {
+            let path = if Path::new(p).is_absolute() {
+                PathBuf::from(p)
+            } else {
+                cwd.join(p)
+            };
+            if path.is_file() && is_test_file(&path) {
+                files.push(path);
+            } else if path.is_dir() {
+                files.extend(discover_test_files(&path));
+            } else if path.is_file() {
+                // Allow non-test-pattern files if explicitly specified
+                files.push(path);
+            }
+        }
+        files.sort();
+        files.dedup();
+        files
+    };
 
     if test_files.is_empty() {
         println!("No test files found.");

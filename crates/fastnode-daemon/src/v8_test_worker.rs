@@ -125,11 +125,11 @@ impl V8TestWorker {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "V8 worker thread died"))?;
 
         reply_rx
-            .recv_timeout(std::time::Duration::from_secs(120))
+            .recv_timeout(std::time::Duration::from_secs(1200))
             .map_err(|e| match e {
                 mpsc::RecvTimeoutError::Timeout => io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "V8 test worker timed out after 120s",
+                    "V8 test worker timed out after 1200s",
                 ),
                 mpsc::RecvTimeoutError::Disconnected => {
                     io::Error::new(io::ErrorKind::BrokenPipe, "V8 worker thread died")
@@ -198,28 +198,9 @@ async fn run_tests_in_v8(
 
     let test_root = derive_test_root(files);
 
-    // Populate virtual module map with transpiled code (no disk I/O).
-    // Prepend each file with a globalThis.__howth_main_module_path assignment
-    // so that globalRequire resolves relative imports against the original
-    // source path, not the virtual temp path.
-    let mut virtual_paths = Vec::with_capacity(files.len());
-    {
-        let mut vm = virtual_modules.borrow_mut();
-        for (i, file) in files.iter().enumerate() {
-            let temp_path = temp_dir.join(format!("{id}-{i}.mjs"));
-            let path_str = temp_path.to_string_lossy().to_string();
-            let code = format!(
-                "globalThis.__howth_main_module_path = {};\n{}",
-                js_string_literal(&file.path),
-                file.code
-            );
-            vm.insert(path_str, code);
-            virtual_paths.push(temp_path);
-        }
-    }
-
-    // Build a runner module that uses dynamic import() inside try/catch
-    // so errors during file loading are captured instead of crashing the module.
+    // Build a runner module that loads test files using new Function() (sloppy mode)
+    // instead of import() (strict ESM). This matches Node.js CJS behavior where
+    // undeclared variable assignments create implicit globals instead of throwing.
     let mut runner_code = String::new();
     if let Some(ref root) = test_root {
         runner_code.push_str("globalThis.__howth_test_root = ");
@@ -231,15 +212,27 @@ async fn run_tests_in_v8(
         runner_code.push_str(");\n");
     }
     runner_code.push_str("try {\n");
-    for (i, vpath) in virtual_paths.iter().enumerate() {
-        let filename = vpath.file_name().unwrap().to_string_lossy();
-        let original_path = if i < files.len() { &files[i].path } else { "" };
+    for (i, file) in files.iter().enumerate() {
+        let file_dir = PathBuf::from(&file.path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+        let short_name = file.path.rsplit('/').next().unwrap_or(&file.path);
         runner_code.push_str(&format!(
-            "  console.error(\"[howth] importing [{i}/{total}] {path}\");\n  await import(\"./{filename}\");\n",
+            concat!(
+                "  console.error(\"[howth] loading [{i}/{total}] {short_name}\");\n",
+                "  globalThis.__howth_main_module_path = {path};\n",
+                "  globalThis.__filename = {path};\n",
+                "  globalThis.__dirname = {dir};\n",
+                "  (new Function('exports', 'require', 'module', '__filename', '__dirname', {source}))\n",
+                "    ({{}}, globalThis.require, {{ exports: {{}} }}, {path}, {dir});\n",
+            ),
             i = i,
             total = files.len(),
-            path = original_path.rsplit('/').next().unwrap_or(original_path),
-            filename = filename,
+            short_name = short_name,
+            path = js_string_literal(&file.path),
+            dir = js_string_literal(&file_dir),
+            source = js_string_literal(&file.code),
         ));
     }
     runner_code.push_str(
@@ -250,6 +243,20 @@ async fn run_tests_in_v8(
     ok: false, total: 0, passed: 0, failed: 1, skipped: 0, duration_ms: 0,
     tests: [{ name: "test-runner", status: "fail", duration_ms: 0, error: String(e && e.stack || e) }],
   });
+} finally {
+  // Close any Sequelize connections so db:drop works on the next run
+  try {
+    const _m = globalThis.__howth_modules;
+    const _models = _m && (_m["models"] || globalThis.__howth_require_cache);
+    // Walk require cache to find sequelize instances and close them
+    if (globalThis.__howth_require_cache) {
+      for (const [key, mod] of Object.entries(globalThis.__howth_require_cache)) {
+        if (mod && mod.exports && mod.exports.sequelize && typeof mod.exports.sequelize.close === 'function') {
+          try { await mod.exports.sequelize.close(); } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
 }
 "#,
     );
@@ -265,7 +272,7 @@ async fn run_tests_in_v8(
 
     // Execute as a side module (reusable runtime — no "main module" restriction)
     if let Err(e) = runtime.execute_side_module(&runner_path).await {
-        cleanup_virtual_modules(virtual_modules, &virtual_paths, &runner_path);
+        cleanup_runner_module(virtual_modules, &runner_path);
         return Ok(WorkerResponse {
             id: id.to_string(),
             ok: false,
@@ -285,8 +292,8 @@ async fn run_tests_in_v8(
         });
     }
 
-    // Clean up virtual modules
-    cleanup_virtual_modules(virtual_modules, &virtual_paths, &runner_path);
+    // Clean up runner virtual module
+    cleanup_runner_module(virtual_modules, &runner_path);
 
     // Extract results from globalThis (stays in V8 memory, no disk I/O)
     let json_str = match runtime.eval_to_string("globalThis.__howth_test_result_json") {
@@ -347,14 +354,10 @@ async fn run_tests_in_v8(
     })
 }
 
-fn cleanup_virtual_modules(
+fn cleanup_runner_module(
     virtual_modules: &Rc<RefCell<HashMap<String, String>>>,
-    file_paths: &[PathBuf],
     runner_path: &PathBuf,
 ) {
     let mut vm = virtual_modules.borrow_mut();
-    for p in file_paths {
-        vm.remove(&p.to_string_lossy().to_string());
-    }
     vm.remove(&runner_path.to_string_lossy().to_string());
 }

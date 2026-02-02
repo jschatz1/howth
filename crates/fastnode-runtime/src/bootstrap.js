@@ -852,6 +852,15 @@
       }
     }
 
+    // Ensure body is a string for the Rust op
+    if (options.body != null && typeof options.body !== "string") {
+      if (options.body instanceof Uint8Array || Buffer.isBuffer(options.body)) {
+        options.body = Buffer.from(options.body).toString("utf8");
+      } else {
+        options.body = String(options.body);
+      }
+    }
+
     const result = await core.ops.op_howth_fetch(url, options);
 
     return new Response(result.body, {
@@ -1606,8 +1615,14 @@
 
     static from(data, encoding = "utf8") {
       if (typeof data === "string") {
-        if (encoding === "base64") {
-          const binary = atob(data);
+        if (encoding === "base64" || encoding === "base64url") {
+          let b64 = data;
+          if (encoding === "base64url") {
+            b64 = data.replace(/-/g, '+').replace(/_/g, '/');
+            // Add padding if needed
+            while (b64.length % 4 !== 0) b64 += '=';
+          }
+          const binary = atob(b64);
           const bytes = new Uint8Array(binary.length);
           for (let i = 0; i < binary.length; i++) {
             bytes[i] = binary.charCodeAt(i);
@@ -1672,12 +1687,16 @@
         const e = end !== undefined ? end : this.length;
         buf = this.subarray(s, e);
       }
-      if (encoding === "base64") {
+      if (encoding === "base64" || encoding === "base64url") {
         let binary = "";
         for (let i = 0; i < buf.length; i++) {
           binary += String.fromCharCode(buf[i]);
         }
-        return btoa(binary);
+        const b64 = btoa(binary);
+        if (encoding === "base64url") {
+          return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+        return b64;
       } else if (encoding === "hex") {
         return Array.from(buf).map(b => b.toString(16).padStart(2, "0")).join("");
       } else {
@@ -5276,7 +5295,7 @@
       }
       require.resolve = (id) => Module._resolveFilename(id, self);
       require.resolve.paths = (id) => Module._nodeModulePaths(self.dirname);
-      require.cache = Object.fromEntries(moduleCache);
+      require.cache = _makeRequireCache();
       require.main = globalThis.__howth_main_module;
       require.extensions = Module._extensions;
 
@@ -5362,6 +5381,41 @@
     return Module._load(id, this);
   };
 
+  // Live Proxy over moduleCache so that delete require.cache[key] and
+  // require.cache[key] = ... actually mutate the real module cache.
+  // This is needed by mock-require, proxyquire, and other test utilities.
+  function _makeRequireCache() {
+    return new Proxy(Object.create(null), {
+      get(_, prop) {
+        if (prop === Symbol.toStringTag) return "Object";
+        if (typeof prop === "symbol") return undefined;
+        return moduleCache.get(prop);
+      },
+      set(_, prop, value) {
+        if (typeof prop === "string") {
+          moduleCache.set(prop, value);
+        }
+        return true;
+      },
+      has(_, prop) {
+        return moduleCache.has(prop);
+      },
+      deleteProperty(_, prop) {
+        moduleCache.delete(prop);
+        return true;
+      },
+      ownKeys() {
+        return [...moduleCache.keys()];
+      },
+      getOwnPropertyDescriptor(_, prop) {
+        if (moduleCache.has(prop)) {
+          return { configurable: true, enumerable: true, writable: true, value: moduleCache.get(prop) };
+        }
+        return undefined;
+      },
+    });
+  }
+
   // The main require function
   function createRequire(parentFilename) {
     const parent = new Module(parentFilename, null);
@@ -5371,7 +5425,7 @@
     }
 
     require.resolve = (id) => Module._resolveFilename(id, parent);
-    require.cache = Object.fromEntries(moduleCache);
+    require.cache = _makeRequireCache();
     require.main = globalThis.__howth_main_module;
 
     return require;
@@ -5428,10 +5482,7 @@
     const parentModule = new Module(parentPath, null);
     return Module._resolveFilename(id, parentModule);
   };
-  globalRequire.cache = {};
-  Object.defineProperty(globalRequire, "cache", {
-    get() { return Object.fromEntries(moduleCache); }
-  });
+  globalRequire.cache = _makeRequireCache();
 
   // Legacy require.extensions (deprecated but still used by some packages)
   globalRequire.extensions = Module._extensions;
@@ -6501,7 +6552,9 @@
   // ============================================================================
 
   // Stream base class extends EventEmitter
-  class Stream extends EventEmitter {
+  // Wrapped in a Proxy so it can be called both with `new` (ES6 extends)
+  // and with `.call(this)` (ES5 inheritance like superagent does).
+  class _StreamImpl extends EventEmitter {
     constructor(options = {}) {
       super();
       this.readable = false;
@@ -6567,6 +6620,27 @@
       return this;
     }
   }
+  const Stream = new Proxy(_StreamImpl, {
+    apply(target, thisArg, args) {
+      if (thisArg && typeof thisArg === 'object') {
+        if (!thisArg._events) thisArg._events = new Map();
+        thisArg._eventsCount = 0;
+        thisArg._maxListeners = undefined;
+        thisArg.readable = false;
+        thisArg.writable = false;
+        thisArg._readableState = null;
+        thisArg._writableState = null;
+        return thisArg;
+      }
+      return Reflect.construct(_StreamImpl, args);
+    },
+    construct(target, args, newTarget) {
+      return Reflect.construct(_StreamImpl, args, newTarget);
+    },
+    get(target, prop, receiver) {
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 
   // Readable stream
   class Readable extends Stream {
@@ -6697,7 +6771,7 @@
 
     _flow() {
       const state = this._readableState;
-      while (state.flowing && !state.ended) {
+      while (state.flowing) {
         const chunk = this.read();
         if (chunk === null) break;
         this.emit("data", chunk);
@@ -7486,7 +7560,12 @@
       if (!hashAlgorithms[this.#algorithm]) {
         throw new Error(`Digest method not supported: ${algorithm}`);
       }
-      this.#key = typeof key === "string" ? Buffer.from(key) : key;
+      // Extract raw Buffer from KeyObject if needed
+      if (key instanceof KeyObject) {
+        this.#key = key.export();
+      } else {
+        this.#key = typeof key === "string" ? Buffer.from(key) : key;
+      }
     }
 
     update(data, encoding) {
@@ -7509,6 +7588,40 @@
       }
       return result;
     }
+  }
+
+  /**
+   * KeyObject — wraps key material for use with crypto operations.
+   * Matches the Node.js crypto.KeyObject interface used by jsonwebtoken, jws, etc.
+   */
+  class KeyObject {
+    constructor(type, keyData) {
+      this._type = type;
+      this._keyData = keyData;
+    }
+    get type() { return this._type; }
+    get symmetricKeySize() {
+      return this._type === 'secret' ? this._keyData.length : undefined;
+    }
+    export() {
+      return this._keyData;
+    }
+  }
+
+  function createSecretKey(key) {
+    if (typeof key === 'string') key = Buffer.from(key);
+    if (!Buffer.isBuffer(key)) throw new TypeError('The key must be a Buffer or string');
+    return new KeyObject('secret', key);
+  }
+
+  function createPrivateKey(key) {
+    // PEM/DER private key parsing is not supported in howth — throw so callers
+    // that try createPrivateKey before createSecretKey fall through correctly.
+    throw new TypeError('createPrivateKey is not supported');
+  }
+
+  function createPublicKey(key) {
+    throw new TypeError('createPublicKey is not supported');
   }
 
   /**
@@ -7904,6 +8017,12 @@
 
     // Key generation
     generateKeyPairSync,
+
+    // Key objects
+    KeyObject,
+    createSecretKey,
+    createPrivateKey,
+    createPublicKey,
 
     // Web Crypto access
     subtle: crypto.subtle,
@@ -9251,11 +9370,13 @@
     }
   }
 
-  // Store original timers
+  // Store original timers (on globalThis so they're accessible everywhere)
   const _originalSetTimeout = globalThis.setTimeout;
   const _originalClearTimeout = globalThis.clearTimeout;
   const _originalSetInterval = globalThis.setInterval;
   const _originalClearInterval = globalThis.clearInterval;
+  globalThis.__nativeSetTimeout = _originalSetTimeout;
+  globalThis.__nativeClearTimeout = _originalClearTimeout;
 
   // Wrap setTimeout to return Timeout object
   globalThis.setTimeout = function setTimeout(callback, delay, ...args) {
@@ -9440,220 +9561,166 @@
   /**
    * StringDecoder for decoding Buffer objects into strings.
    */
-  class StringDecoder {
-    #encoding;
-    #lastNeed = 0;
-    #lastTotal = 0;
-    #lastChar;
+  // StringDecoder - function constructor (not ES6 class) so it works both
+  // with and without `new` (required by iconv-lite and other npm packages).
+  function StringDecoder(encoding) {
+    if (!(this instanceof StringDecoder)) {
+      return new StringDecoder(encoding);
+    }
+    encoding = (encoding || "utf8").toLowerCase().replace("-", "");
+    if (encoding === "utf8" || encoding === "utf-8") {
+      this._encoding = "utf8";
+      this._lastChar = Buffer.allocUnsafe(4);
+    } else if (encoding === "utf16le" || encoding === "ucs2") {
+      this._encoding = "utf16le";
+      this._lastChar = Buffer.allocUnsafe(4);
+    } else if (encoding === "base64") {
+      this._encoding = "base64";
+      this._lastChar = Buffer.allocUnsafe(3);
+    } else {
+      this._encoding = encoding;
+      this._lastChar = Buffer.allocUnsafe(0);
+    }
+    this._lastNeed = 0;
+    this._lastTotal = 0;
+  }
 
-    constructor(encoding = "utf8") {
-      this.#encoding = encoding.toLowerCase().replace("-", "");
-      if (this.#encoding === "utf8" || this.#encoding === "utf-8") {
-        this.#encoding = "utf8";
-        this.#lastChar = Buffer.allocUnsafe(4);
-      } else if (this.#encoding === "utf16le" || this.#encoding === "ucs2") {
-        this.#encoding = "utf16le";
-        this.#lastChar = Buffer.allocUnsafe(4);
-      } else if (this.#encoding === "base64") {
-        this.#lastChar = Buffer.allocUnsafe(3);
+  Object.defineProperty(StringDecoder.prototype, 'encoding', {
+    get() { return this._encoding; },
+    enumerable: true,
+  });
+
+  StringDecoder.prototype.write = function(buffer) {
+    if (buffer.length === 0) return "";
+    const enc = this._encoding;
+    if (enc === "ascii" || enc === "latin1" || enc === "binary" || enc === "hex") {
+      return buffer.toString(enc);
+    }
+    if (enc === "utf8") return _sd_utf8Write(this, buffer);
+    if (enc === "utf16le") return _sd_utf16leWrite(this, buffer);
+    if (enc === "base64") return _sd_base64Write(this, buffer);
+    return buffer.toString(enc);
+  };
+
+  StringDecoder.prototype.end = function(buffer) {
+    let result = "";
+    if (buffer && buffer.length > 0) {
+      result = this.write(buffer);
+    }
+    if (this._lastNeed > 0) {
+      if (this._encoding === "utf8") {
+        result += "\ufffd";
+      } else if (this._encoding === "utf16le") {
+        result += this._lastChar.toString("utf16le", 0, 2 - this._lastNeed);
+      } else if (this._encoding === "base64") {
+        result += this._lastChar.toString("base64", 0, 3 - this._lastNeed);
+      }
+      this._lastNeed = 0;
+    }
+    return result;
+  };
+
+  StringDecoder.prototype.text = function(buffer, offset) {
+    if (offset) buffer = buffer.slice(offset);
+    return this.write(buffer);
+  };
+
+  function _sd_utf8Write(sd, buffer) {
+    if (sd._lastNeed > 0) {
+      const needed = Math.min(buffer.length, sd._lastNeed);
+      buffer.copy(sd._lastChar, sd._lastTotal - sd._lastNeed, 0, needed);
+      if (needed < sd._lastNeed) {
+        sd._lastNeed -= needed;
+        return "";
+      }
+      const result = sd._lastChar.toString("utf8", 0, sd._lastTotal);
+      sd._lastNeed = 0;
+      if (needed === buffer.length) return result;
+      buffer = buffer.slice(needed);
+      return result + _sd_utf8Write(sd, buffer);
+    }
+    const len = buffer.length;
+    if (len === 0) return "";
+    const lastByte = buffer[len - 1];
+    if ((lastByte & 0x80) === 0) {
+      // ASCII - complete
+    } else if ((lastByte & 0xc0) === 0x80) {
+      let pos = len - 1;
+      while (pos >= 0 && (buffer[pos] & 0xc0) === 0x80) pos--;
+      if (pos >= 0) {
+        const startByte = buffer[pos];
+        let expectedLen = 1;
+        if ((startByte & 0xf8) === 0xf0) expectedLen = 4;
+        else if ((startByte & 0xf0) === 0xe0) expectedLen = 3;
+        else if ((startByte & 0xe0) === 0xc0) expectedLen = 2;
+        const actualLen = len - pos;
+        if (actualLen < expectedLen) {
+          sd._lastTotal = expectedLen;
+          sd._lastNeed = expectedLen - actualLen;
+          buffer.copy(sd._lastChar, 0, pos);
+          return buffer.toString("utf8", 0, pos);
+        }
+      }
+    } else if ((lastByte & 0xe0) === 0xc0) {
+      sd._lastTotal = 2; sd._lastNeed = 1;
+      sd._lastChar[0] = lastByte;
+      return buffer.toString("utf8", 0, len - 1);
+    } else if ((lastByte & 0xf0) === 0xe0) {
+      sd._lastTotal = 3; sd._lastNeed = 2;
+      sd._lastChar[0] = lastByte;
+      return buffer.toString("utf8", 0, len - 1);
+    } else if ((lastByte & 0xf8) === 0xf0) {
+      sd._lastTotal = 4; sd._lastNeed = 3;
+      sd._lastChar[0] = lastByte;
+      return buffer.toString("utf8", 0, len - 1);
+    }
+    return buffer.toString("utf8");
+  }
+
+  function _sd_utf16leWrite(sd, buffer) {
+    let result = "";
+    if (sd._lastNeed > 0) {
+      if (buffer.length >= sd._lastNeed) {
+        buffer.copy(sd._lastChar, 2 - sd._lastNeed, 0, sd._lastNeed);
+        result = sd._lastChar.toString("utf16le", 0, 2);
+        buffer = buffer.slice(sd._lastNeed);
+        sd._lastNeed = 0;
       } else {
-        this.#lastChar = Buffer.allocUnsafe(0);
+        buffer.copy(sd._lastChar, 2 - sd._lastNeed, 0, buffer.length);
+        sd._lastNeed -= buffer.length;
+        return "";
       }
     }
-
-    get encoding() {
-      return this.#encoding;
+    const len = buffer.length - (buffer.length % 2);
+    result += buffer.toString("utf16le", 0, len);
+    if (buffer.length % 2 === 1) {
+      sd._lastChar[0] = buffer[buffer.length - 1];
+      sd._lastNeed = 1; sd._lastTotal = 2;
     }
+    return result;
+  }
 
-    write(buffer) {
-      if (buffer.length === 0) return "";
-
-      // For simple encodings, just convert directly
-      if (
-        this.#encoding === "ascii" ||
-        this.#encoding === "latin1" ||
-        this.#encoding === "binary" ||
-        this.#encoding === "hex"
-      ) {
-        return buffer.toString(this.#encoding);
+  function _sd_base64Write(sd, buffer) {
+    let result = "";
+    if (sd._lastNeed > 0) {
+      const needed = Math.min(buffer.length, sd._lastNeed);
+      buffer.copy(sd._lastChar, 3 - sd._lastNeed, 0, needed);
+      if (needed < sd._lastNeed) {
+        sd._lastNeed -= needed;
+        return "";
       }
-
-      // UTF-8 decoding with multi-byte character handling
-      if (this.#encoding === "utf8") {
-        return this.#utf8Write(buffer);
-      }
-
-      // UTF-16LE decoding
-      if (this.#encoding === "utf16le") {
-        return this.#utf16leWrite(buffer);
-      }
-
-      // Base64 decoding
-      if (this.#encoding === "base64") {
-        return this.#base64Write(buffer);
-      }
-
-      return buffer.toString(this.#encoding);
+      result = sd._lastChar.toString("base64", 0, 3);
+      buffer = buffer.slice(needed);
+      sd._lastNeed = 0;
     }
-
-    #utf8Write(buffer) {
-      // Handle any leftover bytes from previous write
-      if (this.#lastNeed > 0) {
-        const needed = Math.min(buffer.length, this.#lastNeed);
-        buffer.copy(this.#lastChar, this.#lastTotal - this.#lastNeed, 0, needed);
-        if (needed < this.#lastNeed) {
-          this.#lastNeed -= needed;
-          return "";
-        }
-        const result = this.#lastChar.toString("utf8", 0, this.#lastTotal);
-        this.#lastNeed = 0;
-        if (needed === buffer.length) {
-          return result;
-        }
-        buffer = buffer.slice(needed);
-        return result + this.#utf8Write(buffer);
-      }
-
-      // Check for incomplete multi-byte sequence at end
-      const len = buffer.length;
-      if (len === 0) return "";
-
-      // Check last few bytes for incomplete sequences
-      let incomplete = 0;
-      const lastByte = buffer[len - 1];
-
-      if ((lastByte & 0x80) === 0) {
-        // ASCII - complete
-        incomplete = 0;
-      } else if ((lastByte & 0xc0) === 0x80) {
-        // Continuation byte - check backwards
-        let pos = len - 1;
-        while (pos >= 0 && (buffer[pos] & 0xc0) === 0x80) {
-          pos--;
-        }
-        if (pos >= 0) {
-          const startByte = buffer[pos];
-          let expectedLen = 1;
-          if ((startByte & 0xf8) === 0xf0) expectedLen = 4;
-          else if ((startByte & 0xf0) === 0xe0) expectedLen = 3;
-          else if ((startByte & 0xe0) === 0xc0) expectedLen = 2;
-
-          const actualLen = len - pos;
-          if (actualLen < expectedLen) {
-            incomplete = actualLen;
-            this.#lastTotal = expectedLen;
-            this.#lastNeed = expectedLen - actualLen;
-            buffer.copy(this.#lastChar, 0, pos);
-            return buffer.toString("utf8", 0, pos);
-          }
-        }
-      } else if ((lastByte & 0xe0) === 0xc0) {
-        // 2-byte start
-        incomplete = 1;
-        this.#lastTotal = 2;
-        this.#lastNeed = 1;
-        this.#lastChar[0] = lastByte;
-        return buffer.toString("utf8", 0, len - 1);
-      } else if ((lastByte & 0xf0) === 0xe0) {
-        // 3-byte start
-        incomplete = 1;
-        this.#lastTotal = 3;
-        this.#lastNeed = 2;
-        this.#lastChar[0] = lastByte;
-        return buffer.toString("utf8", 0, len - 1);
-      } else if ((lastByte & 0xf8) === 0xf0) {
-        // 4-byte start
-        incomplete = 1;
-        this.#lastTotal = 4;
-        this.#lastNeed = 3;
-        this.#lastChar[0] = lastByte;
-        return buffer.toString("utf8", 0, len - 1);
-      }
-
-      return buffer.toString("utf8");
+    const len = buffer.length - (buffer.length % 3);
+    result += buffer.toString("base64", 0, len);
+    const remaining = buffer.length % 3;
+    if (remaining > 0) {
+      buffer.copy(sd._lastChar, 0, len);
+      sd._lastNeed = 3 - remaining; sd._lastTotal = 3;
     }
-
-    #utf16leWrite(buffer) {
-      let result = "";
-
-      if (this.#lastNeed > 0) {
-        if (buffer.length >= this.#lastNeed) {
-          buffer.copy(this.#lastChar, 2 - this.#lastNeed, 0, this.#lastNeed);
-          result = this.#lastChar.toString("utf16le", 0, 2);
-          buffer = buffer.slice(this.#lastNeed);
-          this.#lastNeed = 0;
-        } else {
-          buffer.copy(this.#lastChar, 2 - this.#lastNeed, 0, buffer.length);
-          this.#lastNeed -= buffer.length;
-          return "";
-        }
-      }
-
-      const len = buffer.length - (buffer.length % 2);
-      result += buffer.toString("utf16le", 0, len);
-
-      if (buffer.length % 2 === 1) {
-        this.#lastChar[0] = buffer[buffer.length - 1];
-        this.#lastNeed = 1;
-        this.#lastTotal = 2;
-      }
-
-      return result;
-    }
-
-    #base64Write(buffer) {
-      let result = "";
-
-      if (this.#lastNeed > 0) {
-        const needed = Math.min(buffer.length, this.#lastNeed);
-        buffer.copy(this.#lastChar, 3 - this.#lastNeed, 0, needed);
-        if (needed < this.#lastNeed) {
-          this.#lastNeed -= needed;
-          return "";
-        }
-        result = this.#lastChar.toString("base64", 0, 3);
-        buffer = buffer.slice(needed);
-        this.#lastNeed = 0;
-      }
-
-      const len = buffer.length - (buffer.length % 3);
-      result += buffer.toString("base64", 0, len);
-
-      const remaining = buffer.length % 3;
-      if (remaining > 0) {
-        buffer.copy(this.#lastChar, 0, len);
-        this.#lastNeed = 3 - remaining;
-        this.#lastTotal = 3;
-      }
-
-      return result;
-    }
-
-    end(buffer) {
-      let result = "";
-      if (buffer && buffer.length > 0) {
-        result = this.write(buffer);
-      }
-      if (this.#lastNeed > 0) {
-        // Output remaining incomplete character as replacement
-        if (this.#encoding === "utf8") {
-          result += "\ufffd";
-        } else if (this.#encoding === "utf16le") {
-          result += this.#lastChar.toString("utf16le", 0, 2 - this.#lastNeed);
-        } else if (this.#encoding === "base64") {
-          result += this.#lastChar.toString("base64", 0, 3 - this.#lastNeed);
-        }
-        this.#lastNeed = 0;
-      }
-      return result;
-    }
-
-    text(buffer, offset) {
-      if (offset) {
-        buffer = buffer.slice(offset);
-      }
-      return this.write(buffer);
-    }
+    return result;
   }
 
   const stringDecoderModule = {
@@ -9672,20 +9739,8 @@
    * Parse a URL string into an object (legacy Node.js API).
    */
   function urlParse(urlString, parseQueryString = false, slashesDenoteHost = false) {
-    const result = {
-      protocol: null,
-      slashes: null,
-      auth: null,
-      host: null,
-      port: null,
-      hostname: null,
-      hash: null,
-      search: null,
-      query: null,
-      pathname: null,
-      path: null,
-      href: urlString,
-    };
+    const result = new urlModule.Url();
+    result.href = urlString;
 
     try {
       // Handle protocol-relative URLs
@@ -9881,9 +9936,20 @@
     URLSearchParams: globalThis.URLSearchParams,
     pathToFileURL,
     fileURLToPath,
-    // Deprecated but still used
+    // Deprecated but still used by parseurl, finalhandler, etc.
     Url: function Url() {
-      return urlParse.apply(this, arguments);
+      this.protocol = null;
+      this.slashes = null;
+      this.auth = null;
+      this.host = null;
+      this.port = null;
+      this.hostname = null;
+      this.hash = null;
+      this.search = null;
+      this.query = null;
+      this.pathname = null;
+      this.path = null;
+      this.href = null;
     },
   };
 
@@ -11477,156 +11543,260 @@
   }
 
   /**
-   * HTTP ClientRequest - request from client to server.
+   * HTTP OutgoingMessage - base class for ClientRequest and ServerResponse.
+   * Wrapped in Proxy for ES5 compat (nock does OutgoingMessage.call(this)).
    */
-  class ClientRequest extends Writable {
-    constructor(options, callback) {
+  class _OutgoingMessageImpl extends Stream {
+    constructor() {
       super();
-
-      if (typeof options === "string") {
-        options = urlParse(options);
-      }
-
-      this.method = (options.method || "GET").toUpperCase();
-      this.path = options.path || options.pathname || "/";
-      // Use hostname (without port) for host
-      this.hostname = options.hostname || (options.host ? options.host.split(':')[0] : "localhost");
-      this.host = options.host || options.hostname || "localhost";
-      this.port = options.port ? parseInt(options.port, 10) : (options.protocol === "https:" ? 443 : 80);
-      this.protocol = options.protocol || "http:";
-      this.headers = {};
-      this.timeout = options.timeout;
-      this.agent = options.agent !== undefined ? options.agent : globalAgent;
-      this.reusedSocket = false;
-      this.maxHeadersCount = 2000;
-      this._body = [];
-      this._ended = false;
-      this.aborted = false;
-      this.socket = null;
-
-      // Set default headers
-      if (options.headers) {
-        for (const [key, value] of Object.entries(options.headers)) {
-          this.setHeader(key, value);
-        }
-      }
-
-      if (options.auth) {
-        this.setHeader("Authorization", "Basic " + btoa(options.auth));
-      }
-
-      if (callback) {
-        this.once("response", callback);
-      }
+      this.writable = true;
+      this._headers = {};
+      this._headerNames = {};
+      this.finished = false;
+      this.headersSent = false;
+      this.sendDate = true;
     }
-
     setHeader(name, value) {
-      this.headers[name.toLowerCase()] = value;
-      return this;
+      this._headers[name.toLowerCase()] = value;
+      this._headerNames[name.toLowerCase()] = name;
     }
-
     getHeader(name) {
-      return this.headers[name.toLowerCase()];
+      return this._headers[name.toLowerCase()];
     }
-
     removeHeader(name) {
-      delete this.headers[name.toLowerCase()];
+      delete this._headers[name.toLowerCase()];
+      delete this._headerNames[name.toLowerCase()];
     }
-
-    setNoDelay(noDelay) {
-      return this;
+    hasHeader(name) {
+      return name.toLowerCase() in this._headers;
     }
-
-    setSocketKeepAlive(enable, initialDelay) {
-      return this;
-    }
-
-    setTimeout(timeout, callback) {
-      this.timeout = timeout;
-      if (callback) this.once("timeout", callback);
-      return this;
-    }
-
-    _write(chunk, encoding, callback) {
-      this._body.push(chunk);
-      if (callback) callback();
-    }
-
-    abort() {
-      this.aborted = true;
-      this.emit("abort");
-    }
-
-    end(data, encoding, callback) {
-      if (typeof data === "function") {
-        callback = data;
-        data = null;
+    flushHeaders() {}
+  }
+  const OutgoingMessage = new Proxy(_OutgoingMessageImpl, {
+    apply(target, thisArg, args) {
+      if (thisArg && typeof thisArg === 'object') {
+        if (!thisArg._events) thisArg._events = new Map();
+        thisArg._eventsCount = 0;
+        thisArg._maxListeners = undefined;
+        thisArg.writable = true;
+        thisArg._headers = {};
+        thisArg._headerNames = {};
+        thisArg.finished = false;
+        thisArg.headersSent = false;
+        thisArg.sendDate = true;
+        return thisArg;
       }
-      if (data) this._body.push(data);
-      this._ended = true;
+      return Reflect.construct(_OutgoingMessageImpl, args);
+    },
+    construct(target, args, newTarget) {
+      return Reflect.construct(_OutgoingMessageImpl, args, newTarget);
+    },
+    get(target, prop, receiver) {
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 
-      // Perform the actual fetch
-      this._doFetch().then(() => {
-        if (callback) callback();
-      }).catch((err) => {
-        this.emit("error", err);
-      });
+  /**
+   * HTTP ClientRequest - request from client to server.
+   * Uses function constructor (not class) so that nock and other libs can call
+   * originalClientRequest.apply(this, args) without hitting
+   * "Class constructor cannot be invoked without 'new'".
+   */
+  function ClientRequest(options, callback) {
+    // Allow both `new ClientRequest()` and `ClientRequest.apply(this, args)`
+    if (!(this instanceof ClientRequest)) {
+      return new ClientRequest(options, callback);
+    }
+    // Initialize Writable stream state via Reflect.construct
+    const writableInstance = Reflect.construct(Writable, [], ClientRequest);
+    Object.assign(this, writableInstance);
+    // Copy internal stream state
+    if (writableInstance._writableState) {
+      this._writableState = writableInstance._writableState;
+      this._writableState.afterWriteTickInfo = null;
+    }
+    if (writableInstance._events) this._events = writableInstance._events;
+    if (writableInstance._eventsCount !== undefined) this._eventsCount = writableInstance._eventsCount;
+    if (writableInstance._maxListeners !== undefined) this._maxListeners = writableInstance._maxListeners;
 
-      return this;
+    if (typeof options === "string") {
+      options = urlParse(options);
+    }
+    if (!options) options = {};
+
+    this.method = (options.method || "GET").toUpperCase();
+    this.path = options.path || options.pathname || "/";
+    this.hostname = options.hostname || (options.host ? options.host.split(':')[0] : "localhost");
+    this.host = options.host || options.hostname || "localhost";
+    this.port = options.port ? parseInt(options.port, 10) : (options.protocol === "https:" ? 443 : 80);
+    this.protocol = options.protocol || "http:";
+    this.headers = {};
+    this.timeout = options.timeout;
+    this.agent = options.agent !== undefined ? options.agent : globalAgent;
+    this.reusedSocket = false;
+    this.maxHeadersCount = 2000;
+    this._body = [];
+    this._ended = false;
+    this.aborted = false;
+    this.socket = null;
+
+    if (options.headers) {
+      for (const [key, value] of Object.entries(options.headers)) {
+        this.setHeader(key, value);
+      }
     }
 
-    async _doFetch() {
-      // Use hostname (without port) to avoid double-port issues
-      const portSuffix = (this.port !== 80 && this.port !== 443) ? ":" + this.port : "";
-      const url = `${this.protocol}//${this.hostname}${portSuffix}${this.path}`;
+    if (options.auth) {
+      this.setHeader("Authorization", "Basic " + btoa(options.auth));
+    }
 
-      const fetchOptions = {
-        method: this.method,
-        headers: this.headers,
-      };
-
-      if (this._body.length > 0 && this.method !== "GET" && this.method !== "HEAD") {
-        fetchOptions.body = Buffer.concat(this._body.map(b =>
-          typeof b === "string" ? Buffer.from(b) : b
-        ));
-      }
-
-      try {
-        const response = await fetch(url, fetchOptions);
-
-        // Create IncomingMessage from response
-        const incoming = new IncomingMessage(null);
-        incoming.statusCode = response.status;
-        incoming.statusMessage = response.statusText;
-        incoming.httpVersion = "1.1";
-
-        // Copy headers
-        response.headers.forEach((value, key) => {
-          incoming.headers[key.toLowerCase()] = value;
-          incoming.rawHeaders.push(key, value);
-        });
-
-        // Get body
-        const body = await response.arrayBuffer();
-        const bodyBuffer = Buffer.from(body);
-
-        // Emit response first, then push body data asynchronously
-        // This allows listeners to attach before data arrives
-        this.emit("response", incoming);
-
-        // Push body data on next tick so event listeners have time to attach
-        setTimeout(() => {
-          if (bodyBuffer.length > 0) {
-            incoming.push(bodyBuffer);
-          }
-          incoming.push(null);
-          incoming.complete = true;
-        }, 0);
-      } catch (err) {
-        this.emit("error", err);
-      }
+    if (callback) {
+      this.once("response", callback);
     }
   }
+  // Set up prototype chain: ClientRequest -> Writable -> Stream -> EventEmitter
+  Object.setPrototypeOf(ClientRequest.prototype, Writable.prototype);
+  ClientRequest.prototype.constructor = ClientRequest;
+
+  ClientRequest.prototype.setHeader = function(name, value) {
+    if (!this.headers) this.headers = {};
+    this.headers[name.toLowerCase()] = value;
+    return this;
+  };
+
+  ClientRequest.prototype.getHeader = function(name) {
+    if (!this.headers) this.headers = {};
+    return this.headers[name.toLowerCase()];
+  };
+
+  ClientRequest.prototype.removeHeader = function(name) {
+    if (!this.headers) this.headers = {};
+    delete this.headers[name.toLowerCase()];
+  };
+
+  ClientRequest.prototype.getHeaders = function() {
+    if (!this.headers) this.headers = {};
+    return { ...this.headers };
+  };
+
+  ClientRequest.prototype.getHeaderNames = function() {
+    if (!this.headers) this.headers = {};
+    return Object.keys(this.headers);
+  };
+
+  ClientRequest.prototype.hasHeader = function(name) {
+    if (!this.headers) this.headers = {};
+    return name.toLowerCase() in this.headers;
+  };
+
+  ClientRequest.prototype.getRawHeaderNames = function() {
+    if (!this.headers) this.headers = {};
+    return Object.keys(this.headers);
+  };
+
+  ClientRequest.prototype.flushHeaders = function() {};
+
+  ClientRequest.prototype.setNoDelay = function(noDelay) {
+    return this;
+  };
+
+  ClientRequest.prototype.setSocketKeepAlive = function(enable, initialDelay) {
+    return this;
+  };
+
+  ClientRequest.prototype.setTimeout = function(timeout, callback) {
+    this.timeout = timeout;
+    if (callback) this.once("timeout", callback);
+    return this;
+  };
+
+  ClientRequest.prototype._write = function(chunk, encoding, callback) {
+    this._body.push(chunk);
+    if (callback) callback();
+  };
+
+  ClientRequest.prototype.abort = function() {
+    this.aborted = true;
+    this.emit("abort");
+  };
+
+  ClientRequest.prototype.end = function(data, encoding, callback) {
+    if (typeof data === "function") {
+      callback = data;
+      data = null;
+    }
+    if (data) this._body.push(data);
+    this._ended = true;
+
+    this._doFetch().then(() => {
+      if (callback) callback();
+    }).catch((err) => {
+      this.emit("error", err);
+    });
+
+    return this;
+  };
+
+  ClientRequest.prototype._doFetch = async function() {
+    const portSuffix = (this.port !== 80 && this.port !== 443) ? ":" + this.port : "";
+    const url = `${this.protocol}//${this.hostname}${portSuffix}${this.path}`;
+    console.error(`[howth:http] ClientRequest._doFetch: ${this.method} ${url}`);
+
+    // Sanitize headers for fetch(): remove undefined/null, strip chars that
+    // Deno's fetch rejects (control chars, non-ASCII bytes) but Node's http allows.
+    const sanitizedHeaders = {};
+    if (this.headers) {
+      for (const [key, value] of Object.entries(this.headers)) {
+        if (value !== undefined && value !== null) {
+          // Replace non-ASCII and control chars (except tab) with ?
+          // This matches what Node.js's http module sends over the wire
+          const strVal = String(value).replace(/[^\t\x20-\x7E]/g, '?');
+          if (strVal) sanitizedHeaders[key] = strVal;
+        }
+      }
+    }
+
+    const fetchOptions = {
+      method: this.method,
+      headers: sanitizedHeaders,
+    };
+
+    if (this._body.length > 0 && this.method !== "GET" && this.method !== "HEAD") {
+      const buf = Buffer.concat(this._body.map(b =>
+        typeof b === "string" ? Buffer.from(b) : b
+      ));
+      fetchOptions.body = buf.toString("utf8");
+    }
+
+    try {
+      const response = await fetch(url, fetchOptions);
+
+      const incoming = new IncomingMessage(null);
+      incoming.statusCode = response.status;
+      incoming.statusMessage = response.statusText;
+      incoming.httpVersion = "1.1";
+
+      response.headers.forEach((value, key) => {
+        incoming.headers[key.toLowerCase()] = value;
+        incoming.rawHeaders.push(key, value);
+      });
+
+      const body = await response.arrayBuffer();
+      const bodyBuffer = Buffer.from(body);
+
+      this.emit("response", incoming);
+
+      setTimeout(() => {
+        if (bodyBuffer.length > 0) {
+          incoming.push(bodyBuffer);
+        }
+        incoming.push(null);
+        incoming.complete = true;
+      }, 0);
+    } catch (err) {
+      this.emit("error", err);
+    }
+  };
 
   /**
    * HTTP Server class.
@@ -11676,35 +11846,37 @@
       this._hostname = hostname;
       this._port = port;
 
-      const self = this;
+      // Bind synchronously so address() works immediately (supertest compat)
+      try {
+        const result = ops.op_howth_http_listen(port, hostname);
+        this._serverId = result.id;
+        this._port = result.port;
+        this._address = result.address;
+        this.listening = true;
+        console.error(`[howth:http] Server listening on ${this._address}:${this._port} (id=${this._serverId})`);
+      } catch (err) {
+        process.nextTick(() => this.emit("error", err));
+        return this;
+      }
 
-      // Start the native HTTP server
-      (async () => {
-        try {
-          const result = await ops.op_howth_http_listen(port, hostname);
-          self._serverId = result.id;
-          self._port = result.port;
-          self._address = result.address;
-          self.listening = true;
-          self.emit("listening");
-          if (callback) callback();
+      // Emit listening event asynchronously
+      if (callback) process.nextTick(() => callback());
+      process.nextTick(() => this.emit("listening"));
 
-          // Start accepting connections
-          self._acceptLoop();
-        } catch (err) {
-          self.emit("error", err);
-        }
-      })();
+      // Start accept loop
+      this._acceptLoop();
 
       return this;
     }
 
     async _acceptLoop() {
+      console.error(`[howth:http] _acceptLoop started for server ${this._serverId} on port ${this._port}`);
       while (this.listening && this._serverId !== null) {
         try {
           const request = await ops.op_howth_http_accept(this._serverId);
           if (!request) continue;
 
+          console.error(`[howth:http] _acceptLoop got request: ${request.method} ${request.url} (id=${request.id})`);
           this._connections++;
 
           // Create a mock socket for req.socket / req.connection
@@ -11752,12 +11924,6 @@
           }
           req.rawHeaders = rawHeaders;
 
-          // Push body data if present
-          if (request.body) {
-            req.push(Buffer.from(request.body));
-          }
-          req.push(null); // End the stream
-
           const res = new ServerResponse(req);
           res._requestId = request.id;
           res._socket = mockSocket;
@@ -11801,6 +11967,16 @@
               this._connections--;
             });
           };
+
+          // Defer body push so middleware/handlers can attach 'data'/'end'
+          // listeners before data arrives (matches Node.js HTTP behavior)
+          const reqBody = request.body;
+          process.nextTick(() => {
+            if (reqBody) {
+              req.push(Buffer.from(reqBody));
+            }
+            req.push(null);
+          });
 
           // Emit the request event with error protection
           try {
@@ -11877,14 +12053,17 @@
    * Create an HTTP request.
    */
   function httpRequest(options, callback) {
-    return new ClientRequest(options, callback);
+    // Use httpModule.ClientRequest so nock can override it
+    const Req = httpModule.ClientRequest || ClientRequest;
+    return new Req(options, callback);
   }
 
   /**
    * HTTP GET request (convenience method).
    */
   function httpGet(options, callback) {
-    const req = httpRequest(options, callback);
+    // Use httpModule.request so nock can override it
+    const req = (httpModule.request || httpRequest)(options, callback);
     req.end();
     return req;
   }
@@ -11975,6 +12154,7 @@
     Agent,
     ClientRequest,
     IncomingMessage,
+    OutgoingMessage,
     Server,
     ServerResponse,
     createServer,
@@ -12016,14 +12196,17 @@
     }
     options = { ...options, protocol: "https:" };
     if (!options.port) options.port = 443;
-    return new ClientRequest(options, callback);
+    // Use httpsModule.ClientRequest so nock can override it
+    const Req = httpsModule.ClientRequest || ClientRequest;
+    return new Req(options, callback);
   }
 
   /**
    * HTTPS GET request.
    */
   function httpsGet(options, callback) {
-    const req = httpsRequest(options, callback);
+    // Use httpsModule.request so nock can override it
+    const req = (httpsModule.request || httpsRequest)(options, callback);
     req.end();
     return req;
   }
@@ -12039,7 +12222,11 @@
 
   const httpsModule = {
     Agent,
+    ClientRequest,
+    IncomingMessage,
+    OutgoingMessage,
     Server,
+    ServerResponse,
     createServer: createHttpsServer,
     get: httpsGet,
     request: httpsRequest,
@@ -13057,12 +13244,18 @@
       popSuite();
     }
 
+    // Sentinel error for this.skip()
+    class __HowthSkipError extends Error {
+      constructor() { super("skip"); this.name = "__HowthSkipError"; }
+    }
+
     // Mocha-compatible context object for describe/before/it callbacks
     function _makeMochaContext(suite) {
       return {
         timeout(ms) { if (suite) suite._timeout = ms; return this; },
         retries(n) { return this; },
         slow(ms) { return this; },
+        skip() { throw new __HowthSkipError(); },
       };
     }
 
@@ -13093,6 +13286,7 @@
 
     // Execute all registered tests and return results
     async function __howth_run_tests() {
+      console.error("[howth] __howth_run_tests() starting");
       const results = [];
       const startTime = performance.now();
 
@@ -13116,14 +13310,23 @@
         const allAfterEach = suite.afterEach.concat(parentAfterEach);
 
         // Run suite-level before hooks
-        for (const hook of suite.before) {
-          try { await hook(); } catch (e) {
+        for (let _hi = 0; _hi < suite.before.length; _hi++) {
+          const hook = suite.before[_hi];
+          console.error("[howth] running before hook " + _hi + " for suite: " + (prefix || "(root)"));
+          try {
+            const _hr = hook();
+            if (_hr && typeof _hr.then === 'function') {
+              const _ht = suite._timeout || 120000;
+              await Promise.race([_hr, new Promise((_, rej) => globalThis.__nativeSetTimeout(() => rej(new Error("before hook timed out after " + _ht + "ms")), _ht))]);
+            }
+            console.error("[howth] before hook " + _hi + " completed for: " + (prefix || "(root)"));
+          } catch (e) {
             // If before hook fails, mark all tests in this suite (recursively) as failed
             function failAll(s, pfx) {
               for (const child of s.children) {
                 if (child.type === 'test') {
                   const fullName = pfx ? pfx + ' > ' + child.name : child.name;
-                  results.push({ name: fullName, status: 'fail', duration_ms: 0, error: 'before hook failed: ' + (e.message || String(e)) });
+                  results.push({ name: fullName, status: 'fail', duration_ms: 0, error: 'before hook failed: ' + (e.stack || e.message || String(e)) });
                 } else if (child.type === 'suite') {
                   failAll(child.suite, pfx ? pfx + ' > ' + child.suite.name : child.suite.name);
                 }
@@ -13146,23 +13349,35 @@
             let status = 'pass';
             let error = null;
 
+            console.error("[howth] running test: " + fullName);
             try {
-              for (const hook of allBeforeEach) await hook();
+              for (const hook of allBeforeEach) {
+                const _r = hook();
+                if (_r && typeof _r.then === 'function') await Promise.race([_r, new Promise((_, rej) => globalThis.__nativeSetTimeout(() => rej(new Error("beforeEach timed out after 30s")), 30000))]);
+              }
               if (child.fn) {
                 const ctx = _makeMochaContext(suite);
                 let result;
                 if (child.fn.length > 0) {
                   result = new Promise((resolve, reject) => {
-                    child.fn.call(ctx, (err) => { err ? reject(err) : resolve(); });
+                    const _timeout = globalThis.__nativeSetTimeout(() => reject(new Error("Test timed out after 30s")), 30000);
+                    child.fn.call(ctx, (err) => { globalThis.__nativeClearTimeout(_timeout); err ? reject(err) : resolve(); });
                   });
                 } else {
                   result = child.fn.call(ctx);
                 }
-                if (result && typeof result.then === 'function') await result;
+                if (result && typeof result.then === 'function') {
+                  const _testTimeout = new Promise((_, rej) => globalThis.__nativeSetTimeout(() => rej(new Error("Test timed out after 30s")), 30000));
+                  await Promise.race([result, _testTimeout]);
+                }
               }
             } catch (e) {
-              status = 'fail';
-              error = e && (e.stack || e.message || String(e));
+              if (e instanceof __HowthSkipError) {
+                status = 'skip';
+              } else {
+                status = 'fail';
+                error = e && (e.stack || e.message || String(e));
+              }
             }
 
             try {

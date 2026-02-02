@@ -279,7 +279,10 @@ enum Commands {
     },
 
     /// Run tests
-    Test,
+    Test {
+        /// Paths to test files or directories (default: discover in cwd)
+        paths: Vec<String>,
+    },
 
     /// Control the file watcher
     Watch {
@@ -1028,10 +1031,10 @@ fn main() -> Result<()> {
         ) => {
             unreachable!() // Handled above
         }
-        Some(Commands::Test) => {
+        Some(Commands::Test { paths }) => {
             let span = tracing::info_span!("test", cmd = "test", cwd = %cwd.display());
             let _guard = span.enter();
-            commands::test::run(&config)
+            commands::test::run(&config, &paths)
         }
     }
 }

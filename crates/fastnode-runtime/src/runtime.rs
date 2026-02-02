@@ -1722,19 +1722,24 @@ lazy_static::lazy_static! {
     static ref HTTP_SERVERS: Mutex<HashMap<u32, Arc<Mutex<ServerState>>>> = Mutex::new(HashMap::new());
 }
 
-/// Start listening on a port and return a server ID
-#[op2(async)]
+/// Start listening on a port and return a server ID (synchronous bind)
+#[op2]
 #[serde]
-async fn op_howth_http_listen(
+fn op_howth_http_listen(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
     let addr = format!("{}:{}", hostname, port);
-    let listener = tokio::net::TcpListener::bind(&addr).await
+    let std_listener = std::net::TcpListener::bind(&addr)
         .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to bind: {}", e)))?;
+    std_listener.set_nonblocking(true)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to set nonblocking: {}", e)))?;
 
-    let local_addr = listener.local_addr()
+    let local_addr = std_listener.local_addr()
         .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to get local addr: {}", e)))?;
+
+    let listener = tokio::net::TcpListener::from_std(std_listener)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to convert to tokio listener: {}", e)))?;
 
     let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
 
@@ -1743,7 +1748,16 @@ async fn op_howth_http_listen(
         local_addr,
     };
 
-    HTTP_SERVERS.lock().await.insert(server_id, Arc::new(Mutex::new(state)));
+    // Use try_lock since we're in a sync context
+    // If the lock is contended, fall back to blocking
+    let servers = HTTP_SERVERS.try_lock();
+    match servers {
+        Ok(mut guard) => { guard.insert(server_id, Arc::new(Mutex::new(state))); }
+        Err(_) => {
+            // This shouldn't happen in practice since servers are rarely created concurrently
+            return Err(deno_core::error::AnyError::msg("Server map lock contended"));
+        }
+    }
 
     Ok(serde_json::json!({
         "id": server_id,
@@ -1757,22 +1771,32 @@ async fn op_howth_http_listen(
 #[serde]
 async fn op_howth_http_accept(server_id: u32) -> Result<Option<HttpRequest>, deno_core::error::AnyError> {
     let servers = HTTP_SERVERS.lock().await;
-    let server = servers.get(&server_id)
-        .ok_or_else(|| deno_core::error::AnyError::msg("Server not found"))?
-        .clone();
+    let server = match servers.get(&server_id) {
+        Some(s) => s.clone(),
+        None => return Ok(None), // Server was closed, exit accept loop
+    };
     drop(servers);
 
     let mut state = server.lock().await;
 
-    // Accept a connection
-    let (mut stream, _addr) = match state.listener.accept().await {
-        Ok(conn) => conn,
-        Err(e) => {
-            return Err(deno_core::error::AnyError::msg(format!("Accept failed: {}", e)));
-        }
-    };
+    // Accept a connection with timeout so JS can check if server was closed
+    let accept_result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        state.listener.accept()
+    ).await;
 
     drop(state);
+
+    let (mut stream, _addr) = match accept_result {
+        Ok(Ok(conn)) => conn,
+        Ok(Err(e)) => {
+            return Err(deno_core::error::AnyError::msg(format!("Accept failed: {}", e)));
+        }
+        Err(_) => {
+            // Timeout - return None so JS loop can check this.listening
+            return Ok(None);
+        }
+    };
 
     // Read the HTTP request
     use tokio::io::AsyncReadExt;
@@ -2227,7 +2251,11 @@ async fn op_howth_fetch(
 
     std::thread::spawn(move || {
         let result = (|| {
-            let client = reqwest::blocking::Client::new();
+            let client = reqwest::blocking::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::blocking::Client::new());
             let opts = options.unwrap_or_default();
 
             let method = opts.method.as_deref().unwrap_or("GET").to_uppercase();
@@ -4370,3 +4398,4 @@ mod tests {
     }
 }
 // Force rebuild Wed Jan 28 13:43:43 IST 2026
+

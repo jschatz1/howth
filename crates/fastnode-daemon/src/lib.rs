@@ -864,9 +864,13 @@ fn try_v8_test_worker(
         std::io::Error::new(std::io::ErrorKind::Other, "V8 worker mutex poisoned")
     })?;
 
-    // Recreate the V8 worker for each test run to ensure clean module state.
-    // The V8 runtime's module cache and global state don't reset between runs,
-    // causing issues with stale require() caches and test infrastructure.
+    // Drop the old worker first and wait briefly for its thread to clean up
+    // (close DB connections, etc.) before creating a new one.
+    if let Some(old) = guard.take() {
+        drop(old);
+        // Give the old V8 thread time to exit and release DB connections
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     *guard = Some(crate::v8_test_worker::V8TestWorker::spawn()?);
 
     let worker = guard.as_ref().unwrap();
