@@ -4,12 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v0.1.0)'
+        required: true
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -26,16 +32,21 @@ jobs:
             runner: macos-latest
             archive: tar.gz
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-15
             archive: tar.gz
+            cross: true
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             archive: zip
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cross && matrix.target || '' }}
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -49,19 +60,21 @@ jobs:
             ${{ runner.os }}-cargo-release-
 
       - name: Build release
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace ${{ matrix.cross && format('--target {0}', matrix.target) || '' }}
 
       - name: Smoke test
+        if: ${{ !matrix.cross }}
         run: cargo run -p fastnode-cli --release -- --version
 
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          ARCHIVE_NAME="howth-${{ github.ref_name }}-${{ matrix.target }}"
+          ARCHIVE_NAME="howth-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
+          RELEASE_DIR="${{ matrix.cross && format('target/{0}/release', matrix.target) || 'target/release' }}"
           mkdir -p "${ARCHIVE_NAME}"
-          cp target/release/howth "${ARCHIVE_NAME}/"
-          cp target/release/fastnode "${ARCHIVE_NAME}/"
+          cp "${RELEASE_DIR}/howth" "${ARCHIVE_NAME}/"
+          cp "${RELEASE_DIR}/fastnode" "${ARCHIVE_NAME}/"
           cp LICENSE README.md "${ARCHIVE_NAME}/"
           tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
           echo "ARCHIVE=${ARCHIVE_NAME}.tar.gz" >> "$GITHUB_ENV"
@@ -70,7 +83,7 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $archiveName = "howth-${{ github.ref_name }}-${{ matrix.target }}"
+          $archiveName = "howth-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $archiveName
           Copy-Item "target/release/howth.exe" "$archiveName/"
           Copy-Item "target/release/fastnode.exe" "$archiveName/"
@@ -105,6 +118,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
             artifacts/howth-*

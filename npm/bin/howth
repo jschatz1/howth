@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+
+const { spawn } = require("child_process");
+const path = require("path");
+
+const ext = process.platform === "win32" ? ".exe" : "";
+const binary = path.join(__dirname, `howth${ext}`);
+
+const child = spawn(binary, process.argv.slice(2), {
+  stdio: "inherit",
+  windowsHide: true,
+});
+
+child.on("close", (code) => {
+  process.exit(code ?? 0);
+});

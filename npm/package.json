@@ -1,0 +1,36 @@
+{
+  "name": "howth",
+  "version": "0.1.0",
+  "description": "A fast JavaScript runtime",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jschatz1/howth"
+  },
+  "homepage": "https://github.com/jschatz1/howth",
+  "bin": {
+    "howth": "bin/howth"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "keywords": [
+    "javascript",
+    "runtime",
+    "v8",
+    "node",
+    "fast"
+  ]
+}
