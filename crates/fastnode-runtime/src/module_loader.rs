@@ -744,6 +744,12 @@ impl HowthModuleLoader {
             "howth:mocha" => {
                 "describe, context, it, specify, before, after, beforeEach, afterEach"
             }
+            "node:http" | "http" => {
+                "Agent, ClientRequest, IncomingMessage, OutgoingMessage, Server, ServerResponse, createServer, get, request, globalAgent, maxHeaderSize, METHODS, STATUS_CODES, validateHeaderName, validateHeaderValue"
+            }
+            "node:https" | "https" => {
+                "Agent, Server, createServer, get, request, globalAgent"
+            }
             "node:http2" | "http2" => {
                 "constants, connect, createServer, createSecureServer, getDefaultSettings, getPackedSettings, getUnpackedSettings, sensitiveHeaders"
             }

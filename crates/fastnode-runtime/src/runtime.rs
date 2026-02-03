@@ -215,14 +215,21 @@ extension!(
         op_howth_http_close,
         // HTTP server ops (fast - lazy extraction)
         op_howth_http_serve_fast,
+        op_howth_http_serve_rust_only,
+        op_howth_http_serve_direct_start,
+        op_howth_http_serve_direct_poll,
         op_howth_http_wait,
+        op_howth_http_wait_with_info,
         op_howth_http_wait_batch,
+        op_howth_http_wait_batch_with_info,
+        op_howth_http_poll_batch,
         op_howth_http_get_method,
         op_howth_http_get_url,
         op_howth_http_get_method_url,
         op_howth_http_get_headers,
         op_howth_http_get_body,
         op_howth_http_respond_fast,
+        op_howth_http_respond_fast_sync,
         op_howth_http_respond_with_headers,
         // TCP client ops
         op_howth_tcp_connect,
@@ -2090,6 +2097,8 @@ struct RawHttpRequest {
     headers: Vec<(String, String)>,
     body: bytes::Bytes,
     response_tx: tokio::sync::oneshot::Sender<RawHttpResponse>,
+    /// Timestamp when request was sent to channel (for measuring channel latency)
+    sent_at: std::time::Instant,
 }
 
 /// Raw HTTP response
@@ -2107,18 +2116,216 @@ fn get_pending_requests() -> &'static dashmap::DashMap<u32, RawHttpRequest> {
     PENDING_REQUESTS.get_or_init(dashmap::DashMap::new)
 }
 
+/// Track when each request was handed off to JS (when wait_info op returns)
+/// Used to measure "JS processing time" = time from wait_info return to respond_fast call
+static REQUEST_HANDOFF_TIMES: std::sync::OnceLock<dashmap::DashMap<u32, std::time::Instant>> =
+    std::sync::OnceLock::new();
+
+fn get_request_handoff_times() -> &'static dashmap::DashMap<u32, std::time::Instant> {
+    REQUEST_HANDOFF_TIMES.get_or_init(dashmap::DashMap::new)
+}
+
 /// Fast server state - shared between serve and wait ops
 struct FastServerState {
     request_rx: tokio::sync::mpsc::UnboundedReceiver<(u32, RawHttpRequest)>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Map of fast HTTP servers
-static FAST_SERVERS: std::sync::OnceLock<Mutex<HashMap<u32, Arc<Mutex<FastServerState>>>>> =
+/// Map of fast HTTP servers - using DashMap for lock-free lookup
+static FAST_SERVERS: std::sync::OnceLock<dashmap::DashMap<u32, Arc<tokio::sync::Mutex<FastServerState>>>> =
     std::sync::OnceLock::new();
 
-fn get_fast_servers() -> &'static Mutex<HashMap<u32, Arc<Mutex<FastServerState>>>> {
-    FAST_SERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+fn get_fast_servers() -> &'static dashmap::DashMap<u32, Arc<tokio::sync::Mutex<FastServerState>>> {
+    FAST_SERVERS.get_or_init(dashmap::DashMap::new)
+}
+
+/// Pure Rust HTTP server - no JS, just returns static response
+/// Used to establish baseline performance (theoretical maximum)
+#[op2(async)]
+#[serde]
+async fn op_howth_http_serve_rust_only(
+    port: u16,
+    #[string] hostname: String,
+    #[string] response_body: String,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use http_body_util::Full;
+    use bytes::Bytes;
+
+    let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
+
+    // Pre-build response body as static bytes
+    let response_bytes: &'static Bytes = Box::leak(Box::new(Bytes::from(response_body)));
+
+    // Spawn the server - pure Rust, no JS callbacks
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Enable TCP_NODELAY for lower latency
+            let _ = stream.set_nodelay(true);
+
+            let io = TokioIo::new(stream);
+
+            tokio::spawn(async move {
+                let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                    async move {
+                        // Direct response - no allocation, static body
+                        Ok::<_, std::convert::Infallible>(
+                            hyper::Response::builder()
+                                .status(200)
+                                .header("content-type", "text/plain")
+                                .body(Full::new(response_bytes.clone()))
+                                .unwrap()
+                        )
+                    }
+                });
+
+                let _ = http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    Ok(serde_json::json!({
+        "port": local_addr.port(),
+        "hostname": local_addr.ip().to_string(),
+    }))
+}
+
+// Storage for direct-mode pending requests (ready to be polled by JS)
+static DIRECT_PENDING: std::sync::OnceLock<crossbeam_channel::Receiver<(u32, RawHttpRequest)>> = std::sync::OnceLock::new();
+static DIRECT_SENDER: std::sync::OnceLock<crossbeam_channel::Sender<(u32, RawHttpRequest)>> = std::sync::OnceLock::new();
+
+/// Start a direct HTTP server - uses sync polling instead of async ops
+/// This keeps request handling on the V8 thread, avoiding async channel overhead
+#[op2(async)]
+#[serde]
+async fn op_howth_http_serve_direct_start(
+    port: u16,
+    #[string] hostname: String,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use http_body_util::{BodyExt, Full};
+    use bytes::Bytes;
+
+    let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
+
+    // Create bounded crossbeam channel for better performance
+    let (tx, rx) = crossbeam_channel::bounded(1024);
+    let _ = DIRECT_SENDER.set(tx.clone());
+    let _ = DIRECT_PENDING.set(rx);
+
+    // Spawn the accept loop
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let _ = stream.set_nodelay(true);
+            let io = TokioIo::new(stream);
+            let tx = tx.clone();
+
+            tokio::spawn(async move {
+                let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let tx = tx.clone();
+                    async move {
+                        let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                        let method = req.method().to_string();
+                        let uri = req.uri().to_string();
+                        let headers: Vec<(String, String)> = req
+                            .headers()
+                            .iter()
+                            .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+                            .collect();
+
+                        let body = match req.collect().await {
+                            Ok(collected) => collected.to_bytes(),
+                            Err(_) => Bytes::new(),
+                        };
+
+                        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<RawHttpResponse>();
+
+                        let raw_request = RawHttpRequest {
+                            method,
+                            uri,
+                            headers,
+                            body,
+                            response_tx,
+                            sent_at: std::time::Instant::now(),
+                        };
+
+                        // Send to crossbeam channel (non-blocking for sender)
+                        let _ = tx.send((request_id, raw_request));
+
+                        // Wait for response
+                        match response_rx.await {
+                            Ok(response) => {
+                                let mut builder = hyper::Response::builder().status(response.status);
+                                if let Some(headers) = response.headers {
+                                    for (k, v) in headers {
+                                        builder = builder.header(k, v);
+                                    }
+                                }
+                                Ok::<_, std::convert::Infallible>(
+                                    builder.body(Full::new(response.body)).unwrap()
+                                )
+                            }
+                            Err(_) => {
+                                Ok(hyper::Response::builder()
+                                    .status(500)
+                                    .body(Full::new(Bytes::from("Internal Server Error")))
+                                    .unwrap())
+                            }
+                        }
+                    }
+                });
+
+                let _ = http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    Ok(serde_json::json!({
+        "port": local_addr.port(),
+        "hostname": local_addr.ip().to_string(),
+    }))
+}
+
+/// Poll for a request - sync op, returns immediately
+/// Returns [requestId, method, url] or [-1, "", ""] if no request ready
+#[op2]
+#[serde]
+fn op_howth_http_serve_direct_poll() -> Result<(i32, String, String), deno_core::error::AnyError> {
+    let rx = DIRECT_PENDING.get()
+        .ok_or_else(|| deno_core::error::AnyError::msg("Direct server not started"))?;
+
+    match rx.try_recv() {
+        Ok((request_id, raw_request)) => {
+            let method = raw_request.method.clone();
+            let uri = raw_request.uri.clone();
+            get_pending_requests().insert(request_id, raw_request);
+            Ok((request_id as i32, method, uri))
+        }
+        Err(_) => Ok((-1, String::new(), String::new())),
+    }
 }
 
 /// Start a fast HTTP server - similar to op_howth_http_listen but stores raw requests
@@ -2166,6 +2373,10 @@ async fn op_howth_http_serve_fast(
                 let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                     let tx = tx.clone();
                     async move {
+                        // Measure end-to-end request time (hyper's perspective)
+                        let trace = is_trace_enabled();
+                        let start = if trace { Some(std::time::Instant::now()) } else { None };
+
                         let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
 
                         // Extract data without converting to owned Strings yet for headers
@@ -2181,30 +2392,75 @@ async fn op_howth_http_serve_fast(
                             })
                             .collect();
 
+                        let after_parse = if trace { Some(std::time::Instant::now()) } else { None };
+
                         // Read body
                         let body = match req.collect().await {
                             Ok(collected) => collected.to_bytes(),
                             Err(_) => Bytes::new(),
                         };
 
+                        let after_body = if trace { Some(std::time::Instant::now()) } else { None };
+
                         // Create oneshot channel for response
                         let (response_tx, response_rx) =
                             tokio::sync::oneshot::channel::<RawHttpResponse>();
 
+                        let sent_at = std::time::Instant::now();
                         let raw_request = RawHttpRequest {
                             method,
                             uri,
                             headers,
                             body,
                             response_tx,
+                            sent_at,
                         };
 
                         // Send request ID and data to JS layer
                         let _ = tx.send((request_id, raw_request));
+                        let after_send = if trace { Some(std::time::Instant::now()) } else { None };
 
                         // Wait for JS to send response
                         match response_rx.await {
                             Ok(response) => {
+                                // Measure JS processing time (time spent waiting for JS)
+                                if trace {
+                                    let after_js = std::time::Instant::now();
+
+                                    // E2E stats from hyper's perspective
+                                    static E2E_STATS: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+                                    static E2E_COUNT: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+                                    static PARSE_TOTAL: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+                                    static BODY_TOTAL: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+                                    static JS_TOTAL: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+
+                                    let count = E2E_COUNT.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let total = E2E_STATS.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let parse_total = PARSE_TOTAL.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let body_total = BODY_TOTAL.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let js_total = JS_TOTAL.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+
+                                    let e2e = (after_js - start.unwrap()).as_nanos() as u64;
+                                    let parse_time = (after_parse.unwrap() - start.unwrap()).as_nanos() as u64;
+                                    let body_time = (after_body.unwrap() - after_parse.unwrap()).as_nanos() as u64;
+                                    let js_time = (after_js - after_send.unwrap()).as_nanos() as u64;
+
+                                    let c = count.fetch_add(1, Ordering::Relaxed) + 1;
+                                    total.fetch_add(e2e, Ordering::Relaxed);
+                                    parse_total.fetch_add(parse_time, Ordering::Relaxed);
+                                    body_total.fetch_add(body_time, Ordering::Relaxed);
+                                    js_total.fetch_add(js_time, Ordering::Relaxed);
+
+                                    if c % 50000 == 0 {
+                                        let avg_e2e = total.load(Ordering::Relaxed) / c;
+                                        let avg_parse = parse_total.load(Ordering::Relaxed) / c;
+                                        let avg_body = body_total.load(Ordering::Relaxed) / c;
+                                        let avg_js = js_total.load(Ordering::Relaxed) / c;
+                                        eprintln!("[HYPER E2E] count={} total={}ns | parse={}ns body={}ns JS_WAIT={}ns",
+                                            c, avg_e2e, avg_parse, avg_body, avg_js);
+                                    }
+                                }
+
                                 let status = hyper::StatusCode::from_u16(response.status)
                                     .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
 
@@ -2237,10 +2493,10 @@ async fn op_howth_http_serve_fast(
         }
     });
 
-    // Store server state for the fast path
-    get_fast_servers().lock().await.insert(
+    // Store server state for the fast path (DashMap - no lock needed)
+    get_fast_servers().insert(
         server_id,
-        Arc::new(Mutex::new(FastServerState {
+        Arc::new(tokio::sync::Mutex::new(FastServerState {
             request_rx,
             shutdown,
         })),
@@ -2277,12 +2533,10 @@ async fn op_howth_http_wait(server_id: u32) -> Result<i32, deno_core::error::Any
     let trace = is_trace_enabled();
     let start = if trace { Some(std::time::Instant::now()) } else { None };
 
-    let server = {
-        let servers = get_fast_servers().lock().await;
-        match servers.get(&server_id) {
-            Some(s) => s.clone(),
-            None => return Ok(-1), // Server closed
-        }
+    // DashMap - lock-free lookup
+    let server = match get_fast_servers().get(&server_id) {
+        Some(s) => s.clone(),
+        None => return Ok(-1), // Server closed
     };
 
     let after_server_lock = if trace { Some(std::time::Instant::now()) } else { None };
@@ -2329,6 +2583,101 @@ async fn op_howth_http_wait(server_id: u32) -> Result<i32, deno_core::error::Any
     }
 }
 
+/// Detailed timing stats for wait_with_info op
+#[derive(Default)]
+struct WaitWithInfoStats {
+    count: u64,
+    total_op_start_ns: u64,      // Time from op call to first instruction
+    total_dashmap_ns: u64,       // Time to get server from DashMap
+    total_mutex_ns: u64,         // Time to acquire mutex
+    total_recv_ns: u64,          // Time in recv() (blocking on channel)
+    total_channel_latency_ns: u64, // Time from hyper send to recv complete (critical!)
+    total_extract_ns: u64,       // Time to clone method/uri
+    total_insert_ns: u64,        // Time to insert into pending_requests
+}
+
+static WAIT_INFO_STATS: std::sync::OnceLock<Mutex<WaitWithInfoStats>> = std::sync::OnceLock::new();
+
+/// Wait for request and return id + method + url in one call
+/// This reduces 3 op calls to 1 for the common case
+#[op2(async)]
+#[serde]
+async fn op_howth_http_wait_with_info(
+    server_id: u32,
+) -> Result<(i32, String, String), deno_core::error::AnyError> {
+    let trace = is_trace_enabled();
+    let op_start = if trace { Some(std::time::Instant::now()) } else { None };
+
+    // DashMap - lock-free lookup
+    let server = match get_fast_servers().get(&server_id) {
+        Some(s) => s.clone(),
+        None => return Ok((-1, String::new(), String::new())), // Server closed
+    };
+
+    let after_dashmap = if trace { Some(std::time::Instant::now()) } else { None };
+
+    let mut state = server.lock().await;
+
+    let after_mutex = if trace { Some(std::time::Instant::now()) } else { None };
+
+    match state.request_rx.recv().await {
+        Some((request_id, raw_request)) => {
+            let after_recv = if trace { Some(std::time::Instant::now()) } else { None };
+
+            // CRITICAL: Channel latency = time from hyper's send() to our recv() completing
+            let channel_latency = if trace {
+                Some((after_recv.unwrap() - raw_request.sent_at).as_nanos() as u64)
+            } else {
+                None
+            };
+
+            let method = raw_request.method.clone();
+            let uri = raw_request.uri.clone();
+
+            let after_extract = if trace { Some(std::time::Instant::now()) } else { None };
+
+            // Store the raw request for body/headers access later
+            get_pending_requests().insert(request_id, raw_request);
+
+            let after_insert = if trace { Some(std::time::Instant::now()) } else { None };
+
+            // Record detailed stats
+            if trace {
+                let stats = WAIT_INFO_STATS.get_or_init(|| Mutex::new(WaitWithInfoStats::default()));
+                if let Ok(mut s) = stats.try_lock() {
+                    s.count += 1;
+                    s.total_dashmap_ns += (after_dashmap.unwrap() - op_start.unwrap()).as_nanos() as u64;
+                    s.total_mutex_ns += (after_mutex.unwrap() - after_dashmap.unwrap()).as_nanos() as u64;
+                    s.total_recv_ns += (after_recv.unwrap() - after_mutex.unwrap()).as_nanos() as u64;
+                    s.total_channel_latency_ns += channel_latency.unwrap();
+                    s.total_extract_ns += (after_extract.unwrap() - after_recv.unwrap()).as_nanos() as u64;
+                    s.total_insert_ns += (after_insert.unwrap() - after_extract.unwrap()).as_nanos() as u64;
+
+                    if s.count % 50000 == 0 {
+                        eprintln!("[WAIT_INFO] count={} | dashmap={}ns mutex={}ns recv={}ns CHANNEL_LAT={}ns extract={}ns insert={}ns",
+                            s.count,
+                            s.total_dashmap_ns / s.count,
+                            s.total_mutex_ns / s.count,
+                            s.total_recv_ns / s.count,
+                            s.total_channel_latency_ns / s.count,
+                            s.total_extract_ns / s.count,
+                            s.total_insert_ns / s.count,
+                        );
+                    }
+                }
+            }
+
+            // Store handoff time for measuring JS processing time in respond_fast
+            if trace {
+                get_request_handoff_times().insert(request_id, std::time::Instant::now());
+            }
+
+            Ok((request_id as i32, method, uri))
+        }
+        None => Ok((-1, String::new(), String::new())), // Channel closed
+    }
+}
+
 /// Wait for requests in batch - returns array of request IDs (no timeout, blocks until at least one)
 /// This is more efficient than calling op_howth_http_wait repeatedly
 #[op2(async)]
@@ -2337,12 +2686,10 @@ async fn op_howth_http_wait_batch(
     server_id: u32,
     max_batch: u32,
 ) -> Result<Vec<i32>, deno_core::error::AnyError> {
-    let server = {
-        let servers = get_fast_servers().lock().await;
-        match servers.get(&server_id) {
-            Some(s) => s.clone(),
-            None => return Ok(vec![-1]), // Server closed
-        }
+    // DashMap - lock-free lookup
+    let server = match get_fast_servers().get(&server_id) {
+        Some(s) => s.clone(),
+        None => return Ok(vec![-1]), // Server closed
     };
 
     let mut state = server.lock().await;
@@ -2370,6 +2717,103 @@ async fn op_howth_http_wait_batch(
     }
 
     Ok(request_ids)
+}
+
+/// Wait for requests in batch and return id + method + url for each
+/// This is the most efficient way to receive multiple requests - one op call returns all data
+#[op2(async)]
+#[serde]
+async fn op_howth_http_wait_batch_with_info(
+    server_id: u32,
+    max_batch: u32,
+) -> Result<Vec<(i32, String, String)>, deno_core::error::AnyError> {
+    let trace = is_trace_enabled();
+
+    // DashMap - lock-free lookup
+    let server = match get_fast_servers().get(&server_id) {
+        Some(s) => s.clone(),
+        None => return Ok(vec![(-1, String::new(), String::new())]), // Server closed
+    };
+
+    let mut state = server.lock().await;
+    let mut results = Vec::with_capacity(max_batch as usize);
+
+    // First, block until we get at least one request (no timeout)
+    match state.request_rx.recv().await {
+        Some((request_id, raw_request)) => {
+            let method = raw_request.method.clone();
+            let uri = raw_request.uri.clone();
+
+            // Store handoff time for measuring JS processing time
+            if trace {
+                get_request_handoff_times().insert(request_id, std::time::Instant::now());
+            }
+
+            get_pending_requests().insert(request_id, raw_request);
+            results.push((request_id as i32, method, uri));
+        }
+        None => return Ok(vec![(-1, String::new(), String::new())]), // Channel closed
+    }
+
+    // Then drain any additional queued requests without blocking
+    let pending_requests = get_pending_requests();
+    while results.len() < max_batch as usize {
+        match state.request_rx.try_recv() {
+            Ok((request_id, raw_request)) => {
+                let method = raw_request.method.clone();
+                let uri = raw_request.uri.clone();
+
+                if trace {
+                    get_request_handoff_times().insert(request_id, std::time::Instant::now());
+                }
+
+                pending_requests.insert(request_id, raw_request);
+                results.push((request_id as i32, method, uri));
+            }
+            Err(_) => break, // No more queued requests
+        }
+    }
+
+    Ok(results)
+}
+
+/// Non-blocking batch poll - returns immediately with whatever is available
+/// For tight polling loops that want to minimize latency
+#[op2]
+#[serde]
+fn op_howth_http_poll_batch(
+    server_id: u32,
+    max_batch: u32,
+) -> Result<Vec<(i32, String, String)>, deno_core::error::AnyError> {
+    // DashMap - lock-free lookup
+    let server = match get_fast_servers().get(&server_id) {
+        Some(s) => s.clone(),
+        None => return Ok(vec![]), // Server closed
+    };
+
+    // Try to get the lock - if someone else has it, return empty
+    let mut state = match server.try_lock() {
+        Ok(s) => s,
+        Err(_) => return Ok(vec![]),
+    };
+
+    let mut results = Vec::with_capacity(max_batch as usize);
+    let pending_requests = get_pending_requests();
+
+    // Drain what's available without blocking
+    while results.len() < max_batch as usize {
+        match state.request_rx.try_recv() {
+            Ok((request_id, raw_request)) => {
+                let method = raw_request.method.clone();
+                let uri = raw_request.uri.clone();
+                pending_requests.insert(request_id, raw_request);
+                results.push((request_id as i32, method, uri));
+            }
+            Err(_) => break,
+        }
+    }
+
+    Ok(results)
 }
 
 /// Get request method - fast, no serde
@@ -2431,19 +2875,28 @@ static RESPOND_STATS: std::sync::OnceLock<Mutex<RespondStats>> = std::sync::Once
 #[derive(Default)]
 struct RespondStats {
     count: u64,
+    total_js_processing_ns: u64,  // Time from wait_info return to respond_fast call (CRITICAL!)
     total_lock_ns: u64,
     total_send_ns: u64,
+    total_full_roundtrip_ns: u64, // Time from hyper send to oneshot send (full Rust-side view)
 }
 
-/// Send response - fast path with direct types (no serde for common case)
-#[op2(async)]
-async fn op_howth_http_respond_fast(
+/// Internal helper for sending response - called by both sync and async ops
+fn respond_fast_impl(
     request_id: u32,
     status: u16,
-    #[string] body: Option<String>,
+    body: Option<String>,
 ) -> Result<(), deno_core::error::AnyError> {
     let trace = is_trace_enabled();
     let start = if trace { Some(std::time::Instant::now()) } else { None };
+
+    // Get JS processing time (time from wait_info return to now)
+    let js_processing_time = if trace {
+        get_request_handoff_times().remove(&request_id)
+            .map(|(_, handoff_time)| (start.unwrap() - handoff_time).as_nanos() as u64)
+    } else {
+        None
+    };
 
     // Remove the request and get the response channel (DashMap - no lock needed)
     let raw_request = get_pending_requests().remove(&request_id);
@@ -2452,6 +2905,13 @@ async fn op_howth_http_respond_fast(
 
     match raw_request {
         Some((_, req)) => {
+            // Calculate full roundtrip from hyper's perspective (sent_at to now)
+            let full_roundtrip = if trace {
+                Some((after_lock.unwrap() - req.sent_at).as_nanos() as u64)
+            } else {
+                None
+            };
+
             let response = RawHttpResponse {
                 status,
                 headers: None,
@@ -2459,6 +2919,7 @@ async fn op_howth_http_respond_fast(
                     .map(|b| bytes::Bytes::from(b))
                     .unwrap_or_else(bytes::Bytes::new),
             };
+            // oneshot send is synchronous - just transfers ownership
             let _ = req.response_tx.send(response);
 
             if trace {
@@ -2466,14 +2927,22 @@ async fn op_howth_http_respond_fast(
                 let stats = RESPOND_STATS.get_or_init(|| Mutex::new(RespondStats::default()));
                 if let Ok(mut s) = stats.try_lock() {
                     s.count += 1;
+                    if let Some(jpt) = js_processing_time {
+                        s.total_js_processing_ns += jpt;
+                    }
                     s.total_lock_ns += (after_lock.unwrap() - start.unwrap()).as_nanos() as u64;
                     s.total_send_ns += (after_send - after_lock.unwrap()).as_nanos() as u64;
+                    if let Some(frt) = full_roundtrip {
+                        s.total_full_roundtrip_ns += frt;
+                    }
 
-                    if s.count % 10000 == 0 {
-                        eprintln!("[FAST RESPOND] count={} lock={}ns send={}ns",
+                    if s.count % 50000 == 0 {
+                        eprintln!("[RESPOND] count={} | JS_PROC={}ns lock={}ns send={}ns FULL_RT={}ns",
                             s.count,
+                            s.total_js_processing_ns / s.count,
                             s.total_lock_ns / s.count,
                             s.total_send_ns / s.count,
+                            s.total_full_roundtrip_ns / s.count,
                         );
                     }
                 }
@@ -2483,6 +2952,27 @@ async fn op_howth_http_respond_fast(
         }
         None => Err(deno_core::error::AnyError::msg("Request not found")),
     }
+}
+
+/// Send response - SYNC path with direct types (no async overhead)
+/// This is the hot path - keeping it sync avoids deno_core async polling overhead
+#[op2]
+fn op_howth_http_respond_fast_sync(
+    request_id: u32,
+    status: u16,
+    #[string] body: Option<String>,
+) -> Result<(), deno_core::error::AnyError> {
+    respond_fast_impl(request_id, status, body)
+}
+
+/// Send response - async version (kept for compatibility)
+#[op2(async)]
+async fn op_howth_http_respond_fast(
+    request_id: u32,
+    status: u16,
+    #[string] body: Option<String>,
+) -> Result<(), deno_core::error::AnyError> {
+    respond_fast_impl(request_id, status, body)
 }
 
 /// Send response with headers - when headers are needed

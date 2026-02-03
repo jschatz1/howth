@@ -384,6 +384,21 @@ enum BenchCommands {
         #[arg(long, default_value_t = commands::bench::test::DEFAULT_WARMUP)]
         warmup: u32,
     },
+
+    /// Benchmark HTTP server throughput (howth vs node vs bun vs deno)
+    Http {
+        /// Duration of the benchmark in seconds
+        #[arg(long, default_value_t = commands::bench::http::DEFAULT_DURATION_SECS)]
+        duration: u32,
+
+        /// Number of concurrent connections
+        #[arg(long, default_value_t = commands::bench::http::DEFAULT_CONNECTIONS)]
+        connections: u32,
+
+        /// Warmup duration in seconds
+        #[arg(long, default_value_t = commands::bench::http::DEFAULT_WARMUP_SECS)]
+        warmup: u32,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -663,6 +678,11 @@ fn main() -> Result<()> {
                 iters,
                 warmup,
             } => commands::bench::test::run(*iters, *warmup, cli.json),
+            BenchCommands::Http {
+                duration,
+                connections,
+                warmup,
+            } => commands::bench::http::run(*duration, *connections, *warmup, cli.json),
         };
     }
 

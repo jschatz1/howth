@@ -13554,32 +13554,33 @@
       let running = true;
       const serverId = result.serverId;
 
+      // JS-side timing stats (enabled via HOWTH_TRACE env var check)
+      const jsTrace = typeof process !== 'undefined' && process.env.HOWTH_TRACE === '1';
+      let jsStats = { count: 0, waitOp: 0, createReq: 0, handler: 0, respondOp: 0 };
+
       // Accept loop - no timeout, blocks until request arrives
       (async () => {
         while (running) {
           try {
-            // Wait for next request (blocks until one arrives - no polling timeout)
-            const requestId = await ops.op_howth_http_wait(serverId);
+            const t0 = jsTrace ? performance.now() : 0;
+
+            // Combined op: wait + get method/url in ONE call (proven faster than 3 separate calls)
+            const [requestId, method, url] = await ops.op_howth_http_wait_with_info(serverId);
+
+            const t1 = jsTrace ? performance.now() : 0;
+
             if (requestId < 0) {
               // Server closed
               running = false;
               break;
             }
 
-            // Create request object with lazy getters (only fetch what handler needs)
+            // Create request object with method/url already fetched, lazy getters for headers/body
             const req = {
-              _method: null,
-              _url: null,
+              method,
+              url,
               _headers: null,
               _body: null,
-              get method() {
-                if (this._method === null) this._method = ops.op_howth_http_get_method(requestId);
-                return this._method;
-              },
-              get url() {
-                if (this._url === null) this._url = ops.op_howth_http_get_url(requestId);
-                return this._url;
-              },
               get headers() {
                 if (this._headers === null) this._headers = ops.op_howth_http_get_headers(requestId);
                 return this._headers;
@@ -13596,12 +13597,18 @@
               },
             };
 
+            const t2 = jsTrace ? performance.now() : 0;
+
             // Fire and forget - don't await handler, process next request immediately
             (async () => {
+              const t3 = jsTrace ? performance.now() : 0;
+
               try {
                 const response = await handler(req);
 
-                // Send response - fast path for no headers
+                const t4 = jsTrace ? performance.now() : 0;
+
+                // Send response - use SYNC op for no headers (fastest path)
                 if (response.headers) {
                   const headerArray = Object.entries(response.headers);
                   await ops.op_howth_http_respond_with_headers(
@@ -13611,15 +13618,32 @@
                     response.body || ""
                   );
                 } else {
-                  await ops.op_howth_http_respond_fast(
+                  // SYNC op - no async overhead, just direct call
+                  ops.op_howth_http_respond_fast_sync(
                     requestId,
                     response.status || 200,
                     response.body || ""
                   );
                 }
+
+                const t5 = jsTrace ? performance.now() : 0;
+
+                // Accumulate stats
+                if (jsTrace) {
+                  jsStats.count++;
+                  jsStats.waitOp += (t1 - t0);
+                  jsStats.createReq += (t2 - t1);
+                  jsStats.handler += (t4 - t3);
+                  jsStats.respondOp += (t5 - t4);
+
+                  if (jsStats.count % 50000 === 0) {
+                    const c = jsStats.count;
+                    console.error(`[JS TRACE] count=${c} | waitOp=${(jsStats.waitOp/c).toFixed(3)}ms createReq=${(jsStats.createReq/c).toFixed(3)}ms handler=${(jsStats.handler/c).toFixed(3)}ms respondOp=${(jsStats.respondOp/c).toFixed(3)}ms`);
+                  }
+                }
               } catch (err) {
-                // Handler error - send 500
-                await ops.op_howth_http_respond_fast(requestId, 500, "Internal Server Error");
+                // Handler error - send 500 (use sync for speed)
+                ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
               }
             })();
           } catch (err) {
@@ -13635,6 +13659,337 @@
         close() {
           running = false;
           // TODO: close server via op
+        },
+      };
+    },
+
+    /**
+     * High-performance batch HTTP server - processes multiple requests per event loop tick.
+     * This amortizes the async wake latency across batches for higher throughput.
+     * Best for sync handlers that return immediately.
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {number} options.batchSize - Max requests per batch (default: 64)
+     * @param {Function} handler - Request handler function (req) => response
+     */
+    async serveBatch(options, handler) {
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+      const batchSize = options.batchSize || 64;
+
+      const result = await ops.op_howth_http_serve_fast(port, hostname);
+      let running = true;
+      const serverId = result.serverId;
+
+      // Batch accept loop
+      (async () => {
+        while (running) {
+          try {
+            // Wait for batch of requests - one op call returns multiple requests
+            const batch = await ops.op_howth_http_wait_batch_with_info(serverId, batchSize);
+
+            if (batch.length === 0 || batch[0][0] < 0) {
+              running = false;
+              break;
+            }
+
+            // Process entire batch in this event loop tick
+            for (let i = 0; i < batch.length; i++) {
+              const [requestId, method, url] = batch[i];
+
+              // Create minimal request object
+              const req = {
+                method,
+                url,
+                _headers: null,
+                _body: null,
+                get headers() {
+                  if (this._headers === null) this._headers = ops.op_howth_http_get_headers(requestId);
+                  return this._headers;
+                },
+                get body() {
+                  if (this._body === null) {
+                    const buf = ops.op_howth_http_get_body(requestId);
+                    this._body = new TextDecoder().decode(buf);
+                  }
+                  return this._body;
+                },
+                get bodyRaw() {
+                  return ops.op_howth_http_get_body(requestId);
+                },
+              };
+
+              try {
+                // For sync handlers, this completes immediately
+                const response = handler(req);
+
+                // Handle both sync and async responses
+                if (response && typeof response.then === 'function') {
+                  // Async handler - fire and forget
+                  response.then(res => {
+                    if (res.headers) {
+                      ops.op_howth_http_respond_with_headers(
+                        requestId, res.status || 200,
+                        Object.entries(res.headers), res.body || ""
+                      );
+                    } else {
+                      ops.op_howth_http_respond_fast_sync(requestId, res.status || 200, res.body || "");
+                    }
+                  }).catch(() => {
+                    ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+                  });
+                } else {
+                  // Sync handler - respond immediately
+                  if (response.headers) {
+                    // Headers path still needs to be async for serde
+                    ops.op_howth_http_respond_with_headers(
+                      requestId, response.status || 200,
+                      Object.entries(response.headers), response.body || ""
+                    );
+                  } else {
+                    ops.op_howth_http_respond_fast_sync(requestId, response.status || 200, response.body || "");
+                  }
+                }
+              } catch (err) {
+                ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+              }
+            }
+          } catch (err) {
+            if (!running) break;
+          }
+        }
+      })();
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+        close() {
+          running = false;
+        },
+      };
+    },
+
+    /**
+     * Ultra-low-latency polling HTTP server - trades CPU for lower latency.
+     * Uses sync polling with micro-yields to minimize wake latency.
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {number} options.batchSize - Max requests per poll (default: 64)
+     * @param {Function} handler - Request handler function (req) => response
+     */
+    async servePoll(options, handler) {
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+      const batchSize = options.batchSize || 64;
+
+      const result = await ops.op_howth_http_serve_fast(port, hostname);
+      let running = true;
+      const serverId = result.serverId;
+
+      // Hybrid polling - spin for a bit then fall back to async wait
+      const poll = async () => {
+        let emptyPolls = 0;
+        const SPIN_LIMIT = 1000; // Spin this many times before falling back to async
+
+        while (running) {
+          // Poll for requests (sync, non-blocking)
+          const batch = ops.op_howth_http_poll_batch(serverId, batchSize);
+
+          if (batch.length > 0) {
+            emptyPolls = 0; // Reset spin counter
+
+            // Process all polled requests
+            for (let i = 0; i < batch.length; i++) {
+              const [requestId, method, url] = batch[i];
+
+              if (requestId < 0) {
+                running = false;
+                return;
+              }
+
+              const req = {
+                method,
+                url,
+                _headers: null,
+                _body: null,
+                get headers() {
+                  if (this._headers === null) this._headers = ops.op_howth_http_get_headers(requestId);
+                  return this._headers;
+                },
+                get body() {
+                  if (this._body === null) {
+                    const buf = ops.op_howth_http_get_body(requestId);
+                    this._body = new TextDecoder().decode(buf);
+                  }
+                  return this._body;
+                },
+                get bodyRaw() {
+                  return ops.op_howth_http_get_body(requestId);
+                },
+              };
+
+              try {
+                const response = handler(req);
+                if (response && typeof response.then === 'function') {
+                  response.then(res => {
+                    ops.op_howth_http_respond_fast_sync(requestId, res.status || 200, res.body || "");
+                  }).catch(() => {
+                    ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+                  });
+                } else {
+                  ops.op_howth_http_respond_fast_sync(requestId, response.status || 200, response.body || "");
+                }
+              } catch (err) {
+                ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+              }
+            }
+            continue;
+          }
+
+          // No requests - spin for a while before yielding
+          emptyPolls++;
+          if (emptyPolls >= SPIN_LIMIT) {
+            emptyPolls = 0;
+            // Fall back to async wait when idle
+            const waitBatch = await ops.op_howth_http_wait_batch_with_info(serverId, batchSize);
+            if (waitBatch.length > 0 && waitBatch[0][0] >= 0) {
+              // Got requests from async wait - process them
+              for (let i = 0; i < waitBatch.length; i++) {
+                const [requestId, method, url] = waitBatch[i];
+                if (requestId < 0) {
+                  running = false;
+                  return;
+                }
+                const req = {
+                  method,
+                  url,
+                  get headers() { return ops.op_howth_http_get_headers(requestId); },
+                  get body() { return new TextDecoder().decode(ops.op_howth_http_get_body(requestId)); },
+                };
+                try {
+                  const response = handler(req);
+                  if (response && typeof response.then === 'function') {
+                    response.then(res => {
+                      ops.op_howth_http_respond_fast_sync(requestId, res.status || 200, res.body || "");
+                    }).catch(() => {
+                      ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+                    });
+                  } else {
+                    ops.op_howth_http_respond_fast_sync(requestId, response.status || 200, response.body || "");
+                  }
+                } catch (err) {
+                  ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+                }
+              }
+            } else {
+              running = false;
+            }
+          }
+        }
+      };
+
+      poll();
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+        close() {
+          running = false;
+        },
+      };
+    },
+
+    /**
+     * Pure Rust HTTP server - no JS handler, returns static response.
+     * Used to establish baseline performance (theoretical maximum without JS overhead).
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {string} options.body - Static response body (default: "Hi")
+     */
+    async serveRustOnly(options) {
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+      const body = options.body || "Hi";
+
+      const result = await ops.op_howth_http_serve_rust_only(port, hostname, body);
+      console.log(`Pure Rust server listening on http://${result.hostname}:${result.port}`);
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+      };
+    },
+
+    /**
+     * Direct HTTP server - uses sync polling to minimize latency.
+     * Polls for requests in a tight loop, calling the handler synchronously.
+     * Best for CPU-bound handlers where lowest latency is critical.
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {Function} handler - Request handler function (req) => response
+     */
+    async serveDirect(options, handler) {
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+
+      const result = await ops.op_howth_http_serve_direct_start(port, hostname);
+      let running = true;
+
+      console.log(`Direct server listening on http://${result.hostname}:${result.port}`);
+
+      // Hybrid approach: async wait for first request, then sync drain
+      const loop = async () => {
+        while (running) {
+          // First, do sync poll to drain any pending requests
+          let processed = 0;
+          while (processed < 1000) {
+            const [requestId, method, url] = ops.op_howth_http_serve_direct_poll();
+
+            if (requestId >= 0) {
+              processed++;
+              const req = {
+                method,
+                url,
+                get headers() { return ops.op_howth_http_get_headers(requestId); },
+                get body() { return new TextDecoder().decode(ops.op_howth_http_get_body(requestId)); },
+              };
+
+              try {
+                const response = handler(req);
+                ops.op_howth_http_respond_fast_sync(requestId, response.status || 200, response.body || "");
+              } catch (err) {
+                ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+              }
+            } else {
+              break;
+            }
+          }
+
+          // If we processed requests, continue immediately
+          if (processed > 0) {
+            continue;
+          }
+
+          // No requests ready - yield with a microtask to avoid blocking
+          await Promise.resolve();
+        }
+      };
+
+      loop();
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+        close() {
+          running = false;
         },
       };
     },

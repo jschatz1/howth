@@ -39,6 +39,41 @@ The speed comes from architecture, not just using Rust:
 
 6. **IPC, not subprocesses** — The CLI talks to the daemon over a Unix domain socket (or named pipe on Windows). A test run is a single IPC round-trip: send file paths, receive results. No process spawning, no pipe setup, no environment inheritance.
 
+## Why this beats native implementations
+
+Bun is written in Zig with JavaScriptCore. Deno is Rust with V8. Both have native code for hot paths. howth has a ~13k line `bootstrap.js` that implements Node.js APIs in pure JavaScript. So why is howth faster?
+
+**1. Warm daemon vs cold start**
+
+When you run `bun test` or `node --test`, each invocation pays:
+- Process spawn (~5-20ms)
+- Runtime initialization (~20-50ms)
+- Module loading and parsing
+- JIT warmup
+
+howth's daemon is already running. The CLI sends an IPC message to a warm worker pool where V8 is hot, modules are cached, and the JIT has already optimized the test framework. The benchmark measures what developers actually experience: running tests repeatedly during development.
+
+**2. No FFI boundary crossing**
+
+Every JS→Native→JS transition has overhead: argument marshalling, context switching, type checking at boundaries. If Bun calls into Zig 100 times for an operation, that overhead adds up. howth's pure JS implementation stays in V8's optimized world — once TurboFan compiles it, the code runs at near-native speed without crossing boundaries.
+
+**3. V8's JIT is exceptional**
+
+V8's TurboFan JIT compiles hot JavaScript to machine code that rivals hand-written C. After warmup, there's often no measurable difference between "native" and "JS" for compute-bound work. JavaScriptCore (used by Bun) optimizes for fast startup; V8 optimizes for peak throughput. For benchmarks that run long enough to warm up, V8 often wins.
+
+**4. Complexity tax**
+
+Bun is a bundler + runtime + package manager + test runner. That architectural complexity has overhead. howth's focused design means fewer layers, fewer cache misses, and more predictable performance.
+
+**When would native code help?**
+
+- Cold start time (parsing/compiling JS has cost)
+- Memory-intensive operations (large Buffer manipulation)
+- CPU-bound crypto/hashing
+- Reducing GC pressure
+
+For test running, the daemon architecture matters more than the implementation language.
+
 ## Why "howth"?
 
 The name comes from the opening of James Joyce's *Finnegans Wake*:
@@ -117,6 +152,7 @@ cargo test --workspace
 # Run benchmarks
 howth bench transpile     # Transpile speed
 howth bench test          # Test runner speed (vs node, bun)
+howth bench http          # HTTP server throughput (vs node, bun, deno)
 howth bench install       # Install speed (vs npm, bun)
 howth bench smoke         # Internal micro-benchmarks
 

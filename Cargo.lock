@@ -1154,6 +1154,7 @@ dependencies = [
  "bytes",
  "cbc",
  "cipher",
+ "crossbeam-channel",
  "ctr",
  "dashmap 6.1.0",
  "deno_core",
