@@ -13492,7 +13492,7 @@
     globalThis.__howth_modules["test"] = testModule;
     globalThis.__howth_run_tests = __howth_run_tests;
 
-    // howth:test — mocha-compatible API wrapping the same test infrastructure
+    // howth:mocha — mocha-compatible API wrapping the same test infrastructure
     (function() {
       // describe with .only and .skip
       function mochaDescribe(name, fn) { describe(name, fn); }
@@ -13524,7 +13524,7 @@
       howthTestModule.beforeEach = beforeEach;
       howthTestModule.afterEach = afterEach;
 
-      globalThis.__howth_modules["howth:test"] = howthTestModule;
+      globalThis.__howth_modules["howth:mocha"] = howthTestModule;
     })();
   })();
 

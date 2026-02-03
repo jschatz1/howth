@@ -99,6 +99,9 @@ enum Commands {
     /// Start the daemon (foreground)
     Daemon,
 
+    /// Stop the running daemon
+    Stop,
+
     /// Ping the daemon to check if it's running
     Ping,
 
@@ -667,6 +670,10 @@ fn main() -> Result<()> {
         return commands::daemon::run(Channel::Stable, cli.json);
     }
 
+    if matches!(cli.command, Some(Commands::Stop)) {
+        return commands::stop::run(Channel::Stable, cli.json);
+    }
+
     if matches!(cli.command, Some(Commands::Ping)) {
         return commands::ping::run(Channel::Stable, cli.json);
     }
@@ -1015,6 +1022,7 @@ fn main() -> Result<()> {
             | Commands::Bundle { .. }
             | Commands::Create { .. }
             | Commands::Daemon
+            | Commands::Stop
             | Commands::Dev { .. }
             | Commands::Init { .. }
             | Commands::Link { .. }

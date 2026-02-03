@@ -741,7 +741,7 @@ impl HowthModuleLoader {
             "node:test" | "test" => {
                 "test, describe, it, before, after, beforeEach, afterEach, mock"
             }
-            "howth:test" => {
+            "howth:mocha" => {
                 "describe, context, it, specify, before, after, beforeEach, afterEach"
             }
             "node:http2" | "http2" => {

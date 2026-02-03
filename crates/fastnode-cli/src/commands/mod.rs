@@ -13,6 +13,7 @@ pub mod link;
 pub mod ping;
 pub mod pkg;
 pub mod run;
+pub mod stop;
 pub mod test;
 pub mod version;
 pub mod watch;
