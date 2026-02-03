@@ -11740,7 +11740,6 @@
   ClientRequest.prototype._doFetch = async function() {
     const portSuffix = (this.port !== 80 && this.port !== 443) ? ":" + this.port : "";
     const url = `${this.protocol}//${this.hostname}${portSuffix}${this.path}`;
-    console.error(`[howth:http] ClientRequest._doFetch: ${this.method} ${url}`);
 
     // Sanitize headers for fetch(): remove undefined/null, strip chars that
     // Deno's fetch rejects (control chars, non-ASCII bytes) but Node's http allows.
@@ -11853,7 +11852,6 @@
         this._port = result.port;
         this._address = result.address;
         this.listening = true;
-        console.error(`[howth:http] Server listening on ${this._address}:${this._port} (id=${this._serverId})`);
       } catch (err) {
         process.nextTick(() => this.emit("error", err));
         return this;
@@ -11870,13 +11868,11 @@
     }
 
     async _acceptLoop() {
-      console.error(`[howth:http] _acceptLoop started for server ${this._serverId} on port ${this._port}`);
       while (this.listening && this._serverId !== null) {
         try {
           const request = await ops.op_howth_http_accept(this._serverId);
           if (!request) continue;
 
-          console.error(`[howth:http] _acceptLoop got request: ${request.method} ${request.url} (id=${request.id})`);
           this._connections++;
 
           // Create a mock socket for req.socket / req.connection
@@ -13527,6 +13523,124 @@
       globalThis.__howth_modules["howth:mocha"] = howthTestModule;
     })();
   })();
+
+  // ============================================================================
+  // Howth.serve() - Fast HTTP server API (bypasses Node.js compatibility layer)
+  // ============================================================================
+
+  const Howth = {
+    /**
+     * Start a fast HTTP server with a callback handler.
+     * Similar to Deno.serve() or Bun.serve().
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {Function} handler - Request handler: (req) => Response | { status, body, headers }
+     * @returns {Object} Server handle with close() method
+     *
+     * @example
+     * const server = Howth.serve({ port: 3000 }, (req) => {
+     *   return { status: 200, body: "Hello World" };
+     * });
+     */
+    async serve(options, handler) {
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+
+      // Start the fast server (async)
+      const result = await ops.op_howth_http_serve_fast(port, hostname);
+
+      let running = true;
+      const serverId = result.serverId;
+
+      // Accept loop - no timeout, blocks until request arrives
+      (async () => {
+        while (running) {
+          try {
+            // Wait for next request (blocks until one arrives - no polling timeout)
+            const requestId = await ops.op_howth_http_wait(serverId);
+            if (requestId < 0) {
+              // Server closed
+              running = false;
+              break;
+            }
+
+            // Create request object with lazy getters (only fetch what handler needs)
+            const req = {
+              _method: null,
+              _url: null,
+              _headers: null,
+              _body: null,
+              get method() {
+                if (this._method === null) this._method = ops.op_howth_http_get_method(requestId);
+                return this._method;
+              },
+              get url() {
+                if (this._url === null) this._url = ops.op_howth_http_get_url(requestId);
+                return this._url;
+              },
+              get headers() {
+                if (this._headers === null) this._headers = ops.op_howth_http_get_headers(requestId);
+                return this._headers;
+              },
+              get body() {
+                if (this._body === null) {
+                  const buf = ops.op_howth_http_get_body(requestId);
+                  this._body = new TextDecoder().decode(buf);
+                }
+                return this._body;
+              },
+              get bodyRaw() {
+                return ops.op_howth_http_get_body(requestId);
+              },
+            };
+
+            // Fire and forget - don't await handler, process next request immediately
+            (async () => {
+              try {
+                const response = await handler(req);
+
+                // Send response - fast path for no headers
+                if (response.headers) {
+                  const headerArray = Object.entries(response.headers);
+                  await ops.op_howth_http_respond_with_headers(
+                    requestId,
+                    response.status || 200,
+                    headerArray,
+                    response.body || ""
+                  );
+                } else {
+                  await ops.op_howth_http_respond_fast(
+                    requestId,
+                    response.status || 200,
+                    response.body || ""
+                  );
+                }
+              } catch (err) {
+                // Handler error - send 500
+                await ops.op_howth_http_respond_fast(requestId, 500, "Internal Server Error");
+              }
+            })();
+          } catch (err) {
+            // Accept error - continue if still running
+            if (!running) break;
+          }
+        }
+      })();
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+        close() {
+          running = false;
+          // TODO: close server via op
+        },
+      };
+    },
+  };
+
+  globalThis.Howth = Howth;
 
   // Mark bootstrap as complete
   globalThis.__howth_ready = true;

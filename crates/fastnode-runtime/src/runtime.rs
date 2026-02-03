@@ -208,11 +208,22 @@ extension!(
         op_howth_spawn_close_stdin,
         op_howth_spawn_wait,
         op_howth_spawn_kill,
-        // HTTP server ops
+        // HTTP server ops (legacy)
         op_howth_http_listen,
         op_howth_http_accept,
         op_howth_http_respond,
         op_howth_http_close,
+        // HTTP server ops (fast - lazy extraction)
+        op_howth_http_serve_fast,
+        op_howth_http_wait,
+        op_howth_http_wait_batch,
+        op_howth_http_get_method,
+        op_howth_http_get_url,
+        op_howth_http_get_method_url,
+        op_howth_http_get_headers,
+        op_howth_http_get_body,
+        op_howth_http_respond_fast,
+        op_howth_http_respond_with_headers,
         // TCP client ops
         op_howth_tcp_connect,
         op_howth_tcp_read,
@@ -1711,24 +1722,47 @@ pub struct HttpResponse {
     pub body: Option<String>,
 }
 
-/// Server state stored in a global map
-struct ServerState {
-    listener: tokio::net::TcpListener,
-    local_addr: std::net::SocketAddr,
+/// Pending request with response channel
+struct PendingRequest {
+    request: HttpRequest,
+    response_tx: tokio::sync::oneshot::Sender<HttpResponse>,
+}
+
+/// Hyper-based server state
+struct HyperServerState {
+    /// Channel to receive requests from hyper service
+    request_rx: tokio::sync::mpsc::UnboundedReceiver<PendingRequest>,
+    /// Shutdown signal
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Global map of active HTTP servers
 lazy_static::lazy_static! {
-    static ref HTTP_SERVERS: Mutex<HashMap<u32, Arc<Mutex<ServerState>>>> = Mutex::new(HashMap::new());
+    static ref HTTP_SERVERS: Mutex<HashMap<u32, Arc<Mutex<HyperServerState>>>> = Mutex::new(HashMap::new());
 }
 
-/// Start listening on a port and return a server ID (synchronous bind)
+/// Map of pending response channels (request_id -> oneshot sender)
+static RESPONSE_CHANNELS: std::sync::OnceLock<Mutex<HashMap<u32, tokio::sync::oneshot::Sender<HttpResponse>>>> = std::sync::OnceLock::new();
+
+fn get_response_channels() -> &'static Mutex<HashMap<u32, tokio::sync::oneshot::Sender<HttpResponse>>> {
+    RESPONSE_CHANNELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Start listening on a port and return a server ID
+/// Uses hyper for proper HTTP/1.1 handling with keep-alive support
 #[op2]
 #[serde]
 fn op_howth_http_listen(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use http_body_util::BodyExt;
+    use http_body_util::Full;
+    use hyper::body::Bytes;
+
     let addr = format!("{}:{}", hostname, port);
     let std_listener = std::net::TcpListener::bind(&addr)
         .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to bind: {}", e)))?;
@@ -1743,18 +1777,178 @@ fn op_howth_http_listen(
 
     let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
 
-    let state = ServerState {
-        listener,
-        local_addr,
+    // Channel for passing requests from hyper to JS
+    let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel::<PendingRequest>();
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+
+    // Spawn the hyper server
+    tokio::spawn(async move {
+        loop {
+            if shutdown_clone.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Accept connection
+            let accept_result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                listener.accept()
+            ).await;
+
+            let (stream, _addr) = match accept_result {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(_)) => continue,
+                Err(_) => continue,
+            };
+
+            let io = TokioIo::new(stream);
+            let tx = request_tx.clone();
+            let shutdown_conn = shutdown_clone.clone();
+
+            // Spawn a task for each connection
+            tokio::spawn(async move {
+                // Create a service that handles requests for this connection
+                let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let tx = tx.clone();
+                    async move {
+                        #[cfg(debug_assertions)]
+                        let start = std::time::Instant::now();
+
+                        // Generate request ID
+                        let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                        // Extract request data
+                        let method = req.method().to_string();
+                        let url = req.uri().to_string();
+                        let mut headers = HashMap::new();
+                        for (key, value) in req.headers() {
+                            if let Ok(v) = value.to_str() {
+                                headers.insert(key.to_string(), v.to_string());
+                            }
+                        }
+
+                        #[cfg(debug_assertions)]
+                        let after_headers = std::time::Instant::now();
+
+                        // Read body
+                        let body = match req.collect().await {
+                            Ok(collected) => {
+                                let bytes = collected.to_bytes();
+                                String::from_utf8_lossy(&bytes).to_string()
+                            }
+                            Err(_) => String::new(),
+                        };
+
+                        #[cfg(debug_assertions)]
+                        let after_body = std::time::Instant::now();
+
+                        let http_request = HttpRequest {
+                            id: request_id,
+                            method,
+                            url,
+                            headers,
+                            body,
+                        };
+
+                        // Create oneshot channel for response
+                        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<HttpResponse>();
+
+                        // Send request to JS layer
+                        let _ = tx.send(PendingRequest {
+                            request: http_request,
+                            response_tx,
+                        });
+
+                        #[cfg(debug_assertions)]
+                        let after_send = std::time::Instant::now();
+
+                        // Wait for JS to send response
+                        match response_rx.await {
+                            Ok(response) => {
+                                #[cfg(debug_assertions)]
+                                let after_js = std::time::Instant::now();
+
+                                #[cfg(debug_assertions)]
+                                {
+                                    static HYPER_STATS: std::sync::OnceLock<Mutex<HyperStats>> = std::sync::OnceLock::new();
+
+                                    #[derive(Default)]
+                                    struct HyperStats {
+                                        count: u64,
+                                        total_headers_ns: u64,
+                                        total_body_ns: u64,
+                                        total_send_ns: u64,
+                                        total_js_ns: u64,
+                                    }
+
+                                    let stats = HYPER_STATS.get_or_init(|| Mutex::new(HyperStats::default()));
+                                    if let Ok(mut s) = stats.try_lock() {
+                                        s.count += 1;
+                                        s.total_headers_ns += (after_headers - start).as_nanos() as u64;
+                                        s.total_body_ns += (after_body - after_headers).as_nanos() as u64;
+                                        s.total_send_ns += (after_send - after_body).as_nanos() as u64;
+                                        s.total_js_ns += (after_js - after_send).as_nanos() as u64;
+
+                                        if s.count % 10000 == 0 {
+                                            eprintln!("[HYPER STATS] count={} avg_headers={}ns avg_body={}ns avg_send={}ns avg_js_wait={}ns",
+                                                s.count,
+                                                s.total_headers_ns / s.count,
+                                                s.total_body_ns / s.count,
+                                                s.total_send_ns / s.count,
+                                                s.total_js_ns / s.count,
+                                            );
+                                        }
+                                    }
+                                }
+
+                                let status = hyper::StatusCode::from_u16(response.status)
+                                    .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+
+                                let mut builder = hyper::Response::builder().status(status);
+
+                                if let Some(headers) = response.headers {
+                                    for (key, value) in headers {
+                                        builder = builder.header(key, value);
+                                    }
+                                }
+
+                                let body = response.body.unwrap_or_default();
+                                builder.body(Full::new(Bytes::from(body)))
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            }
+                            Err(_) => {
+                                // JS didn't respond, return 500
+                                hyper::Response::builder()
+                                    .status(500)
+                                    .body(Full::new(Bytes::from("Internal Server Error")))
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            }
+                        }
+                    }
+                });
+
+                // Serve HTTP/1.1 with keep-alive
+                let conn = http1::Builder::new()
+                    .keep_alive(true)
+                    .serve_connection(io, service);
+
+                if let Err(_e) = conn.await {
+                    // Connection error, ignore (client disconnected, etc.)
+                }
+            });
+        }
+    });
+
+    let state = HyperServerState {
+        request_rx,
+        shutdown,
     };
 
-    // Use try_lock since we're in a sync context
-    // If the lock is contended, fall back to blocking
+    // Store server state
     let servers = HTTP_SERVERS.try_lock();
     match servers {
         Ok(mut guard) => { guard.insert(server_id, Arc::new(Mutex::new(state))); }
         Err(_) => {
-            // This shouldn't happen in practice since servers are rarely created concurrently
             return Err(deno_core::error::AnyError::msg("Server map lock contended"));
         }
     }
@@ -1766,190 +1960,555 @@ fn op_howth_http_listen(
     }))
 }
 
+/// Timing stats for profiling (only in debug builds)
+#[cfg(debug_assertions)]
+static ACCEPT_STATS: std::sync::OnceLock<Mutex<AcceptStats>> = std::sync::OnceLock::new();
+
+#[cfg(debug_assertions)]
+#[derive(Default)]
+struct AcceptStats {
+    count: u64,
+    total_server_lock_ns: u64,
+    total_state_lock_ns: u64,
+    total_recv_ns: u64,
+    total_channel_lock_ns: u64,
+}
+
 /// Accept a connection and read an HTTP request
+/// Receives requests from hyper service via channel
 #[op2(async)]
 #[serde]
 async fn op_howth_http_accept(server_id: u32) -> Result<Option<HttpRequest>, deno_core::error::AnyError> {
+    #[cfg(debug_assertions)]
+    let start = std::time::Instant::now();
+
     let servers = HTTP_SERVERS.lock().await;
+
+    #[cfg(debug_assertions)]
+    let after_server_lock = std::time::Instant::now();
+
     let server = match servers.get(&server_id) {
         Some(s) => s.clone(),
-        None => return Ok(None), // Server was closed, exit accept loop
+        None => return Ok(None),
     };
     drop(servers);
 
     let mut state = server.lock().await;
 
-    // Accept a connection with timeout so JS can check if server was closed
-    let accept_result = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
-        state.listener.accept()
-    ).await;
+    #[cfg(debug_assertions)]
+    let after_state_lock = std::time::Instant::now();
 
-    drop(state);
+    // Try to receive a request from the channel with timeout
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        state.request_rx.recv()
+    ).await {
+        Ok(Some(pending)) => {
+            #[cfg(debug_assertions)]
+            let after_recv = std::time::Instant::now();
 
-    let (mut stream, _addr) = match accept_result {
-        Ok(Ok(conn)) => conn,
-        Ok(Err(e)) => {
-            return Err(deno_core::error::AnyError::msg(format!("Accept failed: {}", e)));
-        }
-        Err(_) => {
-            // Timeout - return None so JS loop can check this.listening
-            return Ok(None);
-        }
-    };
-
-    // Read the HTTP request
-    use tokio::io::AsyncReadExt;
-    let mut buffer = vec![0u8; 8192];
-    let n = stream.read(&mut buffer).await
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Read failed: {}", e)))?;
-
-    if n == 0 {
-        // Connection closed, stream drops here (no leak)
-        return Ok(None);
-    }
-
-    // Clean up any stale connections (older than 60 seconds)
-    {
-        let mut connections = get_connections().lock().await;
-        if connections.len() > 100 {
-            // If we have too many pending connections, something is wrong
-            // Drop the oldest ones to prevent FD exhaustion
-            let ids_to_remove: Vec<u32> = connections.keys().copied().collect();
-            let remove_count = connections.len().saturating_sub(50);
-            for id in ids_to_remove.into_iter().take(remove_count) {
-                connections.remove(&id);
+            let request_id = pending.request.id;
+            {
+                let mut channels = get_response_channels().lock().await;
+                channels.insert(request_id, pending.response_tx);
             }
+
+            #[cfg(debug_assertions)]
+            {
+                let after_channel_lock = std::time::Instant::now();
+                let stats = ACCEPT_STATS.get_or_init(|| Mutex::new(AcceptStats::default()));
+                if let Ok(mut s) = stats.try_lock() {
+                    s.count += 1;
+                    s.total_server_lock_ns += (after_server_lock - start).as_nanos() as u64;
+                    s.total_state_lock_ns += (after_state_lock - after_server_lock).as_nanos() as u64;
+                    s.total_recv_ns += (after_recv - after_state_lock).as_nanos() as u64;
+                    s.total_channel_lock_ns += (after_channel_lock - after_recv).as_nanos() as u64;
+
+                    if s.count % 10000 == 0 {
+                        eprintln!("[ACCEPT STATS] count={} avg_server_lock={}ns avg_state_lock={}ns avg_recv={}ns avg_channel_lock={}ns",
+                            s.count,
+                            s.total_server_lock_ns / s.count,
+                            s.total_state_lock_ns / s.count,
+                            s.total_recv_ns / s.count,
+                            s.total_channel_lock_ns / s.count,
+                        );
+                    }
+                }
+            }
+
+            Ok(Some(pending.request))
         }
+        Ok(None) => Ok(None),
+        Err(_) => Ok(None),
     }
-
-    buffer.truncate(n);
-    let request_str = String::from_utf8_lossy(&buffer);
-
-    // Parse the HTTP request
-    let mut lines = request_str.lines();
-    let request_line = lines.next().unwrap_or("");
-    let parts: Vec<&str> = request_line.split_whitespace().collect();
-
-    if parts.len() < 2 {
-        return Err(deno_core::error::AnyError::msg("Invalid HTTP request"));
-    }
-
-    let method = parts[0].to_string();
-    let url = parts[1].to_string();
-
-    // Parse headers
-    let mut headers = HashMap::new();
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-        if let Some((key, value)) = line.split_once(':') {
-            headers.insert(key.trim().to_lowercase(), value.trim().to_string());
-        }
-    }
-
-    // Find body (after empty line)
-    let body = if let Some(pos) = request_str.find("\r\n\r\n") {
-        request_str[pos + 4..].to_string()
-    } else if let Some(pos) = request_str.find("\n\n") {
-        request_str[pos + 2..].to_string()
-    } else {
-        String::new()
-    };
-
-    // Store the stream for later response
-    let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
-
-    // Store connection for response
-    get_connections().lock().await.insert(request_id, stream);
-
-    Ok(Some(HttpRequest {
-        id: request_id,
-        method,
-        url,
-        headers,
-        body,
-    }))
 }
 
-/// Connection storage for pending responses
-static PENDING_CONNECTIONS: std::sync::OnceLock<Mutex<HashMap<u32, tokio::net::TcpStream>>> = std::sync::OnceLock::new();
-
-fn get_connections() -> &'static Mutex<HashMap<u32, tokio::net::TcpStream>> {
-    PENDING_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Send an HTTP response
+/// Send an HTTP response via the oneshot channel back to hyper
 #[op2(async)]
 async fn op_howth_http_respond(
     request_id: u32,
     #[serde] response: HttpResponse,
 ) -> Result<(), deno_core::error::AnyError> {
-    use tokio::io::AsyncWriteExt;
-
-    // Get the connection
-    let mut connections = get_connections().lock().await;
-    let mut stream = connections.remove(&request_id)
-        .ok_or_else(|| deno_core::error::AnyError::msg("Connection not found"))?;
-    drop(connections);
-
-    // Build the HTTP response
-    let status_text = match response.status {
-        200 => "OK",
-        201 => "Created",
-        204 => "No Content",
-        301 => "Moved Permanently",
-        302 => "Found",
-        304 => "Not Modified",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        _ => "Unknown",
+    // Get the response channel
+    let response_tx = {
+        let mut channels = get_response_channels().lock().await;
+        channels.remove(&request_id)
     };
 
-    let body = response.body.unwrap_or_default();
-    let mut response_text = format!("HTTP/1.1 {} {}\r\n", response.status, status_text);
-
-    // Add headers
-    if let Some(headers) = response.headers {
-        for (key, value) in headers {
-            response_text.push_str(&format!("{}: {}\r\n", key, value));
+    match response_tx {
+        Some(tx) => {
+            // Send response to hyper (ignore error if receiver dropped)
+            let _ = tx.send(response);
+            Ok(())
+        }
+        None => {
+            // Channel not found - request may have timed out
+            Err(deno_core::error::AnyError::msg("Response channel not found"))
         }
     }
-
-    // Add content-length if not present
-    if !response_text.to_lowercase().contains("content-length") {
-        response_text.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-
-    // End headers
-    response_text.push_str("\r\n");
-
-    // Add body
-    response_text.push_str(&body);
-
-    // Write response
-    stream.write_all(response_text.as_bytes()).await
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Write failed: {}", e)))?;
-
-    stream.flush().await
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Flush failed: {}", e)))?;
-
-    Ok(())
 }
 
 /// Close an HTTP server
 #[op2(async)]
 async fn op_howth_http_close(server_id: u32) -> Result<(), deno_core::error::AnyError> {
     let mut servers = HTTP_SERVERS.lock().await;
-    servers.remove(&server_id);
+    if let Some(server) = servers.remove(&server_id) {
+        // Signal the background accept task to shut down
+        let state = server.lock().await;
+        state.shutdown.store(true, Ordering::Relaxed);
+    }
     Ok(())
+}
+
+// ── Fast HTTP ops with lazy extraction ─────────────────────────────────────
+// These ops avoid serde serialization by only fetching data on demand
+
+/// Raw HTTP request data - stores hyper types directly
+struct RawHttpRequest {
+    method: String,
+    uri: String,
+    headers: Vec<(String, String)>,
+    body: bytes::Bytes,
+    response_tx: tokio::sync::oneshot::Sender<RawHttpResponse>,
+}
+
+/// Raw HTTP response
+struct RawHttpResponse {
+    status: u16,
+    headers: Option<Vec<(String, String)>>,
+    body: bytes::Bytes,
+}
+
+/// Map of pending raw requests (request_id -> RawHttpRequest) - lock-free!
+static PENDING_REQUESTS: std::sync::OnceLock<dashmap::DashMap<u32, RawHttpRequest>> =
+    std::sync::OnceLock::new();
+
+fn get_pending_requests() -> &'static dashmap::DashMap<u32, RawHttpRequest> {
+    PENDING_REQUESTS.get_or_init(dashmap::DashMap::new)
+}
+
+/// Fast server state - shared between serve and wait ops
+struct FastServerState {
+    request_rx: tokio::sync::mpsc::UnboundedReceiver<(u32, RawHttpRequest)>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Map of fast HTTP servers
+static FAST_SERVERS: std::sync::OnceLock<Mutex<HashMap<u32, Arc<Mutex<FastServerState>>>>> =
+    std::sync::OnceLock::new();
+
+fn get_fast_servers() -> &'static Mutex<HashMap<u32, Arc<Mutex<FastServerState>>>> {
+    FAST_SERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Start a fast HTTP server - similar to op_howth_http_listen but stores raw requests
+#[op2(async)]
+#[serde]
+async fn op_howth_http_serve_fast(
+    port: u16,
+    #[string] hostname: String,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+
+    let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
+
+    let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+    // Create channel for passing requests from hyper to JS
+    let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, RawHttpRequest)>();
+
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+
+    // Spawn the accept loop
+    tokio::spawn(async move {
+        loop {
+            if shutdown_clone.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let io = TokioIo::new(stream);
+            let tx = request_tx.clone();
+            let shutdown_conn = shutdown_clone.clone();
+
+            tokio::spawn(async move {
+                let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let tx = tx.clone();
+                    async move {
+                        let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                        // Extract data without converting to owned Strings yet for headers
+                        let method = req.method().to_string();
+                        let uri = req.uri().to_string();
+
+                        // Convert headers
+                        let headers: Vec<(String, String)> = req
+                            .headers()
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                v.to_str().ok().map(|v| (k.to_string(), v.to_string()))
+                            })
+                            .collect();
+
+                        // Read body
+                        let body = match req.collect().await {
+                            Ok(collected) => collected.to_bytes(),
+                            Err(_) => Bytes::new(),
+                        };
+
+                        // Create oneshot channel for response
+                        let (response_tx, response_rx) =
+                            tokio::sync::oneshot::channel::<RawHttpResponse>();
+
+                        let raw_request = RawHttpRequest {
+                            method,
+                            uri,
+                            headers,
+                            body,
+                            response_tx,
+                        };
+
+                        // Send request ID and data to JS layer
+                        let _ = tx.send((request_id, raw_request));
+
+                        // Wait for JS to send response
+                        match response_rx.await {
+                            Ok(response) => {
+                                let status = hyper::StatusCode::from_u16(response.status)
+                                    .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+
+                                let mut builder = hyper::Response::builder().status(status);
+
+                                if let Some(headers) = response.headers {
+                                    for (key, value) in headers {
+                                        builder = builder.header(key, value);
+                                    }
+                                }
+
+                                builder
+                                    .body(Full::new(response.body))
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            }
+                            Err(_) => hyper::Response::builder()
+                                .status(500)
+                                .body(Full::new(Bytes::from("Internal Server Error")))
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                        }
+                    }
+                });
+
+                let conn = http1::Builder::new()
+                    .keep_alive(true)
+                    .serve_connection(io, service);
+
+                let _ = conn.await;
+            });
+        }
+    });
+
+    // Store server state for the fast path
+    get_fast_servers().lock().await.insert(
+        server_id,
+        Arc::new(Mutex::new(FastServerState {
+            request_rx,
+            shutdown,
+        })),
+    );
+
+    Ok(serde_json::json!({
+        "serverId": server_id,
+        "hostname": local_addr.ip().to_string(),
+        "port": local_addr.port(),
+    }))
+}
+
+/// Tracing stats for fast HTTP ops (enabled via HOWTH_TRACE=1)
+static TRACE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static FAST_STATS: std::sync::OnceLock<Mutex<FastStats>> = std::sync::OnceLock::new();
+
+#[derive(Default)]
+struct FastStats {
+    count: u64,
+    total_server_lock_ns: u64,
+    total_state_lock_ns: u64,
+    total_recv_ns: u64,
+    total_pending_lock_ns: u64,
+}
+
+fn is_trace_enabled() -> bool {
+    *TRACE_ENABLED.get_or_init(|| std::env::var("HOWTH_TRACE").is_ok())
+}
+
+/// Wait for the next request - returns just the request_id (no serde!)
+/// Blocks until a request arrives (no timeout for maximum performance)
+#[op2(async)]
+async fn op_howth_http_wait(server_id: u32) -> Result<i32, deno_core::error::AnyError> {
+    let trace = is_trace_enabled();
+    let start = if trace { Some(std::time::Instant::now()) } else { None };
+
+    let server = {
+        let servers = get_fast_servers().lock().await;
+        match servers.get(&server_id) {
+            Some(s) => s.clone(),
+            None => return Ok(-1), // Server closed
+        }
+    };
+
+    let after_server_lock = if trace { Some(std::time::Instant::now()) } else { None };
+
+    let mut state = server.lock().await;
+
+    let after_state_lock = if trace { Some(std::time::Instant::now()) } else { None };
+
+    // Wait for request (no timeout - blocks until request arrives)
+    match state.request_rx.recv().await {
+        Some((request_id, raw_request)) => {
+            let after_recv = if trace { Some(std::time::Instant::now()) } else { None };
+
+            // Store the raw request for later access (DashMap - no lock needed)
+            get_pending_requests().insert(request_id, raw_request);
+
+            if trace {
+                let after_pending_lock = std::time::Instant::now();
+                let stats = FAST_STATS.get_or_init(|| Mutex::new(FastStats::default()));
+                if let Ok(mut s) = stats.try_lock() {
+                    s.count += 1;
+                    s.total_server_lock_ns += (after_server_lock.unwrap() - start.unwrap()).as_nanos() as u64;
+                    s.total_state_lock_ns += (after_state_lock.unwrap() - after_server_lock.unwrap()).as_nanos() as u64;
+                    s.total_recv_ns += (after_recv.unwrap() - after_state_lock.unwrap()).as_nanos() as u64;
+                    s.total_pending_lock_ns += (after_pending_lock - after_recv.unwrap()).as_nanos() as u64;
+
+                    if s.count % 10000 == 0 {
+                        let total = s.total_server_lock_ns + s.total_state_lock_ns + s.total_recv_ns + s.total_pending_lock_ns;
+                        eprintln!("[FAST WAIT] count={} total_avg={}ns | server_lock={}ns state_lock={}ns recv={}ns pending_lock={}ns",
+                            s.count,
+                            total / s.count,
+                            s.total_server_lock_ns / s.count,
+                            s.total_state_lock_ns / s.count,
+                            s.total_recv_ns / s.count,
+                            s.total_pending_lock_ns / s.count,
+                        );
+                    }
+                }
+            }
+
+            Ok(request_id as i32)
+        }
+        None => Ok(-1), // Channel closed
+    }
+}
+
+/// Wait for requests in batch - returns array of request IDs (no timeout, blocks until at least one)
+/// This is more efficient than calling op_howth_http_wait repeatedly
+#[op2(async)]
+#[serde]
+async fn op_howth_http_wait_batch(
+    server_id: u32,
+    max_batch: u32,
+) -> Result<Vec<i32>, deno_core::error::AnyError> {
+    let server = {
+        let servers = get_fast_servers().lock().await;
+        match servers.get(&server_id) {
+            Some(s) => s.clone(),
+            None => return Ok(vec![-1]), // Server closed
+        }
+    };
+
+    let mut state = server.lock().await;
+    let mut request_ids = Vec::with_capacity(max_batch as usize);
+
+    // First, block until we get at least one request (no timeout)
+    match state.request_rx.recv().await {
+        Some((request_id, raw_request)) => {
+            get_pending_requests().insert(request_id, raw_request);
+            request_ids.push(request_id as i32);
+        }
+        None => return Ok(vec![-1]), // Channel closed
+    }
+
+    // Then drain any additional queued requests without blocking
+    let pending_requests = get_pending_requests();
+    while request_ids.len() < max_batch as usize {
+        match state.request_rx.try_recv() {
+            Ok((request_id, raw_request)) => {
+                pending_requests.insert(request_id, raw_request);
+                request_ids.push(request_id as i32);
+            }
+            Err(_) => break, // No more queued requests
+        }
+    }
+
+    Ok(request_ids)
+}
+
+/// Get request method - fast, no serde
+#[op2]
+#[string]
+fn op_howth_http_get_method(request_id: u32) -> Result<String, deno_core::error::AnyError> {
+    // DashMap - no lock needed, concurrent access is safe
+    match get_pending_requests().get(&request_id) {
+        Some(req) => Ok(req.method.clone()),
+        None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
+}
+
+/// Get request URL - fast, no serde
+#[op2]
+#[string]
+fn op_howth_http_get_url(request_id: u32) -> Result<String, deno_core::error::AnyError> {
+    match get_pending_requests().get(&request_id) {
+        Some(req) => Ok(req.uri.clone()),
+        None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
+}
+
+/// Get method and URL in one call - reduces op overhead
+#[op2]
+#[serde]
+fn op_howth_http_get_method_url(request_id: u32) -> Result<(String, String), deno_core::error::AnyError> {
+    match get_pending_requests().get(&request_id) {
+        Some(req) => Ok((req.method.clone(), req.uri.clone())),
+        None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
+}
+
+/// Get request headers - only when needed
+#[op2]
+#[serde]
+fn op_howth_http_get_headers(
+    request_id: u32,
+) -> Result<HashMap<String, String>, deno_core::error::AnyError> {
+    match get_pending_requests().get(&request_id) {
+        Some(req) => Ok(req.headers.iter().cloned().collect()),
+        None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
+}
+
+/// Get request body - only when needed
+#[op2]
+#[buffer]
+fn op_howth_http_get_body(request_id: u32) -> Result<Box<[u8]>, deno_core::error::AnyError> {
+    match get_pending_requests().get(&request_id) {
+        Some(req) => Ok(req.body.to_vec().into_boxed_slice()),
+        None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
+}
+
+/// Tracing stats for respond op
+static RESPOND_STATS: std::sync::OnceLock<Mutex<RespondStats>> = std::sync::OnceLock::new();
+
+#[derive(Default)]
+struct RespondStats {
+    count: u64,
+    total_lock_ns: u64,
+    total_send_ns: u64,
+}
+
+/// Send response - fast path with direct types (no serde for common case)
+#[op2(async)]
+async fn op_howth_http_respond_fast(
+    request_id: u32,
+    status: u16,
+    #[string] body: Option<String>,
+) -> Result<(), deno_core::error::AnyError> {
+    let trace = is_trace_enabled();
+    let start = if trace { Some(std::time::Instant::now()) } else { None };
+
+    // Remove the request and get the response channel (DashMap - no lock needed)
+    let raw_request = get_pending_requests().remove(&request_id);
+
+    let after_lock = if trace { Some(std::time::Instant::now()) } else { None };
+
+    match raw_request {
+        Some((_, req)) => {
+            let response = RawHttpResponse {
+                status,
+                headers: None,
+                body: body
+                    .map(|b| bytes::Bytes::from(b))
+                    .unwrap_or_else(bytes::Bytes::new),
+            };
+            let _ = req.response_tx.send(response);
+
+            if trace {
+                let after_send = std::time::Instant::now();
+                let stats = RESPOND_STATS.get_or_init(|| Mutex::new(RespondStats::default()));
+                if let Ok(mut s) = stats.try_lock() {
+                    s.count += 1;
+                    s.total_lock_ns += (after_lock.unwrap() - start.unwrap()).as_nanos() as u64;
+                    s.total_send_ns += (after_send - after_lock.unwrap()).as_nanos() as u64;
+
+                    if s.count % 10000 == 0 {
+                        eprintln!("[FAST RESPOND] count={} lock={}ns send={}ns",
+                            s.count,
+                            s.total_lock_ns / s.count,
+                            s.total_send_ns / s.count,
+                        );
+                    }
+                }
+            }
+
+            Ok(())
+        }
+        None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
+}
+
+/// Send response with headers - when headers are needed
+#[op2(async)]
+async fn op_howth_http_respond_with_headers(
+    request_id: u32,
+    status: u16,
+    #[serde] headers: Option<Vec<(String, String)>>,
+    #[string] body: Option<String>,
+) -> Result<(), deno_core::error::AnyError> {
+    let raw_request = get_pending_requests().remove(&request_id);
+
+    match raw_request {
+        Some((_, req)) => {
+            let response = RawHttpResponse {
+                status,
+                headers,
+                body: body
+                    .map(|b| bytes::Bytes::from(b))
+                    .unwrap_or_else(bytes::Bytes::new),
+            };
+            let _ = req.response_tx.send(response);
+            Ok(())
+        }
+        None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
 }
 
 // ── TCP Client implementation ──────────────────────────────────────────────
