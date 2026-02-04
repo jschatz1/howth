@@ -1,0 +1,37 @@
+# Build artifacts
+target/
+*.rs.bk
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Test fixtures and data
+tests/
+**/test_data/
+**/fixtures/
+
+# NPM package (not needed for Docker build)
+npm/
+
+# Local development
+.env
+.env.*
+*.log
+
+# macOS
+.DS_Store

@@ -28,6 +28,10 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: tar.gz
+            cross: true
           - target: aarch64-apple-darwin
             runner: macos-latest
             archive: tar.gz
@@ -59,8 +63,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-release-
 
+      - name: Install cross (for cross-compilation)
+        if: matrix.cross && startsWith(matrix.target, 'aarch64-unknown-linux')
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
       - name: Build release
-        run: cargo build --release --workspace ${{ matrix.cross && format('--target {0}', matrix.target) || '' }}
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" && "${{ matrix.target }}" == aarch64-unknown-linux* ]]; then
+            cross build --release --workspace --target ${{ matrix.target }}
+          elif [[ "${{ matrix.cross }}" == "true" ]]; then
+            cargo build --release --workspace --target ${{ matrix.target }}
+          else
+            cargo build --release --workspace
+          fi
+        shell: bash
 
       - name: Smoke test
         if: ${{ !matrix.cross }}
