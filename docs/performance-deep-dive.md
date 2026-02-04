@@ -188,58 +188,62 @@ for (const [requestId, method, url] of batch) {
 
 ## LocalSet Experiment (2026-02-03)
 
-### Hypothesis
-Based on the second opinion: run Hyper and V8 on the same thread using `tokio::task::LocalSet`
-and `spawn_local` to eliminate cross-thread channel overhead.
+### Attempt 1: spawn_local in async op (FAILED)
 
-### Implementation Attempt
-1. Added `--local` flag to run command
-2. Wrapped execution in `LocalSet::block_on()`
-3. Created `op_howth_http_serve_local` that uses `spawn_local`
-4. Used thread-local storage for request/response queuing
+**Hypothesis:** Use `spawn_local` inside async op to keep tasks on same thread.
 
-### Result: FAILED
+**Problem:** deno_core's event loop doesn't poll LocalSet tasks. The spawned task
+never executed because deno's `run_event_loop()` doesn't drive the LocalSet.
 
-**Problem:** deno_core's event loop doesn't poll LocalSet tasks.
+### Attempt 2: tokio::join! with LocalSet (PARTIAL SUCCESS)
 
-When we call `spawn_local` inside an async op:
-- The task is registered with the LocalSet
-- BUT deno_core's `run_event_loop()` has its own polling mechanism
-- It doesn't call `LocalSet::run_until()` or similar
-- The spawned local task never gets polled/executed
+**Fix per second opinion:** Don't spawn separately - use `tokio::join!` to run both
+the deno event loop and Hyper accept loop together inside `LocalSet::run_until`.
 
-Evidence from debug output:
+```rust
+local_set.block_on(&rt, async {
+    // Execute module first (registers server config)
+    runtime.execute_module(&entry_path).await?;
+
+    // Join V8 event loop with Hyper accept loop
+    if let Some(hyper_server) = create_local_server_future() {
+        tokio::join!(
+            runtime.run_event_loop(),
+            hyper_server
+        );
+    }
+});
 ```
-[LOCAL] Starting accept loop with spawn_local  ← Task registered
-[JS LOCAL] Poll count: 10000, batch size: 0    ← JS running
-[JS LOCAL] Poll count: 20000, batch size: 0    ← JS running
-# Note: "[LOCAL] Accept loop task started" never printed!
-```
 
-### Why This Matters
-The LocalSet approach was supposed to eliminate the ~150µs channel wake-up latency.
-Without LocalSet integration, we're stuck with the cross-thread architecture.
+**Result:** Server works, but performance is only marginally better:
+- **serveLocal:** 168K RPS
+- **serveBatch:** 166K RPS
+- **Improvement:** ~1% (within margin of error)
 
-### Remaining Options for True Same-Thread Execution
+### Why Minimal Improvement?
 
-1. **Patch deno_core** - Add LocalSet support to deno_core's event loop
-   - Significant maintenance burden
-   - Would need to fork deno_core
+Even though Hyper and V8 now run on the same thread via `join!`, we're still using
+async channels (mpsc + oneshot) which have overhead:
+1. Tokio wakers and state machine polling
+2. Memory barriers for atomics
+3. Context switching between futures
 
-2. **Worker Thread Model** - Each thread has its own:
-   - `tokio::runtime::Builder::new_current_thread()`
-   - `LocalSet`
-   - V8 isolate (JsRuntime)
-   - TCP listener with `SO_REUSEPORT`
-   - No cross-thread communication needed
+The **channel operations** are the bottleneck, not the thread crossing.
 
-3. **Custom HTTP Integration** - Like Deno's `deno_http` crate
-   - Integrate HTTP directly into deno_core's resource system
-   - Complex, requires deep deno_core knowledge
+### What Would Actually Help
+
+1. **Replace async channels with lock-free SPSC** - No async machinery
+2. **Use AtomicBool + spin-wait instead of oneshot** - Direct signaling
+3. **Shared ring buffer** - VecDeque with atomic head/tail pointers
+4. **Thread parking instead of async wake** - `std::thread::park/unpark`
 
 ### Current Status
-`Howth.serveLocal()` currently delegates to `serveBatch()` and prints a note about
-the pending optimization. The `--local` flag is available for future implementation.
+
+`Howth.serveLocal()` with `--local` flag now works correctly:
+- Uses `tokio::join!` to interleave Hyper and V8
+- Uses `spawn_local` for connection handlers
+- Still uses mpsc/oneshot channels (same as serveBatch)
+- Performance is equivalent to serveBatch (~166-168K RPS)
 
 ---
 

@@ -13995,15 +13995,14 @@
     },
 
     /**
-     * LocalSet HTTP server - intended to run HTTP and JS on the same thread.
+     * LocalSet HTTP server - runs HTTP and JS on the same thread.
      *
-     * NOTE: The LocalSet optimization could not be implemented due to deno_core
-     * limitations (deno_core's event loop doesn't poll LocalSet tasks).
-     * This currently delegates to serveBatch internally.
+     * REQUIRES: --local flag when running howth
+     * Example: howth run --local server.ts
      *
-     * The --local flag is still available for future implementation of:
-     * 1. Worker thread model (each thread has own V8 isolate + Tokio runtime)
-     * 2. Patched deno_core with LocalSet support
+     * This mode uses tokio::join! to run the Hyper accept loop alongside
+     * the V8 event loop, with spawn_local for connection handlers.
+     * This eliminates cross-thread channel overhead.
      *
      * @param {Object} options - Server options
      * @param {number} options.port - Port to listen on (default: 3000)
@@ -14012,10 +14011,96 @@
      * @param {Function} handler - Request handler function (req) => response
      */
     async serveLocal(options, handler) {
-      // NOTE: LocalSet optimization not yet implemented - delegates to serveBatch
-      console.log("Note: serveLocal currently uses the same implementation as serveBatch");
-      console.log("      LocalSet optimization pending deno_core integration");
-      return this.serveBatch(options, handler);
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+      const batchSize = options.batchSize || 64;
+
+      // This op registers the server config; the actual Hyper loop is started
+      // by the CLI using tokio::join! with the V8 event loop
+      const result = await ops.op_howth_http_serve_local(port, hostname);
+      let running = true;
+      const serverId = result.serverId;
+
+      console.log(`LocalSet server listening on http://${result.hostname}:${result.port}`);
+      console.log("(Running HTTP + JS on same thread via LocalSet)");
+
+      // Use the same batch polling as serveBatch - the difference is that
+      // the Hyper loop runs on the same thread (via join!) so the channel
+      // crossing is now local (no cross-thread synchronization)
+      (async () => {
+        while (running) {
+          try {
+            const batch = await ops.op_howth_http_wait_batch_with_info(serverId, batchSize);
+
+            if (batch.length === 0 || batch[0][0] < 0) {
+              running = false;
+              break;
+            }
+
+            for (let i = 0; i < batch.length; i++) {
+              const [requestId, method, url] = batch[i];
+
+              const req = {
+                method,
+                url,
+                _headers: null,
+                _body: null,
+                get headers() {
+                  if (this._headers === null) this._headers = ops.op_howth_http_get_headers(requestId);
+                  return this._headers;
+                },
+                get body() {
+                  if (this._body === null) {
+                    const buf = ops.op_howth_http_get_body(requestId);
+                    this._body = new TextDecoder().decode(buf);
+                  }
+                  return this._body;
+                },
+              };
+
+              try {
+                const response = handler(req);
+
+                if (response && typeof response.then === 'function') {
+                  response.then(res => {
+                    if (res.headers) {
+                      ops.op_howth_http_respond_with_headers(
+                        requestId, res.status || 200,
+                        Object.entries(res.headers), res.body || ""
+                      );
+                    } else {
+                      ops.op_howth_http_respond_fast_sync(requestId, res.status || 200, res.body || "");
+                    }
+                  }).catch(() => {
+                    ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+                  });
+                } else {
+                  if (response.headers) {
+                    ops.op_howth_http_respond_with_headers(
+                      requestId, response.status || 200,
+                      Object.entries(response.headers), response.body || ""
+                    );
+                  } else {
+                    ops.op_howth_http_respond_fast_sync(requestId, response.status || 200, response.body || "");
+                  }
+                }
+              } catch (err) {
+                ops.op_howth_http_respond_fast_sync(requestId, 500, "Internal Server Error");
+              }
+            }
+          } catch (err) {
+            if (!running) break;
+          }
+        }
+      })();
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+        close() {
+          running = false;
+        },
+      };
     },
   };
 

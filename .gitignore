@@ -25,3 +25,6 @@ Thumbs.db
 # Node.js
 node_modules/
 .next/
+
+# NoGlue - secrets are now in your vault
+.noglue/

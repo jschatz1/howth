@@ -231,14 +231,8 @@ extension!(
         op_howth_http_respond_fast,
         op_howth_http_respond_fast_sync,
         op_howth_http_respond_with_headers,
-        // HTTP server ops (LocalSet - same thread, no channel overhead)
+        // HTTP server ops (LocalSet - same thread via join!)
         op_howth_http_serve_local,
-        op_howth_http_local_poll,
-        op_howth_http_local_respond,
-        op_howth_http_local_respond_with_headers,
-        op_howth_http_local_get_headers,
-        op_howth_http_local_get_body,
-        op_howth_http_local_shutdown,
         // TCP client ops
         op_howth_tcp_connect,
         op_howth_tcp_read,
@@ -3023,70 +3017,256 @@ use std::collections::VecDeque;
 
 /// Thread-local state for the local HTTP server
 struct LocalServerState {
-    /// Pending requests waiting for JS to process
-    requests: VecDeque<LocalHttpRequest>,
-    /// Responses from JS waiting to be sent
-    responses: HashMap<u32, RawHttpResponse>,
-    /// Channels to wake up Hyper when response is ready
-    response_waiters: HashMap<u32, tokio::sync::oneshot::Sender<()>>,
-    /// Next request ID
-    next_request_id: u32,
+    /// TCP listener (stored here so CLI can retrieve and run with join!)
+    listener: Option<tokio::net::TcpListener>,
+    /// Channel sender for passing requests to JS
+    request_tx: Option<tokio::sync::mpsc::UnboundedSender<(u32, RawHttpRequest)>>,
+    /// Shutdown flag (shared with server state)
+    shutdown: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Server ID
+    server_id: u32,
     /// Server info for JS
     port: u16,
     hostname: String,
-    /// Shutdown flag
-    shutdown: bool,
 }
 
 impl Default for LocalServerState {
     fn default() -> Self {
         Self {
-            requests: VecDeque::new(),
-            responses: HashMap::new(),
-            response_waiters: HashMap::new(),
-            next_request_id: 1,
+            listener: None,
+            request_tx: None,
+            shutdown: None,
+            server_id: 0,
             port: 0,
             hostname: String::new(),
-            shutdown: false,
         }
     }
 }
 
-/// Request stored in thread-local (no Send needed)
-struct LocalHttpRequest {
-    id: u32,
-    method: String,
-    uri: String,
-    headers: Vec<(String, String)>,
-    body: bytes::Bytes,
-}
 
 thread_local! {
     static LOCAL_SERVER_STATE: RefCell<LocalServerState> = RefCell::new(LocalServerState::default());
 }
 
-/// Start a "local" HTTP server
+/// Pending local server configuration (stored when op is called, started later by CLI)
+static PENDING_LOCAL_SERVER: std::sync::OnceLock<std::sync::Mutex<Option<LocalServerConfig>>> =
+    std::sync::OnceLock::new();
+
+/// Configuration for a pending local server
+#[derive(Clone)]
+pub struct LocalServerConfig {
+    pub port: u16,
+    pub hostname: String,
+    pub server_id: u32,
+}
+
+fn get_pending_local_server() -> &'static std::sync::Mutex<Option<LocalServerConfig>> {
+    PENDING_LOCAL_SERVER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Check if there's a pending local server to start
+pub fn take_pending_local_server() -> Option<LocalServerConfig> {
+    get_pending_local_server().lock().ok()?.take()
+}
+
+/// Start a "local" HTTP server - registers config for later execution
 ///
-/// NOTE: The original goal was to use tokio::task::spawn_local to keep HTTP handling
-/// on the same thread as V8, eliminating cross-thread channel overhead. However,
-/// this doesn't work with deno_core because:
-/// 1. deno_core's event loop doesn't poll LocalSet tasks
-/// 2. tokio::spawn puts tasks on worker threads, making thread-local state useless
-///
-/// To truly eliminate cross-thread overhead, we would need:
-/// 1. Patch deno_core to integrate with LocalSet, or
-/// 2. Use the worker thread model (each thread has its own V8 isolate + Tokio runtime)
-///
-/// For now, this uses the same implementation as op_howth_http_serve_fast.
-/// The --local flag and serveLocal API are kept for future implementation.
+/// This op registers the server configuration but does NOT spawn the accept loop.
+/// The CLI will retrieve this config and run the Hyper loop alongside the deno
+/// event loop using tokio::join!, allowing proper LocalSet integration.
 #[op2(async)]
 #[serde]
 async fn op_howth_http_serve_local(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
-    // Use the same implementation as serve_fast - LocalSet optimization not yet implemented
-    http_serve_fast_impl(port, &hostname).await
+    use socket2::{Socket, Domain, Type, Protocol};
+    use std::net::SocketAddr;
+
+    let addr: SocketAddr = format!("{}:{}", hostname, port).parse()?;
+
+    // Create socket with SO_REUSEPORT for multi-worker support
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
+    let local_addr = listener.local_addr()?;
+
+    let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+    // Create channel for request passing (same as serve_fast)
+    let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, RawHttpRequest)>();
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Store server state (for JS to poll requests)
+    get_fast_servers().insert(
+        server_id,
+        Arc::new(tokio::sync::Mutex::new(FastServerState {
+            request_rx,
+            shutdown: shutdown.clone(),
+        })),
+    );
+
+    // Store the listener in thread-local for the Hyper loop
+    // The CLI will retrieve this and run it with join!
+    LOCAL_SERVER_STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        s.listener = Some(listener);
+        s.request_tx = Some(request_tx);
+        s.shutdown = Some(shutdown);
+        s.server_id = server_id;
+        s.port = local_addr.port();
+        s.hostname = local_addr.ip().to_string();
+    });
+
+    // Also store in global for CLI access
+    if let Ok(mut pending) = get_pending_local_server().lock() {
+        *pending = Some(LocalServerConfig {
+            port: local_addr.port(),
+            hostname: local_addr.ip().to_string(),
+            server_id,
+        });
+    }
+
+    Ok(serde_json::json!({
+        "serverId": server_id,
+        "hostname": local_addr.ip().to_string(),
+        "port": local_addr.port(),
+    }))
+}
+
+/// Custom executor that uses spawn_local for Hyper connection handlers
+#[derive(Clone, Copy)]
+pub struct LocalExecutor;
+
+impl<F> hyper::rt::Executor<F> for LocalExecutor
+where
+    F: std::future::Future + 'static,
+{
+    fn execute(&self, fut: F) {
+        tokio::task::spawn_local(async move {
+            let _ = fut.await;
+        });
+    }
+}
+
+/// Create the local HTTP server accept loop future.
+///
+/// This function retrieves the listener from thread-local storage (set by op_howth_http_serve_local)
+/// and returns a future that runs the accept loop. The caller should join this with the deno
+/// event loop using tokio::join! inside a LocalSet::run_until context.
+///
+/// Returns None if no local server was configured.
+pub fn create_local_server_future() -> Option<impl std::future::Future<Output = ()>> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+
+    // Take the listener and request_tx from thread-local
+    let (listener, request_tx, shutdown) = LOCAL_SERVER_STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        (s.listener.take(), s.request_tx.take(), s.shutdown.take())
+    });
+
+    let listener = listener?;
+    let request_tx = request_tx?;
+    let shutdown = shutdown?;
+
+    Some(async move {
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Enable TCP_NODELAY for lower latency
+            let _ = stream.set_nodelay(true);
+            let io = TokioIo::new(stream);
+            let tx = request_tx.clone();
+
+            // Spawn connection handler using spawn_local (stays on this thread!)
+            tokio::task::spawn_local(async move {
+                let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let tx = tx.clone();
+                    async move {
+                        let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                        let method = req.method().to_string();
+                        let uri = req.uri().to_string();
+
+                        let headers: Vec<(String, String)> = req
+                            .headers()
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                v.to_str().ok().map(|v| (k.to_string(), v.to_string()))
+                            })
+                            .collect();
+
+                        let body = match req.collect().await {
+                            Ok(collected) => collected.to_bytes(),
+                            Err(_) => Bytes::new(),
+                        };
+
+                        let (response_tx, response_rx) =
+                            tokio::sync::oneshot::channel::<RawHttpResponse>();
+
+                        let sent_at = std::time::Instant::now();
+                        let raw_request = RawHttpRequest {
+                            method,
+                            uri,
+                            headers,
+                            body,
+                            response_tx,
+                            sent_at,
+                        };
+
+                        let _ = tx.send((request_id, raw_request));
+
+                        match response_rx.await {
+                            Ok(response) => {
+                                let status = hyper::StatusCode::from_u16(response.status)
+                                    .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+
+                                let mut builder = hyper::Response::builder().status(status);
+
+                                if let Some(headers) = response.headers {
+                                    for (key, value) in headers {
+                                        builder = builder.header(key, value);
+                                    }
+                                }
+
+                                builder
+                                    .body(Full::new(response.body))
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            }
+                            Err(_) => hyper::Response::builder()
+                                .status(500)
+                                .body(Full::new(Bytes::from("Internal Server Error")))
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                        }
+                    }
+                });
+
+                // Use custom executor that uses spawn_local
+                let _ = http1::Builder::new()
+                    .keep_alive(true)
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    })
 }
 
 /// Shared implementation for fast HTTP server (used by both serve_fast and serve_local)
@@ -3228,127 +3408,8 @@ async fn http_serve_fast_impl(
     }))
 }
 
-/// Poll for pending requests (sync op - no async overhead)
-/// Returns array of [id, method, url] tuples
-#[op2]
-#[serde]
-fn op_howth_http_local_poll(batch_size: u32) -> Vec<(u32, String, String)> {
-    LOCAL_SERVER_STATE.with(|state| {
-        let mut s = state.borrow_mut();
-        let count = std::cmp::min(batch_size as usize, s.requests.len());
-        let mut batch = Vec::with_capacity(count);
-
-        for _ in 0..count {
-            if let Some(req) = s.requests.pop_front() {
-                // Store full request data for later access
-                get_pending_local_requests().insert(req.id, LocalHttpRequestData {
-                    method: req.method.clone(),
-                    uri: req.uri.clone(),
-                    headers: req.headers,
-                    body: req.body,
-                });
-                batch.push((req.id, req.method, req.uri));
-            }
-        }
-        batch
-    })
-}
-
-/// Storage for full request data (accessed by get_headers, get_body ops)
-struct LocalHttpRequestData {
-    method: String,
-    uri: String,
-    headers: Vec<(String, String)>,
-    body: bytes::Bytes,
-}
-
-static LOCAL_PENDING_REQUESTS: std::sync::OnceLock<dashmap::DashMap<u32, LocalHttpRequestData>> =
-    std::sync::OnceLock::new();
-
-fn get_pending_local_requests() -> &'static dashmap::DashMap<u32, LocalHttpRequestData> {
-    LOCAL_PENDING_REQUESTS.get_or_init(dashmap::DashMap::new)
-}
-
-/// Send response for a local request (sync op - no async overhead)
-#[op2(fast)]
-fn op_howth_http_local_respond(
-    request_id: u32,
-    status: u16,
-    #[string] body: &str,
-) {
-    // Remove from pending requests
-    get_pending_local_requests().remove(&request_id);
-
-    LOCAL_SERVER_STATE.with(|state| {
-        let mut s = state.borrow_mut();
-
-        // Store response
-        s.responses.insert(request_id, RawHttpResponse {
-            status,
-            headers: None,
-            body: bytes::Bytes::from(body.to_string()),
-        });
-
-        // Wake up the Hyper task waiting for this response
-        if let Some(tx) = s.response_waiters.remove(&request_id) {
-            let _ = tx.send(());
-        }
-    });
-}
-
-/// Send response with headers for a local request
-#[op2]
-fn op_howth_http_local_respond_with_headers(
-    request_id: u32,
-    status: u16,
-    #[serde] headers: Option<Vec<(String, String)>>,
-    #[string] body: Option<String>,
-) {
-    // Remove from pending requests
-    get_pending_local_requests().remove(&request_id);
-
-    LOCAL_SERVER_STATE.with(|state| {
-        let mut s = state.borrow_mut();
-
-        // Store response
-        s.responses.insert(request_id, RawHttpResponse {
-            status,
-            headers,
-            body: body.map(bytes::Bytes::from).unwrap_or_else(bytes::Bytes::new),
-        });
-
-        // Wake up the Hyper task waiting for this response
-        if let Some(tx) = s.response_waiters.remove(&request_id) {
-            let _ = tx.send(());
-        }
-    });
-}
-
-/// Get headers for a local request
-#[op2]
-#[serde]
-fn op_howth_http_local_get_headers(request_id: u32) -> Option<Vec<(String, String)>> {
-    get_pending_local_requests()
-        .get(&request_id)
-        .map(|r| r.headers.clone())
-}
-
-/// Get body for a local request
-#[op2]
-#[string]
-fn op_howth_http_local_get_body(request_id: u32) -> Option<String> {
-    get_pending_local_requests()
-        .get(&request_id)
-        .and_then(|r| String::from_utf8(r.body.to_vec()).ok())
-}
-
-/// Shutdown the local server
-#[op2(fast)]
-fn op_howth_http_local_shutdown() {
-    LOCAL_SERVER_STATE.with(|state| {
-        state.borrow_mut().shutdown = true;
-    });
-}
+// Note: Local server now uses the same ops as serveBatch (op_howth_http_wait_batch_with_info, etc.)
+// The difference is that with --local flag, the Hyper loop runs on the same thread via join!
 
 // ── TCP Client implementation ──────────────────────────────────────────────
 

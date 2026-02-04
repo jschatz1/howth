@@ -167,7 +167,7 @@ fn run_script(
 /// When `local` is true, runs within a LocalSet for same-thread HTTP handling.
 #[cfg(feature = "native-runtime")]
 fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool) -> Result<()> {
-    use fastnode_runtime::{Runtime, RuntimeOptions};
+    use fastnode_runtime::{create_local_server_future, Runtime, RuntimeOptions};
 
     // Resolve entry path
     let entry_path = if entry.is_absolute() {
@@ -194,7 +194,7 @@ fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool
         .build()
         .into_diagnostic()?;
 
-    // When --local is passed, wrap execution in a LocalSet for spawn_local support
+    // When --local is passed, use LocalSet with join! to run Hyper + V8 on same thread
     let result = if local {
         let local_set = tokio::task::LocalSet::new();
         local_set.block_on(&rt, async {
@@ -206,15 +206,30 @@ fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool
             })
             .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
 
+            // Execute the module first (this sets up Howth.serveLocal which registers the server)
             runtime
                 .execute_module(&entry_path)
                 .await
                 .map_err(|e| miette::miette!("Execution failed: {}", e))?;
 
-            runtime
-                .run_event_loop()
-                .await
-                .map_err(|e| miette::miette!("Event loop error: {}", e))?;
+            // Check if a local server was registered by the module
+            if let Some(hyper_server) = create_local_server_future() {
+                // Run both the V8 event loop and Hyper accept loop together using join!
+                // This is the key: both futures are polled by the LocalSet, allowing
+                // spawn_local tasks (connection handlers) to run on the same thread as V8
+                tokio::join!(
+                    async {
+                        let _ = runtime.run_event_loop().await;
+                    },
+                    hyper_server
+                );
+            } else {
+                // No local server, just run the event loop normally
+                runtime
+                    .run_event_loop()
+                    .await
+                    .map_err(|e| miette::miette!("Event loop error: {}", e))?;
+            }
 
             Ok::<(), miette::Report>(())
         })
