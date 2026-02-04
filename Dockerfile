@@ -15,7 +15,7 @@
 # =============================================================================
 # Build stage - compile Howth from source
 # =============================================================================
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.83-bookworm AS builder
 
 WORKDIR /build
 
