@@ -4,4 +4,4 @@ WORKDIR /app
 
 COPY hello.js .
 
-CMD ["howth", "run", "hello.js"]
+CMD ["run", "hello.js"]
