@@ -168,6 +168,12 @@ impl ModuleTransformer {
             }
         }
 
+        // Handle /@style/ prefix for CSS modules
+        // /@style/src/styles.css → /src/styles.css
+        let url_path = url_path
+            .strip_prefix("/@style")
+            .unwrap_or(url_path);
+
         // URL path is root-relative: /src/App.tsx → {root}/src/App.tsx
         let stripped = url_path.strip_prefix('/').unwrap_or(url_path);
         let file_path = self.root.join(stripped);

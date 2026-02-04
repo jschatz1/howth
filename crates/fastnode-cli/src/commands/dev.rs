@@ -546,14 +546,22 @@ async fn serve_css_module(
                 .body(module.code)
                 .unwrap()
         }
-        Err(e) => Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .header("Content-Type", "application/javascript")
-            .body(format!(
-                "console.error('CSS load error: {}');",
-                e.message.replace('\'', "\\'")
-            ))
-            .unwrap(),
+        Err(e) => {
+            // Return 404 for missing files, 500 for other errors
+            let status = if e.message.contains("not found") || e.message.contains("Module not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Response::builder()
+                .status(status)
+                .header("Content-Type", "application/javascript")
+                .body(format!(
+                    "console.error('CSS load error: {}');",
+                    e.message.replace('\'', "\\'")
+                ))
+                .unwrap()
+        }
     }
 }
 
@@ -629,14 +637,22 @@ async fn serve_module(
                         .body(code)
                         .unwrap()
                 }
-                Err(e) => Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header("Content-Type", "application/javascript")
-                    .body(format!(
-                        "console.error('Transform error: {}');",
-                        e.message.replace('\'', "\\'")
-                    ))
-                    .unwrap(),
+                Err(e) => {
+                    // Return 404 for missing files, 500 for other errors
+                    let status = if e.message.contains("not found") || e.message.contains("Module not found") {
+                        StatusCode::NOT_FOUND
+                    } else {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    };
+                    Response::builder()
+                        .status(status)
+                        .header("Content-Type", "application/javascript")
+                        .body(format!(
+                            "console.error('Transform error: {}');",
+                            e.message.replace('\'', "\\'")
+                        ))
+                        .unwrap()
+                }
             }
         }
         "css" => {

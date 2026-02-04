@@ -10,7 +10,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
-import { startServer, fetchText } from './test-utils.js';
+import { startServer, fetchText, HmrClient, HOWTH_PORT } from './test-utils.js';
 
 describe('Hot Module Replacement', () => {
   let howth;
@@ -154,22 +154,24 @@ describe('Hot Module Replacement', () => {
   describe('WebSocket Endpoint', () => {
     it('should accept WebSocket upgrade at /__hmr', async () => {
       if (howth) {
-        // Test that the endpoint exists (HTTP request should get upgrade response or similar)
-        const res = await howth.fetch('/__hmr', {
-          headers: {
-            'Connection': 'Upgrade',
-            'Upgrade': 'websocket',
-            'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
-            'Sec-WebSocket-Version': '13',
-          },
-        });
+        // Use proper WebSocket client to test the endpoint
+        const client = new HmrClient(howth.port);
+        let connected = false;
+        let error = null;
 
-        // Should either upgrade or return appropriate status
-        // 101 = Switching Protocols (successful upgrade)
-        // 400/426 = Bad Request / Upgrade Required (fetch can't do WS)
+        try {
+          await client.connect();
+          connected = client.connected;
+        } catch (err) {
+          error = err;
+        } finally {
+          client.close();
+        }
+
+        // Should successfully connect via WebSocket
         assert.ok(
-          [101, 200, 400, 426].includes(res.status),
-          `Should handle WebSocket endpoint: ${res.status}`
+          connected,
+          `Should accept WebSocket connection at /__hmr: ${error?.message || 'not connected'}`
         );
       }
     });

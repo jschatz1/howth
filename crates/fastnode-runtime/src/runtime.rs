@@ -4909,6 +4909,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: None,
+            ..Default::default()
         })
         .unwrap();
         runtime
@@ -5410,6 +5411,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5446,6 +5448,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5479,6 +5482,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5546,6 +5550,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5578,6 +5583,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5610,6 +5616,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5649,6 +5656,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5699,6 +5707,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5741,6 +5750,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5782,6 +5792,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5840,6 +5851,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5887,6 +5899,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5930,6 +5943,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -5982,6 +5996,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -6023,6 +6038,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -6069,6 +6085,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -6120,6 +6137,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -6154,6 +6172,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 
@@ -6200,6 +6219,7 @@ mod tests {
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),
             main_module: Some(main_file.clone()),
+            ..Default::default()
         })
         .unwrap();
 

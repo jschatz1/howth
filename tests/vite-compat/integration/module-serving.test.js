@@ -110,7 +110,12 @@ describe('Module Serving', () => {
         const res = await fetchText(howth, '/src/main.tsx');
         const imports = extractImports(res.text);
 
-        const reactImport = imports.find(i => i.specifier.includes('react'));
+        // Find actual react module import (not /@react-refresh which is a special runtime)
+        const reactImport = imports.find(i =>
+          i.specifier.includes('/@modules/react') ||
+          i.specifier === 'react' ||
+          i.specifier.startsWith('react/')
+        );
         assert.ok(reactImport, 'Should have react import');
         assert.ok(
           reactImport.specifier.startsWith('/@modules/') || reactImport.specifier.startsWith('/node_modules/'),
