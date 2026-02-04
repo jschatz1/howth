@@ -8,9 +8,13 @@ use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
 use fastnode_core::config::Channel;
 use fastnode_core::paths;
 use fastnode_core::Config;
+#[cfg(unix)]
 use fastnode_core::VERSION;
+#[cfg(unix)]
 use fastnode_daemon::ipc::MAX_FRAME_SIZE;
-use fastnode_proto::{encode_frame, Frame, FrameResponse, Request, Response};
+use fastnode_proto::Response;
+#[cfg(unix)]
+use fastnode_proto::{encode_frame, Frame, FrameResponse, Request};
 use miette::Result;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
