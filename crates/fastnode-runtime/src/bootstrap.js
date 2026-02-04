@@ -13993,6 +13993,30 @@
         },
       };
     },
+
+    /**
+     * LocalSet HTTP server - intended to run HTTP and JS on the same thread.
+     *
+     * NOTE: The LocalSet optimization could not be implemented due to deno_core
+     * limitations (deno_core's event loop doesn't poll LocalSet tasks).
+     * This currently delegates to serveBatch internally.
+     *
+     * The --local flag is still available for future implementation of:
+     * 1. Worker thread model (each thread has own V8 isolate + Tokio runtime)
+     * 2. Patched deno_core with LocalSet support
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {number} options.batchSize - Max requests per batch (default: 64)
+     * @param {Function} handler - Request handler function (req) => response
+     */
+    async serveLocal(options, handler) {
+      // NOTE: LocalSet optimization not yet implemented - delegates to serveBatch
+      console.log("Note: serveLocal currently uses the same implementation as serveBatch");
+      console.log("      LocalSet optimization pending deno_core integration");
+      return this.serveBatch(options, handler);
+    },
   };
 
   globalThis.Howth = Howth;

@@ -36,6 +36,7 @@ const EXIT_INTERNAL_ERROR: i32 = 1;
 /// - Native V8 runtime is used by default
 /// - Use `--node` to fall back to Node.js subprocess
 /// - Use `--native` to explicitly request native (no-op when it's already the default)
+/// - Use `--local` to run in LocalSet mode (HTTP + JS on same thread)
 pub fn run(
     cwd: &Path,
     entry: &str,
@@ -44,6 +45,7 @@ pub fn run(
     dry_run: bool,
     native: bool,
     node: bool,
+    local: bool,
     channel: Channel,
     json: bool,
 ) -> Result<()> {
@@ -61,7 +63,7 @@ pub fn run(
         // --node forces Node.js subprocess
         // Otherwise use native (either explicitly via --native or by default)
         if !node {
-            return run_native(cwd, entry_path, args, json);
+            return run_native(cwd, entry_path, args, local, json);
         }
         // Fall through to Node.js execution
     }
@@ -74,7 +76,7 @@ pub fn run(
     }
 
     // Suppress unused variable warnings
-    let _ = (native, node);
+    let _ = (native, node, local);
 
     if daemon {
         run_via_daemon(cwd, entry_path, args, dry_run, channel, json)
@@ -162,8 +164,9 @@ fn run_script(
 }
 
 /// Run using native V8 runtime (no Node.js subprocess).
+/// When `local` is true, runs within a LocalSet for same-thread HTTP handling.
 #[cfg(feature = "native-runtime")]
-fn run_native(cwd: &Path, entry: &Path, args: &[String], json: bool) -> Result<()> {
+fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool) -> Result<()> {
     use fastnode_runtime::{Runtime, RuntimeOptions};
 
     // Resolve entry path
@@ -190,27 +193,54 @@ fn run_native(cwd: &Path, entry: &Path, args: &[String], json: bool) -> Result<(
         .enable_all()
         .build()
         .into_diagnostic()?;
-    let result = rt.block_on(async {
-        let mut runtime = Runtime::new(RuntimeOptions {
-            cwd: Some(cwd.to_path_buf()),
-            main_module: Some(entry_path.clone()),
-            args: Some(script_args),
-            ..Default::default()
+
+    // When --local is passed, wrap execution in a LocalSet for spawn_local support
+    let result = if local {
+        let local_set = tokio::task::LocalSet::new();
+        local_set.block_on(&rt, async {
+            let mut runtime = Runtime::new(RuntimeOptions {
+                cwd: Some(cwd.to_path_buf()),
+                main_module: Some(entry_path.clone()),
+                args: Some(script_args),
+                ..Default::default()
+            })
+            .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
+
+            runtime
+                .execute_module(&entry_path)
+                .await
+                .map_err(|e| miette::miette!("Execution failed: {}", e))?;
+
+            runtime
+                .run_event_loop()
+                .await
+                .map_err(|e| miette::miette!("Event loop error: {}", e))?;
+
+            Ok::<(), miette::Report>(())
         })
-        .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
+    } else {
+        rt.block_on(async {
+            let mut runtime = Runtime::new(RuntimeOptions {
+                cwd: Some(cwd.to_path_buf()),
+                main_module: Some(entry_path.clone()),
+                args: Some(script_args),
+                ..Default::default()
+            })
+            .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
 
-        runtime
-            .execute_module(&entry_path)
-            .await
-            .map_err(|e| miette::miette!("Execution failed: {}", e))?;
+            runtime
+                .execute_module(&entry_path)
+                .await
+                .map_err(|e| miette::miette!("Execution failed: {}", e))?;
 
-        runtime
-            .run_event_loop()
-            .await
-            .map_err(|e| miette::miette!("Event loop error: {}", e))?;
+            runtime
+                .run_event_loop()
+                .await
+                .map_err(|e| miette::miette!("Event loop error: {}", e))?;
 
-        Ok::<(), miette::Report>(())
-    });
+            Ok::<(), miette::Report>(())
+        })
+    };
 
     match result {
         Ok(()) => Ok(()),

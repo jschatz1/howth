@@ -186,6 +186,63 @@ for (const [requestId, method, url] of batch) {
 
 ---
 
+## LocalSet Experiment (2026-02-03)
+
+### Hypothesis
+Based on the second opinion: run Hyper and V8 on the same thread using `tokio::task::LocalSet`
+and `spawn_local` to eliminate cross-thread channel overhead.
+
+### Implementation Attempt
+1. Added `--local` flag to run command
+2. Wrapped execution in `LocalSet::block_on()`
+3. Created `op_howth_http_serve_local` that uses `spawn_local`
+4. Used thread-local storage for request/response queuing
+
+### Result: FAILED
+
+**Problem:** deno_core's event loop doesn't poll LocalSet tasks.
+
+When we call `spawn_local` inside an async op:
+- The task is registered with the LocalSet
+- BUT deno_core's `run_event_loop()` has its own polling mechanism
+- It doesn't call `LocalSet::run_until()` or similar
+- The spawned local task never gets polled/executed
+
+Evidence from debug output:
+```
+[LOCAL] Starting accept loop with spawn_local  ← Task registered
+[JS LOCAL] Poll count: 10000, batch size: 0    ← JS running
+[JS LOCAL] Poll count: 20000, batch size: 0    ← JS running
+# Note: "[LOCAL] Accept loop task started" never printed!
+```
+
+### Why This Matters
+The LocalSet approach was supposed to eliminate the ~150µs channel wake-up latency.
+Without LocalSet integration, we're stuck with the cross-thread architecture.
+
+### Remaining Options for True Same-Thread Execution
+
+1. **Patch deno_core** - Add LocalSet support to deno_core's event loop
+   - Significant maintenance burden
+   - Would need to fork deno_core
+
+2. **Worker Thread Model** - Each thread has its own:
+   - `tokio::runtime::Builder::new_current_thread()`
+   - `LocalSet`
+   - V8 isolate (JsRuntime)
+   - TCP listener with `SO_REUSEPORT`
+   - No cross-thread communication needed
+
+3. **Custom HTTP Integration** - Like Deno's `deno_http` crate
+   - Integrate HTTP directly into deno_core's resource system
+   - Complex, requires deep deno_core knowledge
+
+### Current Status
+`Howth.serveLocal()` currently delegates to `serveBatch()` and prints a note about
+the pending optimization. The `--local` flag is available for future implementation.
+
+---
+
 ## Remaining Optimization Paths
 
 ### Tier 1: Cross-Platform, High Impact
