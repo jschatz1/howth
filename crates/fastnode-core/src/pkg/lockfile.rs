@@ -18,6 +18,8 @@
 //!   "packages": { ... },
 //!   "dependencies": { ... }
 //! }
+
+#![allow(clippy::missing_panics_doc)]
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -501,7 +503,7 @@ impl std::error::Error for LockfileError {}
 
 /// Compute a deterministic hash of a lockfile's content.
 ///
-/// Serializes the lockfile to JSON (BTreeMap guarantees deterministic order)
+/// Serializes the lockfile to JSON (`BTreeMap` guarantees deterministic order)
 /// and returns a BLAKE3 hex digest. This is used to detect whether
 /// `node_modules` is already up-to-date with the lockfile.
 #[must_use]

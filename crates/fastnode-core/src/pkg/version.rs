@@ -1,5 +1,8 @@
 //! Version resolution using semver.
 
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::redundant_else)]
+
 use super::error::PkgError;
 use super::registry::{get_latest_version, get_versions};
 use semver::{Version, VersionReq};
@@ -19,7 +22,11 @@ pub fn version_satisfies(version: &str, range: &str) -> bool {
             .split("||")
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .any(|alt| parse_range(alt).map(|req| req.matches(&ver)).unwrap_or(false))
+            .any(|alt| {
+                parse_range(alt)
+                    .map(|req| req.matches(&ver))
+                    .unwrap_or(false)
+            })
     } else {
         parse_range(range)
             .map(|req| req.matches(&ver))
@@ -108,13 +115,10 @@ fn resolve_or_range(name: &str, range: &str, versions: &[Version]) -> Result<Str
         if alt.is_empty() {
             continue;
         }
-        match parse_range(alt) {
-            Ok(req) => reqs.push(req),
-            Err(_) => {
-                // Skip invalid alternatives, try others
-                continue;
-            }
+        if let Ok(req) = parse_range(alt) {
+            reqs.push(req);
         }
+        // Skip invalid alternatives, try others
     }
 
     if reqs.is_empty() {
@@ -148,17 +152,15 @@ fn parse_range(range: &str) -> Result<VersionReq, PkgError> {
     // Handle hyphen ranges: "1.0.0 - 2.0.0" -> ">=1.0.0, <=2.0.0"
     if let Some((start, end)) = parse_hyphen_range(range) {
         let converted = format!(">={start}, <={end}");
-        return VersionReq::parse(&converted).map_err(|e| {
-            PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
-        });
+        return VersionReq::parse(&converted)
+            .map_err(|e| PkgError::spec_invalid(format!("Invalid version range '{range}': {e}")));
     }
 
     // Handle x-ranges: "1.x" -> ">=1.0.0, <2.0.0"
     if range.contains('x') || range.contains('X') || range == "*" {
         let converted = convert_x_range(range);
-        return VersionReq::parse(&converted).map_err(|e| {
-            PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
-        });
+        return VersionReq::parse(&converted)
+            .map_err(|e| PkgError::spec_invalid(format!("Invalid version range '{range}': {e}")));
     }
 
     // Handle space-separated comparators: ">= 2.1.2 < 3.0.0" -> ">=2.1.2, <3.0.0"
@@ -166,9 +168,8 @@ fn parse_range(range: &str) -> Result<VersionReq, PkgError> {
     let converted = convert_space_separated_comparators(range);
 
     // Standard semver range
-    VersionReq::parse(&converted).map_err(|e| {
-        PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
-    })
+    VersionReq::parse(&converted)
+        .map_err(|e| PkgError::spec_invalid(format!("Invalid version range '{range}': {e}")))
 }
 
 /// Parse a hyphen range like "1.0.0 - 2.0.0".
@@ -196,11 +197,11 @@ fn convert_space_separated_comparators(range: &str) -> String {
     // Regex-like parsing: split on spaces, but keep operators attached to versions
     // Comparator patterns: >=, <=, >, <, =, ~, ^, or bare version
     let mut result = String::new();
-    let mut chars = range.chars().peekable();
+    let chars = range.chars().peekable();
     let mut current_token = String::new();
     let mut need_comma = false;
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         match c {
             ' ' => {
                 // End of current token
@@ -268,13 +269,13 @@ fn convert_x_range(range: &str) -> String {
     let parts: Vec<&str> = range.split('.').collect();
 
     match parts.as_slice() {
-        [major, "x" | "X"] | [major, "*"] => {
+        [major, "x" | "X" | "*"] => {
             // "1.x" -> ">=1.0.0, <2.0.0"
             if let Ok(m) = major.parse::<u64>() {
                 return format!(">={m}.0.0, <{}.0.0", m + 1);
             }
         }
-        [major, minor, "x" | "X"] | [major, minor, "*"] => {
+        [major, minor, "x" | "X" | "*"] => {
             // "1.2.x" -> ">=1.2.0, <1.3.0"
             if let (Ok(m), Ok(n)) = (major.parse::<u64>(), minor.parse::<u64>()) {
                 return format!(">={m}.{n}.0, <{m}.{}.0", n + 1);

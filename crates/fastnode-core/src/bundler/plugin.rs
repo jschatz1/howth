@@ -18,6 +18,8 @@
 //!             return Ok(Some(format!("export default {:?};", code)));
 //!         }
 //!         Ok(None)
+
+#![allow(clippy::type_complexity)]
 //!     }
 //! }
 //! ```
@@ -156,20 +158,15 @@ impl TransformResult {
 ///
 /// Controls where a plugin runs relative to others in the pipeline.
 /// Mirrors Vite's `enforce` option.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum PluginEnforce {
     /// Runs before normal plugins (e.g., alias resolution).
     Pre,
     /// Default ordering (no enforcement).
+    #[default]
     Normal,
     /// Runs after normal plugins (e.g., minification).
     Post,
-}
-
-impl Default for PluginEnforce {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 /// Development server configuration.

@@ -574,19 +574,17 @@ fn handle_response(
                     error: None,
                 };
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if updated.is_empty() && up_to_date.is_empty() && errors.is_empty() {
+                println!("No dependencies to update.");
             } else {
-                if updated.is_empty() && up_to_date.is_empty() && errors.is_empty() {
-                    println!("No dependencies to update.");
-                } else {
-                    for pkg in &updated {
-                        println!("~ {} {} -> {}", pkg.name, pkg.from_version, pkg.to_version);
-                    }
-                    if !up_to_date.is_empty() {
-                        println!("({} packages already up to date)", up_to_date.len());
-                    }
-                    for err in &errors {
-                        eprintln!("! {}: {} {}", err.spec, err.code, err.message);
-                    }
+                for pkg in &updated {
+                    println!("~ {} {} -> {}", pkg.name, pkg.from_version, pkg.to_version);
+                }
+                if !up_to_date.is_empty() {
+                    println!("({} packages already up to date)", up_to_date.len());
+                }
+                for err in &errors {
+                    eprintln!("! {}: {} {}", err.spec, err.code, err.message);
                 }
             }
 
@@ -1687,10 +1685,7 @@ async fn send_pkg_install_streaming(
                         // Clear the progress counter line, print package, then reprint counter
                         eprint!("\r\x1b[2K");
                     }
-                    println!(
-                        "  + {}@{} ({})",
-                        name, version, status,
-                    );
+                    println!("  + {}@{} ({})", name, version, status,);
                     if tty {
                         // Show running progress counter on a transient line
                         eprint!("  Progress: {completed}/{total}");
@@ -1729,7 +1724,11 @@ async fn send_pkg_request(
 
     // Create request based on action
     let request = match action {
-        PkgAction::Add { specs, cwd, save_dev } => Request::PkgAdd {
+        PkgAction::Add {
+            specs,
+            cwd,
+            save_dev,
+        } => Request::PkgAdd {
             specs: specs.clone(),
             cwd: cwd.to_string_lossy().into_owned(),
             channel: channel.as_str().to_string(),
@@ -1744,7 +1743,11 @@ async fn send_pkg_request(
             cwd: cwd.to_string_lossy().into_owned(),
             channel: channel.as_str().to_string(),
         },
-        PkgAction::Update { packages, cwd, latest } => Request::PkgUpdate {
+        PkgAction::Update {
+            packages,
+            cwd,
+            latest,
+        } => Request::PkgUpdate {
             packages: packages.clone(),
             cwd: cwd.to_string_lossy().into_owned(),
             channel: channel.as_str().to_string(),

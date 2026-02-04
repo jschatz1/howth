@@ -87,9 +87,7 @@ impl NodeTestWorker {
         })
     }
 
-    fn spawn_node(
-        script_path: &Path,
-    ) -> io::Result<(Child, ChildStdin, BufReader<ChildStdout>)> {
+    fn spawn_node(script_path: &Path) -> io::Result<(Child, ChildStdin, BufReader<ChildStdout>)> {
         let mut child = Command::new("node")
             .arg(script_path)
             .stdin(std::process::Stdio::piped())
@@ -101,11 +99,11 @@ impl NodeTestWorker {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stdin"))?;
+            .ok_or_else(|| io::Error::other("failed to capture stdin"))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stdout"))?;
+            .ok_or_else(|| io::Error::other("failed to capture stdout"))?;
 
         Ok((child, stdin, BufReader::new(stdout)))
     }

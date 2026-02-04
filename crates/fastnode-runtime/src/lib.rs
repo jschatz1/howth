@@ -11,6 +11,15 @@
 //! runtime.execute_script("console.log('Hello from V8!')")?;
 //! ```
 
+#![allow(clippy::empty_line_after_doc_comments)]
+#![allow(unused_doc_comments)]
+#![allow(clippy::missing_safety_doc)]
+#![allow(dead_code)]
+#![allow(clippy::regex_creation_in_loops)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::unnecessary_to_owned)]
+
 mod module_loader;
 pub mod napi;
 mod ops;

@@ -41,10 +41,7 @@ fn plugin_error(plugin: &str, message: impl Into<String>) -> PluginError {
 
 #[derive(Debug)]
 pub enum PluginRequest {
-    CallHook {
-        plugin_idx: usize,
-        hook: HookCall,
-    },
+    CallHook { plugin_idx: usize, hook: HookCall },
     Shutdown,
 }
 
@@ -180,9 +177,10 @@ impl JsPluginHost {
             .send(request)
             .map_err(|_| plugin_error("js-plugin-host", "V8 thread disconnected"))?;
 
-        let rx = self.response_rx.lock().map_err(|_| {
-            plugin_error("js-plugin-host", "Response channel lock poisoned")
-        })?;
+        let rx = self
+            .response_rx
+            .lock()
+            .map_err(|_| plugin_error("js-plugin-host", "Response channel lock poisoned"))?;
 
         rx.recv()
             .map_err(|_| plugin_error("js-plugin-host", "V8 thread disconnected"))
@@ -303,8 +301,7 @@ async fn run_v8_thread(
         config_url.as_str()
     );
 
-    let virtual_modules: VirtualModuleMap =
-        Rc::new(RefCell::new(HashMap::new()));
+    let virtual_modules: VirtualModuleMap = Rc::new(RefCell::new(HashMap::new()));
     let wrapper_path = cwd.join("__howth_plugin_loader__.mjs");
     virtual_modules
         .borrow_mut()
@@ -548,7 +545,10 @@ fn parse_hook_response(json_str: &str, hook: &HookCall) -> PluginResponse {
             if let Some(code) = value.get("code").and_then(|v| v.as_str()) {
                 PluginResponse::Load(Some(LoadResult {
                     code: code.to_string(),
-                    map: value.get("map").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    map: value
+                        .get("map")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 }))
             } else {
                 PluginResponse::Load(None)
@@ -558,7 +558,10 @@ fn parse_hook_response(json_str: &str, hook: &HookCall) -> PluginResponse {
             if let Some(code) = value.get("code").and_then(|v| v.as_str()) {
                 PluginResponse::Transform(Some(TransformResult {
                     code: code.to_string(),
-                    map: value.get("map").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    map: value
+                        .get("map")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
                 }))
             } else {
                 PluginResponse::Transform(None)
@@ -691,9 +694,7 @@ impl Plugin for JsPlugin {
         }
         match self.host.call(PluginRequest::CallHook {
             plugin_idx: self.plugin_idx,
-            hook: HookCall::Load {
-                id: id.to_string(),
-            },
+            hook: HookCall::Load { id: id.to_string() },
         })? {
             PluginResponse::Load(result) => Ok(result),
             PluginResponse::Error(e) => Err(plugin_error(&self.name, e)),
@@ -1799,7 +1800,10 @@ mod tests {
             PluginResponse::Transform(Some(result)) => {
                 assert_eq!(result.code, input);
             }
-            other => panic!("Expected Transform with special chars preserved, got {:?}", other),
+            other => panic!(
+                "Expected Transform with special chars preserved, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2293,11 +2297,7 @@ mod tests {
 
         match resp {
             PluginResponse::Error(msg) => {
-                assert!(
-                    msg.contains("Async transform failed!"),
-                    "Got: {}",
-                    msg
-                );
+                assert!(msg.contains("Async transform failed!"), "Got: {}", msg);
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -2334,11 +2334,7 @@ mod tests {
 
         match resp {
             PluginResponse::Error(msg) => {
-                assert!(
-                    msg.contains("string error"),
-                    "Got: {}",
-                    msg
-                );
+                assert!(msg.contains("string error"), "Got: {}", msg);
             }
             other => panic!("Expected Error, got {:?}", other),
         }
@@ -2878,10 +2874,7 @@ mod tests {
                 hook: HookCall::HandleHotUpdate {
                     file: "/src/styles.css".to_string(),
                     timestamp: 2000,
-                    modules: vec![
-                        "/src/App.tsx".to_string(),
-                        "/src/styles.css".to_string(),
-                    ],
+                    modules: vec!["/src/App.tsx".to_string(), "/src/styles.css".to_string()],
                 },
             })
             .unwrap();

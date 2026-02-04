@@ -23,21 +23,20 @@ pub use build::{
     run_build_bench, BaselineResult, BenchTarget, BuildBenchParams, BuildBenchReport,
     BuildBenchResult, MachineInfo, ResourceStats, WorkDoneStats, BUILD_BENCH_SCHEMA_VERSION,
 };
+pub use http::{
+    run_http_bench, HttpBenchParams, HttpBenchReport, HttpComparison, HttpToolResult,
+    DEFAULT_CONNECTIONS, DEFAULT_DURATION_SECS, DEFAULT_WARMUP_SECS, HTTP_BENCH_SCHEMA_VERSION,
+};
 pub use install::{
     run_install_bench, InstallBenchParams, InstallBenchReport, InstallComparison,
     InstallProjectInfo, InstallToolResult, INSTALL_BENCH_SCHEMA_VERSION,
 };
-pub use test::{
-    run_test_bench, TestBenchParams, TestBenchReport, TestComparison,
-    TestProjectInfo, TestToolResult, TEST_BENCH_SCHEMA_VERSION,
-};
-pub use http::{
-    run_http_bench, HttpBenchParams, HttpBenchReport, HttpComparison,
-    HttpToolResult, HTTP_BENCH_SCHEMA_VERSION, DEFAULT_CONNECTIONS,
-    DEFAULT_DURATION_SECS, DEFAULT_WARMUP_SECS,
-};
 pub use smoke::run_smoke_benchmarks;
 pub use stats::compute_stats;
+pub use test::{
+    run_test_bench, TestBenchParams, TestBenchReport, TestComparison, TestProjectInfo,
+    TestToolResult, TEST_BENCH_SCHEMA_VERSION,
+};
 
 /// Bench report schema version. Bump when changing JSON structure.
 pub const BENCH_SCHEMA_VERSION: u32 = 1;

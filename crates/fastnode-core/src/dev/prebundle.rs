@@ -1,8 +1,8 @@
 //! Dependency pre-bundling for dev serving.
 //!
-//! Scans entry points for bare imports (node_modules packages) and bundles
+//! Scans entry points for bare imports (`node_modules` packages) and bundles
 //! each dependency into `.howth/deps/` so the browser doesn't need to make
-//! hundreds of requests for individual node_modules files.
+//! hundreds of requests for individual `node_modules` files.
 //!
 //! Pre-bundled deps are served at `/@modules/{pkg}` URLs.
 
@@ -30,12 +30,13 @@ pub struct PreBundler {
     root: PathBuf,
     /// Output directory for pre-bundled deps.
     deps_dir: PathBuf,
-    /// Pre-bundled deps cache: package name → PreBundledDep.
+    /// Pre-bundled deps cache: package name → `PreBundledDep`.
     deps: HashMap<String, PreBundledDep>,
 }
 
 impl PreBundler {
     /// Create a new pre-bundler.
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         let deps_dir = root.join(".howth").join("deps");
         Self {
@@ -48,6 +49,7 @@ impl PreBundler {
     /// Scan entry source code for bare import specifiers.
     ///
     /// Returns a set of package names found.
+    #[must_use]
     pub fn scan_bare_imports(&self, source: &str) -> HashSet<String> {
         let mut bare_imports = HashSet::new();
 
@@ -81,6 +83,7 @@ impl PreBundler {
     }
 
     /// Scan a file and all its dependencies recursively for bare imports.
+    #[must_use]
     pub fn scan_file_recursive(&self, entry: &Path) -> HashSet<String> {
         let mut bare_imports = HashSet::new();
         let mut visited = HashSet::new();
@@ -138,15 +141,15 @@ impl PreBundler {
 
         // Create output directory
         std::fs::create_dir_all(&self.deps_dir).map_err(|e| PreBundleError {
-            message: format!("Failed to create deps dir: {}", e),
+            message: format!("Failed to create deps dir: {e}"),
             package: None,
         })?;
 
         let bundler = Bundler::with_cwd(&self.root);
         let options = BundleOptions {
             format: BundleFormat::Esm,
-            treeshake: false,  // Don't treeshake deps (we need all exports)
-            minify: false,     // No minification in dev
+            treeshake: false, // Don't treeshake deps (we need all exports)
+            minify: false,    // No minification in dev
             ..Default::default()
         };
 
@@ -176,17 +179,19 @@ impl PreBundler {
         let node_modules = self.root.join("node_modules").join(pkg);
         if !node_modules.exists() {
             return Err(PreBundleError {
-                message: format!("Package not found in node_modules: {}", pkg),
+                message: format!("Package not found in node_modules: {pkg}"),
                 package: Some(pkg.to_string()),
             });
         }
 
         // Create a virtual entry that re-exports everything
-        let entry_code = format!("export * from '{}';", pkg);
-        let entry_path = self.deps_dir.join(format!("_entry_{}.js", sanitize_pkg_name(pkg)));
+        let entry_code = format!("export * from '{pkg}';");
+        let entry_path = self
+            .deps_dir
+            .join(format!("_entry_{}.js", sanitize_pkg_name(pkg)));
 
         std::fs::write(&entry_path, &entry_code).map_err(|e| PreBundleError {
-            message: format!("Failed to write entry: {}", e),
+            message: format!("Failed to write entry: {e}"),
             package: Some(pkg.to_string()),
         })?;
 
@@ -194,14 +199,14 @@ impl PreBundler {
         let result = bundler
             .bundle(&entry_path, &self.root, options)
             .map_err(|e| PreBundleError {
-                message: format!("Bundle error: {}", e),
+                message: format!("Bundle error: {e}"),
                 package: Some(pkg.to_string()),
             })?;
 
         // Write output
         let output_path = self.deps_dir.join(format!("{}.js", sanitize_pkg_name(pkg)));
         std::fs::write(&output_path, &result.code).map_err(|e| PreBundleError {
-            message: format!("Failed to write output: {}", e),
+            message: format!("Failed to write output: {e}"),
             package: Some(pkg.to_string()),
         })?;
 
@@ -216,11 +221,13 @@ impl PreBundler {
     }
 
     /// Get a pre-bundled dependency by package name.
+    #[must_use]
     pub fn get(&self, pkg: &str) -> Option<&PreBundledDep> {
         self.deps.get(pkg)
     }
 
     /// Check if a package has been pre-bundled.
+    #[must_use]
     pub fn has(&self, pkg: &str) -> bool {
         self.deps.contains_key(pkg)
     }
@@ -319,7 +326,7 @@ mod tests {
     #[test]
     fn test_scan_bare_imports() {
         let prebundler = PreBundler::new(PathBuf::from("/project"));
-        let source = r#"
+        let source = r"
 import React from 'react';
 import { useState, useEffect } from 'react';
 import lodash from 'lodash';
@@ -328,7 +335,7 @@ import { Button } from './components/Button';
 import path from 'node:path';
 export { helper } from '@scope/utils';
 const lazy = import('lazy-module');
-"#;
+";
 
         let imports = prebundler.scan_bare_imports(source);
 
@@ -345,10 +352,7 @@ const lazy = import('lazy-module');
     fn test_package_name_from_specifier() {
         assert_eq!(package_name_from_specifier("react"), "react");
         assert_eq!(package_name_from_specifier("react/jsx-runtime"), "react");
-        assert_eq!(
-            package_name_from_specifier("@scope/pkg"),
-            "@scope/pkg"
-        );
+        assert_eq!(package_name_from_specifier("@scope/pkg"), "@scope/pkg");
         assert_eq!(
             package_name_from_specifier("@scope/pkg/utils"),
             "@scope/pkg"

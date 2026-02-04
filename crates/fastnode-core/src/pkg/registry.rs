@@ -1,10 +1,12 @@
 //! npm registry client with persistent packument caching.
 //!
 //! Features:
-//! - Disk-based packument cache with ETag validation
+//! - Disk-based packument cache with `ETag` validation
 //! - Skip network for recently cached packuments (< 5 min)
 //! - In-memory cache shared across clones
 //! - Abbreviated packuments for smaller downloads
+
+#![allow(clippy::manual_let_else)]
 
 use super::cache::PackageCache;
 use super::error::PkgError;
@@ -31,12 +33,12 @@ const CACHE_FRESH_DURATION_SECS: u64 = 300;
 /// Accept header for abbreviated packuments (smaller, faster).
 const ABBREVIATED_ACCEPT: &str = "application/vnd.npm.install-v1+json";
 
-/// Cached packument with ETag for conditional requests.
+/// Cached packument with `ETag` for conditional requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedPackument {
     /// The packument JSON data.
     pub data: Value,
-    /// ETag from the server for conditional requests.
+    /// `ETag` from the server for conditional requests.
     pub etag: Option<String>,
     /// Unix timestamp when cached.
     pub cached_at: u64,
@@ -114,6 +116,7 @@ impl RegistryClient {
     }
 
     /// Create a client with persistent cache.
+    #[must_use]
     pub fn with_cache(self, cache: PackageCache) -> Self {
         // Ensure cache directories exist
         let _ = cache.ensure_dirs();
@@ -227,7 +230,7 @@ impl RegistryClient {
     /// Caching strategy:
     /// 1. Check memory cache - return immediately if found
     /// 2. Check disk cache - if fresh (< 5 min), return without network
-    /// 3. If disk cache exists but stale, send ETag for 304 validation
+    /// 3. If disk cache exists but stale, send `ETag` for 304 validation
     /// 4. Otherwise fetch full packument (abbreviated format)
     ///
     /// # Errors
@@ -266,16 +269,16 @@ impl RegistryClient {
 
         // Check for a scoped registry override
         let scoped = self.find_scoped_registry(name);
-        let base = scoped
-            .map(|r| &r.registry_url)
-            .unwrap_or(&self.base_url);
+        let base = scoped.map_or(&self.base_url, |r| &r.registry_url);
 
         let url = base
             .join(&encoded_name)
             .map_err(|e| PkgError::registry(format!("Failed to build URL for '{name}': {e}")))?;
 
         // Build request with abbreviated packument header and conditional ETag
-        let mut request = self.http.get(url.as_str())
+        let mut request = self
+            .http
+            .get(url.as_str())
             .header("Accept", ABBREVIATED_ACCEPT);
 
         // Attach Bearer auth for scoped registries
@@ -320,8 +323,7 @@ impl RegistryClient {
 
         if !status.is_success() {
             return Err(PkgError::registry(format!(
-                "Registry returned status {} for '{name}'",
-                status
+                "Registry returned status {status} for '{name}'"
             )));
         }
 
@@ -365,13 +367,17 @@ impl RegistryClient {
     /// Get stats about the cache.
     pub async fn cache_stats(&self) -> (usize, usize) {
         let memory_count = self.shared.memory_cache.read().await.len();
-        let disk_count = self.shared.disk_cache.as_ref()
+        let disk_count = self
+            .shared
+            .disk_cache
+            .as_ref()
             .and_then(|c| {
                 let path = c.root().join("packuments");
                 std::fs::read_dir(path).ok()
             })
-            .map(|entries| entries.filter_map(|e| e.ok()).count())
-            .unwrap_or(0);
+            .map_or(0, |entries| {
+                entries.filter_map(std::result::Result::ok).count()
+            });
         (memory_count, disk_count)
     }
 }

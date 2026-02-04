@@ -21,6 +21,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::if_not_else)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::used_underscore_binding)]
+#![allow(clippy::unused_async)]
 
 //! Long-running daemon for fastnode.
 //!
@@ -64,7 +68,7 @@ use fastnode_proto::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// Handle a request and produce a response (sync version).
 ///
@@ -236,10 +240,7 @@ pub fn handle_request(
         ),
         // RunTests needs async handler (tokio mutex + worker I/O)
         Request::RunTests { .. } => (
-            Response::error(
-                codes::INTERNAL_ERROR,
-                "RunTests requires async handler",
-            ),
+            Response::error(codes::INTERNAL_ERROR, "RunTests requires async handler"),
             false,
         ),
         // Pkg operations that need async - return error if called sync
@@ -289,7 +290,10 @@ pub async fn handle_request_async(
             cwd,
             channel,
             save_dev,
-        } => (pkg::handle_pkg_add(specs, cwd, channel, *save_dev).await, false),
+        } => (
+            pkg::handle_pkg_add(specs, cwd, channel, *save_dev).await,
+            false,
+        ),
         Request::PkgRemove {
             packages,
             cwd,
@@ -300,7 +304,10 @@ pub async fn handle_request_async(
             cwd,
             channel,
             latest,
-        } => (pkg::handle_pkg_update(packages, cwd, channel, *latest).await, false),
+        } => (
+            pkg::handle_pkg_update(packages, cwd, channel, *latest).await,
+            false,
+        ),
         Request::PkgCacheList { channel } => (pkg::handle_pkg_cache_list(channel), false),
         Request::PkgCachePrune { channel } => (pkg::handle_pkg_cache_prune(channel), false),
         Request::PkgInstall {
@@ -335,10 +342,7 @@ pub async fn handle_request_async(
             .await,
             false,
         ),
-        Request::RunTests { cwd, files } => (
-            handle_run_tests(cwd, files, _state).await,
-            false,
-        ),
+        Request::RunTests { cwd, files } => (handle_run_tests(cwd, files, _state).await, false),
         // Non-async operations - should not reach here, but handle gracefully
         _ => (
             Response::error(
@@ -860,9 +864,10 @@ fn try_v8_test_worker(
     state: &Arc<DaemonState>,
     files: &[crate::test_worker::TranspiledTestFile],
 ) -> Result<crate::test_worker::WorkerResponse, std::io::Error> {
-    let mut guard = state.v8_test_worker.lock().map_err(|_| {
-        std::io::Error::new(std::io::ErrorKind::Other, "V8 worker mutex poisoned")
-    })?;
+    let mut guard = state
+        .v8_test_worker
+        .lock()
+        .map_err(|_| std::io::Error::other("V8 worker mutex poisoned"))?;
 
     // Drop the old worker first and wait briefly for its thread to clean up
     // (close DB connections, etc.) before creating a new one.
@@ -874,10 +879,13 @@ fn try_v8_test_worker(
     *guard = Some(crate::v8_test_worker::V8TestWorker::spawn()?);
 
     let worker = guard.as_ref().unwrap();
-    let id = format!("v8-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
+    let id = format!(
+        "v8-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
     worker.run_tests(id, files.to_vec())
 }

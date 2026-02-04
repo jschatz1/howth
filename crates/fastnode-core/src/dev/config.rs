@@ -14,6 +14,9 @@
 //! };
 //! ```
 
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::manual_strip)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -59,6 +62,7 @@ const CONFIG_FILES: &[&str] = &[
 ];
 
 /// Find a config file in the given root directory.
+#[must_use]
 pub fn find_config_file(root: &Path) -> Option<PathBuf> {
     for name in CONFIG_FILES {
         let path = root.join(name);
@@ -72,10 +76,17 @@ pub fn find_config_file(root: &Path) -> Option<PathBuf> {
 /// Load configuration from a config file in the given root directory.
 ///
 /// If `config_path` is `Some`, use that specific file. Otherwise, auto-discover.
-pub fn load_config(root: &Path, config_path: Option<&Path>) -> Result<Option<(PathBuf, HowthConfig)>, String> {
+pub fn load_config(
+    root: &Path,
+    config_path: Option<&Path>,
+) -> Result<Option<(PathBuf, HowthConfig)>, String> {
     let path = match config_path {
         Some(p) => {
-            let abs = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            };
             if !abs.exists() {
                 return Err(format!("Config file not found: {}", abs.display()));
             }
@@ -113,7 +124,7 @@ fn transpile_ts_config(source: &str, path: &Path) -> Result<String, String> {
 
     let output = backend
         .transpile(&spec, source)
-        .map_err(|e| format!("Failed to transpile config: {}", e))?;
+        .map_err(|e| format!("Failed to transpile config: {e}"))?;
 
     Ok(output.code)
 }
@@ -156,13 +167,13 @@ fn parse_config_object(source: &str) -> Result<HowthConfig, String> {
     if let Some(obj) = value.as_object() {
         // server
         if let Some(server) = obj.get("server").and_then(|v| v.as_object()) {
-            if let Some(port) = server.get("port").and_then(|v| v.as_u64()) {
+            if let Some(port) = server.get("port").and_then(serde_json::Value::as_u64) {
                 config.server.port = Some(port as u16);
             }
             if let Some(host) = server.get("host").and_then(|v| v.as_str()) {
                 config.server.host = Some(host.to_string());
             }
-            if let Some(open) = server.get("open").and_then(|v| v.as_bool()) {
+            if let Some(open) = server.get("open").and_then(serde_json::Value::as_bool) {
                 config.server.open = Some(open);
             }
         }
@@ -312,7 +323,7 @@ fn strip_comments(source: &str) -> String {
     result
 }
 
-/// Parse a JavaScript object literal into a serde_json::Value.
+/// Parse a JavaScript object literal into a `serde_json::Value`.
 ///
 /// Handles: unquoted keys, single-quoted strings, trailing commas,
 /// nested objects, arrays, numbers, booleans, null.
@@ -361,11 +372,14 @@ impl JsObjectParser {
         match self.peek() {
             Some('{') => self.parse_object(),
             Some('[') => self.parse_array(),
-            Some('"') | Some('\'') => self.parse_string(),
+            Some('"' | '\'') => self.parse_string(),
             Some(ch) if ch == '-' || ch.is_ascii_digit() => self.parse_number(),
-            Some('t') | Some('f') => self.parse_bool(),
+            Some('t' | 'f') => self.parse_bool(),
             Some('n') => self.parse_null(),
-            Some(ch) => Err(format!("Unexpected character '{}' at position {}", ch, self.pos)),
+            Some(ch) => Err(format!(
+                "Unexpected character '{}' at position {}",
+                ch, self.pos
+            )),
             None => Err("Unexpected end of input".to_string()),
         }
     }
@@ -392,7 +406,7 @@ impl JsObjectParser {
             // Expect ':'
             match self.advance() {
                 Some(':') => {}
-                other => return Err(format!("Expected ':' after key, got {:?}", other)),
+                other => return Err(format!("Expected ':' after key, got {other:?}")),
             }
 
             // Parse value
@@ -407,7 +421,7 @@ impl JsObjectParser {
                 }
                 Some('}') => {} // will be handled at top of loop
                 None => return Err("Unterminated object".to_string()),
-                Some(ch) => return Err(format!("Expected ',' or '}}' in object, got '{}'", ch)),
+                Some(ch) => return Err(format!("Expected ',' or '}}' in object, got '{ch}'")),
             }
         }
     }
@@ -437,7 +451,7 @@ impl JsObjectParser {
                 }
                 Some(']') => {} // will be handled at top of loop
                 None => return Err("Unterminated array".to_string()),
-                Some(ch) => return Err(format!("Expected ',' or ']' in array, got '{}'", ch)),
+                Some(ch) => return Err(format!("Expected ',' or ']' in array, got '{ch}'")),
             }
         }
     }
@@ -445,7 +459,7 @@ impl JsObjectParser {
     fn parse_key(&mut self) -> Result<String, String> {
         self.skip_whitespace();
         match self.peek() {
-            Some('"') | Some('\'') => {
+            Some('"' | '\'') => {
                 if let serde_json::Value::String(s) = self.parse_string()? {
                     Ok(s)
                 } else {
@@ -465,7 +479,7 @@ impl JsObjectParser {
                 }
                 Ok(key)
             }
-            other => Err(format!("Expected object key, got {:?}", other)),
+            other => Err(format!("Expected object key, got {other:?}")),
         }
     }
 
@@ -478,20 +492,18 @@ impl JsObjectParser {
                 Some(ch) if ch == quote => {
                     return Ok(serde_json::Value::String(s));
                 }
-                Some('\\') => {
-                    match self.advance() {
-                        Some('n') => s.push('\n'),
-                        Some('t') => s.push('\t'),
-                        Some('r') => s.push('\r'),
-                        Some('\\') => s.push('\\'),
-                        Some(ch) if ch == quote => s.push(ch),
-                        Some(ch) => {
-                            s.push('\\');
-                            s.push(ch);
-                        }
-                        None => return Err("Unterminated string escape".to_string()),
+                Some('\\') => match self.advance() {
+                    Some('n') => s.push('\n'),
+                    Some('t') => s.push('\t'),
+                    Some('r') => s.push('\r'),
+                    Some('\\') => s.push('\\'),
+                    Some(ch) if ch == quote => s.push(ch),
+                    Some(ch) => {
+                        s.push('\\');
+                        s.push(ch);
                     }
-                }
+                    None => return Err("Unterminated string escape".to_string()),
+                },
                 Some(ch) => s.push(ch),
                 None => return Err("Unterminated string".to_string()),
             }
@@ -524,12 +536,12 @@ impl JsObjectParser {
             num_str
                 .parse::<f64>()
                 .map(|n| serde_json::Value::Number(serde_json::Number::from_f64(n).unwrap()))
-                .map_err(|e| format!("Invalid number '{}': {}", num_str, e))
+                .map_err(|e| format!("Invalid number '{num_str}': {e}"))
         } else {
             num_str
                 .parse::<i64>()
                 .map(|n| serde_json::Value::Number(n.into()))
-                .map_err(|e| format!("Invalid number '{}': {}", num_str, e))
+                .map_err(|e| format!("Invalid number '{num_str}': {e}"))
         }
     }
 
@@ -567,6 +579,7 @@ impl JsObjectParser {
 /// like `@ → ./src` (matching Vite/howth alias behavior).
 ///
 /// Returns `None` if no tsconfig/jsconfig exists or has no paths configured.
+#[must_use]
 pub fn load_tsconfig_paths(root: &Path) -> Option<HashMap<String, String>> {
     // Try tsconfig.json first, then jsconfig.json
     let tsconfig_path = root.join("tsconfig.json");
@@ -652,9 +665,9 @@ fn resolve_tsconfig_target(base_url: &str, target: &str) -> String {
     // Resolve relative to baseUrl
     let base = base_url.trim_end_matches('/');
     if base == "." || base == "./" {
-        format!("./{}", target)
+        format!("./{target}")
     } else {
-        format!("{}/{}", base, target)
+        format!("{base}/{target}")
     }
 }
 
@@ -750,15 +763,35 @@ mod tests {
         assert_eq!(config.server.port, Some(4000));
         assert_eq!(config.server.host.as_deref(), Some("localhost"));
         assert_eq!(config.server.open, Some(true));
-        assert_eq!(config.resolve.alias.get("@").map(|s| s.as_str()), Some("./src"));
-        assert_eq!(config.resolve.alias.get("~").map(|s| s.as_str()), Some("./src"));
-        assert_eq!(config.define.get("__APP_VERSION__").map(|s| s.as_str()), Some("\"1.0.0\""));
+        assert_eq!(
+            config
+                .resolve
+                .alias
+                .get("@")
+                .map(std::string::String::as_str),
+            Some("./src")
+        );
+        assert_eq!(
+            config
+                .resolve
+                .alias
+                .get("~")
+                .map(std::string::String::as_str),
+            Some("./src")
+        );
+        assert_eq!(
+            config
+                .define
+                .get("__APP_VERSION__")
+                .map(std::string::String::as_str),
+            Some("\"1.0.0\"")
+        );
         assert_eq!(config.base.as_deref(), Some("/app/"));
     }
 
     #[test]
     fn test_parse_config_with_comments() {
-        let source = r#"
+        let source = r"
             // This is a config file
             /* Multi-line
                comment */
@@ -767,7 +800,7 @@ mod tests {
                     port: 3000, // inline comment
                 },
             };
-        "#;
+        ";
 
         let config = parse_config_object(source).unwrap();
         assert_eq!(config.server.port, Some(3000));
@@ -786,7 +819,14 @@ mod tests {
         "#;
 
         let config = parse_config_object(source).unwrap();
-        assert_eq!(config.resolve.alias.get("@").map(|s| s.as_str()), Some("./src"));
+        assert_eq!(
+            config
+                .resolve
+                .alias
+                .get("@")
+                .map(std::string::String::as_str),
+            Some("./src")
+        );
     }
 
     #[test]
@@ -801,13 +841,13 @@ mod tests {
 
     #[test]
     fn test_parse_config_with_array() {
-        let source = r#"
+        let source = r"
             export default {
                 server: {
                     port: 5173,
                 },
             };
-        "#;
+        ";
 
         let config = parse_config_object(source).unwrap();
         assert_eq!(config.server.port, Some(5173));
@@ -826,10 +866,19 @@ mod tests {
 
         let config = parse_config_object(source).unwrap();
         assert_eq!(
-            config.define.get("process.env.NODE_ENV").map(|s| s.as_str()),
+            config
+                .define
+                .get("process.env.NODE_ENV")
+                .map(std::string::String::as_str),
             Some("\"development\"")
         );
-        assert_eq!(config.define.get("__DEV__").map(|s| s.as_str()), Some("true"));
+        assert_eq!(
+            config
+                .define
+                .get("__DEV__")
+                .map(std::string::String::as_str),
+            Some("true")
+        );
     }
 
     #[test]
@@ -841,12 +890,12 @@ mod tests {
     #[test]
     fn test_load_config_js_file() {
         let dir = tempfile::tempdir().unwrap();
-        let config_content = r#"
+        let config_content = r"
             export default {
                 server: { port: 8080 },
                 base: '/myapp/',
             };
-        "#;
+        ";
         std::fs::write(dir.path().join("howth.config.js"), config_content).unwrap();
 
         let result = load_config(dir.path(), None).unwrap();
@@ -880,11 +929,11 @@ mod tests {
 
     #[test]
     fn test_strip_comments() {
-        let input = r#"
+        let input = r"
             // line comment
             hello /* block
             comment */ world
-        "#;
+        ";
         let result = strip_comments(input);
         assert!(!result.contains("line comment"));
         assert!(!result.contains("block"));
@@ -898,78 +947,78 @@ mod tests {
 
     #[test]
     fn test_detect_plugins_key_with_array() {
-        let source = r#"
+        let source = r"
             export default {
                 plugins: [myPlugin()],
                 server: { port: 3000 },
             };
-        "#;
+        ";
         assert!(detect_plugins_key(source));
     }
 
     #[test]
     fn test_detect_plugins_key_empty_array() {
-        let source = r#"
+        let source = r"
             export default {
                 plugins: [],
             };
-        "#;
+        ";
         assert!(detect_plugins_key(source));
     }
 
     #[test]
     fn test_detect_plugins_key_with_spaces() {
-        let source = r#"
+        let source = r"
             export default {
                 plugins :  [
                     somePlugin(),
                 ],
             };
-        "#;
+        ";
         assert!(detect_plugins_key(source));
     }
 
     #[test]
     fn test_detect_plugins_key_absent() {
-        let source = r#"
+        let source = r"
             export default {
                 server: { port: 3000 },
             };
-        "#;
+        ";
         assert!(!detect_plugins_key(source));
     }
 
     #[test]
     fn test_detect_plugins_key_not_array() {
         // plugins: 'something' — not an array, should not trigger
-        let source = r#"
+        let source = r"
             export default {
                 plugins: 'not-an-array',
             };
-        "#;
+        ";
         assert!(!detect_plugins_key(source));
     }
 
     #[test]
     fn test_detect_plugins_key_in_comment_ignored() {
         // The word "plugins" appears only in a comment
-        let source = r#"
+        let source = r"
             // plugins: [shouldNotMatch()]
             export default {
                 server: { port: 3000 },
             };
-        "#;
+        ";
         assert!(!detect_plugins_key(source));
     }
 
     #[test]
     fn test_has_js_plugins_field_set_true() {
-        let source = r#"
+        let source = r"
             export default {
                 plugins: [myPlugin()],
                 server: { port: 3000 },
             };
-        "#;
+        ";
         // Static parser will fail on myPlugin() in the array, but has_js_plugins
         // should still be detected before parsing. We need to test detect_plugins_key
         // separately since parse_config_object would fail on function calls.
@@ -978,12 +1027,12 @@ mod tests {
 
     #[test]
     fn test_has_js_plugins_false_on_plain_config() {
-        let source = r#"
+        let source = r"
             export default {
                 server: { port: 4000 },
                 base: '/app/',
             };
-        "#;
+        ";
         let config = parse_config_object(source).unwrap();
         assert!(!config.has_js_plugins);
     }
@@ -991,12 +1040,12 @@ mod tests {
     #[test]
     fn test_has_js_plugins_true_with_static_plugins_array() {
         // A plugins array with static objects (parseable by the static parser)
-        let source = r#"
+        let source = r"
             export default {
                 plugins: [],
                 server: { port: 3000 },
             };
-        "#;
+        ";
         let config = parse_config_object(source).unwrap();
         assert!(config.has_js_plugins);
     }
@@ -1004,12 +1053,12 @@ mod tests {
     #[test]
     fn test_detect_plugins_key_block_comment() {
         // plugins key inside block comment should be stripped
-        let source = r#"
+        let source = r"
             /* plugins: [myPlugin()] */
             export default {
                 server: { port: 3000 },
             };
-        "#;
+        ";
         assert!(!detect_plugins_key(source));
     }
 
@@ -1032,7 +1081,10 @@ mod tests {
         std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+        assert_eq!(
+            aliases.get("@").map(std::string::String::as_str),
+            Some("./src")
+        );
     }
 
     /// 1: Multiple path aliases.
@@ -1052,9 +1104,18 @@ mod tests {
         std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
-        assert_eq!(aliases.get("@components").map(|s| s.as_str()), Some("./src/components"));
-        assert_eq!(aliases.get("~").map(|s| s.as_str()), Some("./."));
+        assert_eq!(
+            aliases.get("@").map(std::string::String::as_str),
+            Some("./src")
+        );
+        assert_eq!(
+            aliases.get("@components").map(std::string::String::as_str),
+            Some("./src/components")
+        );
+        assert_eq!(
+            aliases.get("~").map(std::string::String::as_str),
+            Some("./.")
+        );
     }
 
     /// 1: jsconfig.json fallback.
@@ -1072,7 +1133,10 @@ mod tests {
         std::fs::write(dir.path().join("jsconfig.json"), jsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+        assert_eq!(
+            aliases.get("@").map(std::string::String::as_str),
+            Some("./src")
+        );
     }
 
     /// 1: tsconfig.json takes priority over jsconfig.json.
@@ -1095,7 +1159,10 @@ mod tests {
         std::fs::write(dir.path().join("jsconfig.json"), jsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+        assert_eq!(
+            aliases.get("@").map(std::string::String::as_str),
+            Some("./src")
+        );
     }
 
     /// 1: tsconfig with comments (JSONC).
@@ -1116,7 +1183,10 @@ mod tests {
         std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+        assert_eq!(
+            aliases.get("@").map(std::string::String::as_str),
+            Some("./src")
+        );
     }
 
     /// 1: Exact path mapping (no glob).
@@ -1134,7 +1204,10 @@ mod tests {
         std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("utils").map(|s| s.as_str()), Some("./src/utils"));
+        assert_eq!(
+            aliases.get("utils").map(std::string::String::as_str),
+            Some("./src/utils")
+        );
     }
 
     /// 1: baseUrl is a subdirectory.
@@ -1152,7 +1225,10 @@ mod tests {
         std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./components"));
+        assert_eq!(
+            aliases.get("@").map(std::string::String::as_str),
+            Some("./components")
+        );
     }
 
     /// 0: No tsconfig.json or jsconfig.json.
@@ -1224,7 +1300,10 @@ mod tests {
         std::fs::write(dir.path().join("tsconfig.json"), tsconfig).unwrap();
 
         let aliases = load_tsconfig_paths(dir.path()).unwrap();
-        assert_eq!(aliases.get("@").map(|s| s.as_str()), Some("./src"));
+        assert_eq!(
+            aliases.get("@").map(std::string::String::as_str),
+            Some("./src")
+        );
     }
 
     // ========================================================================
@@ -1250,7 +1329,10 @@ mod tests {
 
     #[test]
     fn test_resolve_tsconfig_target_subdir_base() {
-        assert_eq!(resolve_tsconfig_target("./src", "components"), "./src/components");
+        assert_eq!(
+            resolve_tsconfig_target("./src", "components"),
+            "./src/components"
+        );
     }
 
     // ========================================================================
@@ -1281,7 +1363,7 @@ mod tests {
         assert!(result.contains("http://example.com"));
     }
 
-    /// Config with JS plugin functions should still return Ok with has_js_plugins=true.
+    /// Config with JS plugin functions should still return Ok with `has_js_plugins=true`.
     #[test]
     fn test_parse_config_with_plugin_functions_graceful_fallback() {
         let source = r#"
@@ -1298,18 +1380,21 @@ mod tests {
         // Static parser can't handle method shorthand, but should still succeed
         // with has_js_plugins = true
         let config = parse_config_object(source).unwrap();
-        assert!(config.has_js_plugins, "Should detect JS plugins even when static parsing fails");
+        assert!(
+            config.has_js_plugins,
+            "Should detect JS plugins even when static parsing fails"
+        );
     }
 
     /// Config with function calls in plugins array falls back gracefully.
     #[test]
     fn test_parse_config_with_plugin_call_expression() {
-        let source = r#"
+        let source = r"
             export default {
                 plugins: [myPlugin({ option: true })],
                 server: { port: 3000 },
             };
-        "#;
+        ";
         let config = parse_config_object(source).unwrap();
         assert!(config.has_js_plugins);
     }
@@ -1317,14 +1402,14 @@ mod tests {
     #[test]
     fn test_detect_plugins_key_multiple_configs() {
         // plugins key exists in a real config position
-        let source = r#"
+        let source = r"
             import myPlugin from './my-plugin';
             export default {
                 plugins: [myPlugin({ option: true })],
                 server: { port: 3000, host: 'localhost' },
                 resolve: { alias: { '@': './src' } },
             };
-        "#;
+        ";
         assert!(detect_plugins_key(source));
     }
 }

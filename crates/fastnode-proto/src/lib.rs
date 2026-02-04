@@ -269,7 +269,7 @@ pub enum Request {
     PkgPublish {
         /// Working directory (package root).
         cwd: String,
-        /// npm registry URL (defaults to https://registry.npmjs.org).
+        /// npm registry URL (defaults to <https://registry.npmjs.org>).
         registry: Option<String>,
         /// Auth token for publishing.
         token: Option<String>,

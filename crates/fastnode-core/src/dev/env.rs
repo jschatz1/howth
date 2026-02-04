@@ -4,6 +4,8 @@
 //! in order, with later files overriding earlier ones. System environment variables
 //! already set take precedence (are not overwritten).
 
+#![allow(clippy::implicit_hasher)]
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -15,6 +17,7 @@ use std::path::Path;
 /// - `KEY='value'` (single-quoted, literal)
 /// - Comments (`#`) and blank lines are skipped
 /// - Inline comments after unquoted values
+#[must_use]
 pub fn parse_env_file(content: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
@@ -119,6 +122,7 @@ fn parse_unquoted(raw: &str) -> String {
 ///
 /// Later files override earlier ones. System environment variables already set
 /// take precedence and are not overwritten.
+#[must_use]
 pub fn load_env_files(root: &Path, mode: &str) -> HashMap<String, String> {
     let files = [
         root.join(".env"),
@@ -153,27 +157,19 @@ pub fn load_env_files(root: &Path, mode: &str) -> HashMap<String, String> {
 /// - `import.meta.env.DEV` → `true` / `false`
 /// - `import.meta.env.PROD` → `true` / `false`
 /// - `import.meta.env.BASE_URL` → `"/"`
-pub fn client_env_replacements(env: &HashMap<String, String>, mode: &str) -> HashMap<String, String> {
+#[must_use]
+pub fn client_env_replacements(
+    env: &HashMap<String, String>,
+    mode: &str,
+) -> HashMap<String, String> {
     let mut replacements = HashMap::new();
 
     // Built-in replacements
     let is_dev = mode == "development";
-    replacements.insert(
-        "import.meta.env.MODE".to_string(),
-        format!("\"{}\"", mode),
-    );
-    replacements.insert(
-        "import.meta.env.DEV".to_string(),
-        is_dev.to_string(),
-    );
-    replacements.insert(
-        "import.meta.env.PROD".to_string(),
-        (!is_dev).to_string(),
-    );
-    replacements.insert(
-        "import.meta.env.BASE_URL".to_string(),
-        "\"/\"".to_string(),
-    );
+    replacements.insert("import.meta.env.MODE".to_string(), format!("\"{mode}\""));
+    replacements.insert("import.meta.env.DEV".to_string(), is_dev.to_string());
+    replacements.insert("import.meta.env.PROD".to_string(), (!is_dev).to_string());
+    replacements.insert("import.meta.env.BASE_URL".to_string(), "\"/\"".to_string());
 
     // User-defined env vars with allowed prefixes
     for (key, value) in env {
@@ -269,10 +265,16 @@ mod tests {
         let env = HashMap::new();
         let replacements = client_env_replacements(&env, "development");
 
-        assert_eq!(replacements.get("import.meta.env.MODE").unwrap(), "\"development\"");
+        assert_eq!(
+            replacements.get("import.meta.env.MODE").unwrap(),
+            "\"development\""
+        );
         assert_eq!(replacements.get("import.meta.env.DEV").unwrap(), "true");
         assert_eq!(replacements.get("import.meta.env.PROD").unwrap(), "false");
-        assert_eq!(replacements.get("import.meta.env.BASE_URL").unwrap(), "\"/\"");
+        assert_eq!(
+            replacements.get("import.meta.env.BASE_URL").unwrap(),
+            "\"/\""
+        );
     }
 
     #[test]
@@ -280,7 +282,10 @@ mod tests {
         let env = HashMap::new();
         let replacements = client_env_replacements(&env, "production");
 
-        assert_eq!(replacements.get("import.meta.env.MODE").unwrap(), "\"production\"");
+        assert_eq!(
+            replacements.get("import.meta.env.MODE").unwrap(),
+            "\"production\""
+        );
         assert_eq!(replacements.get("import.meta.env.DEV").unwrap(), "false");
         assert_eq!(replacements.get("import.meta.env.PROD").unwrap(), "true");
     }
@@ -288,7 +293,10 @@ mod tests {
     #[test]
     fn test_client_env_replacements_filters_prefixes() {
         let mut env = HashMap::new();
-        env.insert("VITE_API_URL".to_string(), "http://localhost:8080".to_string());
+        env.insert(
+            "VITE_API_URL".to_string(),
+            "http://localhost:8080".to_string(),
+        );
         env.insert("HOWTH_SECRET".to_string(), "abc123".to_string());
         env.insert("DATABASE_URL".to_string(), "postgres://...".to_string());
         env.insert("SECRET_KEY".to_string(), "should_not_appear".to_string());
@@ -303,8 +311,8 @@ mod tests {
             replacements.get("import.meta.env.HOWTH_SECRET").unwrap(),
             "\"abc123\""
         );
-        assert!(replacements.get("import.meta.env.DATABASE_URL").is_none());
-        assert!(replacements.get("import.meta.env.SECRET_KEY").is_none());
+        assert!(!replacements.contains_key("import.meta.env.DATABASE_URL"));
+        assert!(!replacements.contains_key("import.meta.env.SECRET_KEY"));
     }
 
     #[test]

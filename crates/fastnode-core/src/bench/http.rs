@@ -89,6 +89,10 @@ pub struct HttpBenchReport {
 }
 
 /// Run the HTTP benchmark.
+///
+/// # Panics
+///
+/// Panics if temp directory creation fails.
 #[must_use]
 pub fn run_http_bench(params: HttpBenchParams) -> HttpBenchReport {
     let mut warnings = Vec::new();
@@ -121,7 +125,11 @@ pub fn run_http_bench(params: HttpBenchParams) -> HttpBenchReport {
     }
 
     // Sort by RPS (highest first)
-    results.sort_by(|a, b| b.rps.partial_cmp(&a.rps).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.rps
+            .partial_cmp(&a.rps)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Compute comparisons
     let comparisons = compute_comparisons(&results);
@@ -139,7 +147,7 @@ pub fn run_http_bench(params: HttpBenchParams) -> HttpBenchReport {
 /// Write HTTP server scripts for each runtime.
 fn write_server_scripts(dir: &Path) {
     // Howth native server (uses Howth.serveBatch)
-    let howth_server = r#"
+    let howth_server = r"
 const port = parseInt(process.argv[2] || '3000', 10);
 
 Howth.serveBatch({ port, hostname: '127.0.0.1', batchSize: 64 }, (req) => {
@@ -147,11 +155,11 @@ Howth.serveBatch({ port, hostname: '127.0.0.1', batchSize: 64 }, (req) => {
 });
 
 console.log(`READY:${port}`);
-"#;
+";
     fs::write(dir.join("server-howth.ts"), howth_server).expect("Failed to write howth server");
 
     // Node.js server (uses node:http)
-    let node_server = r#"
+    let node_server = r"
 import { createServer } from 'node:http';
 
 const port = parseInt(process.argv[2] || '3000', 10);
@@ -163,11 +171,11 @@ const server = createServer((req, res) => {
 server.listen(port, '127.0.0.1', () => {
     console.log(`READY:${port}`);
 });
-"#;
+";
     fs::write(dir.join("server.mjs"), node_server).expect("Failed to write node server");
 
     // Bun server (uses Bun.serve)
-    let bun_server = r#"
+    let bun_server = r"
 const port = parseInt(Bun.argv[2] || '3000', 10);
 
 const server = Bun.serve({
@@ -179,11 +187,11 @@ const server = Bun.serve({
 });
 
 console.log(`READY:${server.port}`);
-"#;
+";
     fs::write(dir.join("server-bun.ts"), bun_server).expect("Failed to write bun server");
 
     // Deno server (uses Deno.serve)
-    let deno_server = r#"
+    let deno_server = r"
 const port = parseInt(Deno.args[0] || '3000', 10);
 
 Deno.serve({
@@ -195,7 +203,7 @@ Deno.serve({
 }, (_req) => {
     return new Response('Hello World\n');
 });
-"#;
+";
     fs::write(dir.join("server-deno.ts"), deno_server).expect("Failed to write deno server");
 }
 
@@ -270,7 +278,13 @@ fn start_server(tool: &str, script_dir: &Path, port: u16) -> Result<Child, Strin
 
     let child = match tool {
         "howth" => Command::new("howth")
-            .args(["run", "--native", script_dir.join("server-howth.ts").to_str().unwrap(), "--", &port_str])
+            .args([
+                "run",
+                "--native",
+                script_dir.join("server-howth.ts").to_str().unwrap(),
+                "--",
+                &port_str,
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn(),
@@ -280,7 +294,11 @@ fn start_server(tool: &str, script_dir: &Path, port: u16) -> Result<Child, Strin
             .stderr(Stdio::piped())
             .spawn(),
         "bun" => Command::new("bun")
-            .args(["run", script_dir.join("server-bun.ts").to_str().unwrap(), &port_str])
+            .args([
+                "run",
+                script_dir.join("server-bun.ts").to_str().unwrap(),
+                &port_str,
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn(),
@@ -308,11 +326,9 @@ fn wait_for_ready(server: &mut Child, port: u16, timeout: Duration) -> bool {
     if let Some(stdout) = server.stdout.take() {
         let reader = BufReader::new(stdout);
         let handle = thread::spawn(move || {
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if line.contains("READY:") {
-                        return true;
-                    }
+            for line in reader.lines().map_while(Result::ok) {
+                if line.contains("READY:") {
+                    return true;
                 }
             }
             false
@@ -357,7 +373,7 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
     let total_errors = Arc::new(AtomicU64::new(0));
     let latencies = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    let duration = Duration::from_secs(duration_secs as u64);
+    let duration = Duration::from_secs(u64::from(duration_secs));
     let start = Instant::now();
 
     // Spawn worker threads - each maintains a persistent connection
@@ -378,14 +394,13 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
                 // Get or create connection
                 let stream = match conn.take() {
                     Some(s) => s,
-                    None => match TcpStream::connect(&addr) {
-                        Ok(s) => {
+                    None => {
+                        if let Ok(s) = TcpStream::connect(&addr) {
                             let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
                             let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
                             let _ = s.set_nodelay(true);
                             s
-                        }
-                        Err(_) => {
+                        } else {
                             errors.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
@@ -429,7 +444,7 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
         } else {
             lats.sort_unstable();
             let avg = lats.iter().sum::<u64>() / lats.len() as u64;
-            let p99_idx = (lats.len() as f64 * 0.99) as usize;
+            let p99_idx = (lats.len() * 99) / 100;
             let p99 = lats.get(p99_idx.min(lats.len() - 1)).copied().unwrap_or(0);
             (avg, p99)
         }
@@ -459,14 +474,19 @@ fn make_request_keepalive(mut stream: TcpStream) -> Result<TcpStream, std::io::E
     // Read response headers to find Content-Length
     let mut buf = [0u8; 4096];
     let mut total_read = 0;
+    #[allow(unused_assignments)]
     let mut headers_end = None;
+    #[allow(unused_assignments)]
     let mut content_length: Option<usize> = None;
 
     // Read until we have complete headers
     loop {
         let n = stream.read(&mut buf[total_read..])?;
         if n == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed",
+            ));
         }
         total_read += n;
 
@@ -480,7 +500,10 @@ fn make_request_keepalive(mut stream: TcpStream) -> Result<TcpStream, std::io::E
 
         if total_read >= buf.len() {
             // Headers too large, bail
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "headers too large"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "headers too large",
+            ));
         }
     }
 
@@ -565,7 +588,7 @@ mod tests {
             HttpToolResult {
                 tool: "howth".to_string(),
                 rps: 50000.0,
-                total_requests: 500000,
+                total_requests: 500_000,
                 avg_latency_us: 100,
                 p99_latency_us: 500,
                 errors: 0,
@@ -573,7 +596,7 @@ mod tests {
             HttpToolResult {
                 tool: "node".to_string(),
                 rps: 25000.0,
-                total_requests: 250000,
+                total_requests: 250_000,
                 avg_latency_us: 200,
                 p99_latency_us: 1000,
                 errors: 0,

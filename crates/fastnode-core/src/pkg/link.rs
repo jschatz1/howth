@@ -18,6 +18,9 @@
 //!   chalk -> .pnpm/chalk@4.1.2/node_modules/chalk
 //! ```
 
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::items_after_statements)]
+
 use super::error::PkgError;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -46,17 +49,11 @@ pub fn link_package_binaries(
 
     // Read and parse package.json
     let package_json_content = fs::read_to_string(&package_json_path).map_err(|e| {
-        PkgError::link_failed(format!(
-            "Failed to read package.json for {}: {}",
-            pkg_name, e
-        ))
+        PkgError::link_failed(format!("Failed to read package.json for {pkg_name}: {e}"))
     })?;
 
     let package_json: Value = serde_json::from_str(&package_json_content).map_err(|e| {
-        PkgError::link_failed(format!(
-            "Failed to parse package.json for {}: {}",
-            pkg_name, e
-        ))
+        PkgError::link_failed(format!("Failed to parse package.json for {pkg_name}: {e}"))
     })?;
 
     // Get the bin field - can be string or object
@@ -83,7 +80,7 @@ pub fn link_package_binaries(
     match bin_field {
         Value::String(bin_path) => {
             // Single binary: use package name as binary name
-            let binary_name = pkg_name.split('/').last().unwrap_or(pkg_name);
+            let binary_name = pkg_name.split('/').next_back().unwrap_or(pkg_name);
             let link_path = link_binary(&bin_dir, binary_name, target_base, bin_path)?;
             linked_binaries.push(link_path);
         }
@@ -154,10 +151,7 @@ fn link_binary(
 fn create_cmd_shim(link_path: &Path, target_path: &Path) -> Result<(), PkgError> {
     // Create a .cmd file that runs the target
     let cmd_path = link_path.with_extension("cmd");
-    let shim_content = format!(
-        "@ECHO off\r\nnode \"{}\" %*\r\n",
-        target_path.display()
-    );
+    let shim_content = format!("@ECHO off\r\nnode \"{}\" %*\r\n", target_path.display());
 
     fs::write(&cmd_path, shim_content).map_err(|e| {
         PkgError::link_failed(format!(
@@ -189,7 +183,7 @@ fn create_cmd_shim(link_path: &Path, target_path: &Path) -> Result<(), PkgError>
 /// * `cached_pkg_dir` - Path to the package in the global cache
 ///
 /// # Returns
-/// The path to the top-level symlink in node_modules.
+/// The path to the top-level symlink in `node_modules`.
 ///
 /// # Errors
 /// Returns an error if the links cannot be created.
@@ -248,9 +242,7 @@ pub fn link_into_node_modules_with_version(
     // Fast path: if the destination already has the same content (same inode on
     // package.json), skip the expensive recursive hard-link.  This avoids
     // thousands of syscalls on repeated installs.
-    if !needs_relink(cached_pkg_dir, &pnpm_pkg_dest) {
-        // Content already matches — skip hard-linking.
-    } else {
+    if needs_relink(cached_pkg_dir, &pnpm_pkg_dest) {
         // Remove existing content if present
         if pnpm_pkg_dest.exists() || pnpm_pkg_dest.symlink_metadata().is_ok() {
             remove_link_or_dir(&pnpm_pkg_dest)?;
@@ -259,6 +251,8 @@ pub fn link_into_node_modules_with_version(
         // Hard-link or copy the package content (not symlink!)
         // This ensures Node.js sees the real path as within .pnpm, not the cache
         hard_link_or_copy_dir(cached_pkg_dir, &pnpm_pkg_dest)?;
+    } else {
+        // Content already matches — skip hard-linking.
     }
 
     // Create top-level link: node_modules/<name> -> .pnpm/<key>/node_modules/<name>
@@ -283,10 +277,8 @@ fn needs_relink(cache_dir: &Path, dest_dir: &Path) -> bool {
     let cache_pkg = cache_dir.join("package.json");
     let dest_pkg = dest_dir.join("package.json");
 
-    let (Ok(cache_meta), Ok(dest_meta)) = (
-        fs::metadata(&cache_pkg),
-        fs::metadata(&dest_pkg),
-    ) else {
+    let (Ok(cache_meta), Ok(dest_meta)) = (fs::metadata(&cache_pkg), fs::metadata(&dest_pkg))
+    else {
         return true; // Missing file — needs linking
     };
 
@@ -335,7 +327,7 @@ fn hard_link_or_copy_dir(src: &Path, dst: &Path) -> Result<(), PkgError> {
     Ok(())
 }
 
-/// Link a package's dependencies in its .pnpm node_modules directory.
+/// Link a package's dependencies in its .pnpm `node_modules` directory.
 ///
 /// For each dependency, creates:
 /// `.pnpm/<pkg>@<version>/node_modules/<dep> -> .pnpm/<dep>@<dep_version>/node_modules/<dep>`
@@ -396,6 +388,7 @@ pub fn link_package_dependencies(
 
 /// Format a pnpm directory key for a package.
 /// Handles scoped packages by replacing '/' with '+'.
+#[must_use]
 pub fn format_pnpm_key(name: &str, version: &str) -> String {
     if name.starts_with('@') {
         // @scope/name@version -> @scope+name@version
@@ -602,9 +595,13 @@ mod tests {
         fs::write(cached_pkg.join("package.json"), "{}").unwrap();
 
         // Link into project
-        let link_path =
-            link_into_node_modules_with_version(project.path(), "@types/node", "20.0.0", &cached_pkg)
-                .unwrap();
+        let link_path = link_into_node_modules_with_version(
+            project.path(),
+            "@types/node",
+            "20.0.0",
+            &cached_pkg,
+        )
+        .unwrap();
 
         assert!(link_path.exists());
         assert_eq!(
@@ -728,7 +725,8 @@ mod tests {
         link_into_node_modules(project.path(), "prettier", &cached_pkg).unwrap();
 
         // Link binaries
-        let binaries = link_package_binaries(project.path(), "prettier", &cached_pkg, None).unwrap();
+        let binaries =
+            link_package_binaries(project.path(), "prettier", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 1);
         assert!(project.path().join("node_modules/.bin/prettier").exists());
@@ -740,7 +738,11 @@ mod tests {
         let cache = tempdir().unwrap();
 
         // Create a fake cached package with bin as object
-        let cached_pkg = cache.path().join("typescript").join("5.0.0").join("package");
+        let cached_pkg = cache
+            .path()
+            .join("typescript")
+            .join("5.0.0")
+            .join("package");
         fs::create_dir_all(&cached_pkg).unwrap();
         fs::create_dir_all(cached_pkg.join("bin")).unwrap();
         fs::write(
@@ -763,7 +765,8 @@ mod tests {
         link_into_node_modules(project.path(), "typescript", &cached_pkg).unwrap();
 
         // Link binaries
-        let binaries = link_package_binaries(project.path(), "typescript", &cached_pkg, None).unwrap();
+        let binaries =
+            link_package_binaries(project.path(), "typescript", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 2);
         assert!(project.path().join("node_modules/.bin/tsc").exists());

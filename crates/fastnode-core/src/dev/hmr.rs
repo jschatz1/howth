@@ -6,6 +6,9 @@
 //! - Vite-compatible WebSocket protocol
 //! - HMR preamble injection into served modules
 
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::manual_let_else)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 
@@ -30,6 +33,7 @@ pub struct HmrModuleNode {
 
 impl HmrModuleNode {
     /// Create a new HMR module node.
+    #[must_use]
     pub fn new(url: String, file: String) -> Self {
         Self {
             url,
@@ -45,7 +49,7 @@ impl HmrModuleNode {
 
 /// The HMR module graph tracks import relationships for boundary detection.
 pub struct HmrModuleGraph {
-    /// URL → HmrModuleNode mapping.
+    /// URL → `HmrModuleNode` mapping.
     modules: RwLock<HashMap<String, HmrModuleNode>>,
     /// File path → URL mapping.
     file_to_url: RwLock<HashMap<String, String>>,
@@ -53,6 +57,7 @@ pub struct HmrModuleGraph {
 
 impl HmrModuleGraph {
     /// Create a new empty module graph.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             modules: RwLock::new(HashMap::new()),
@@ -64,7 +69,10 @@ impl HmrModuleGraph {
     pub fn ensure_module(&self, url: &str, file: &str) {
         let mut modules = self.modules.write().unwrap();
         if !modules.contains_key(url) {
-            modules.insert(url.to_string(), HmrModuleNode::new(url.to_string(), file.to_string()));
+            modules.insert(
+                url.to_string(),
+                HmrModuleNode::new(url.to_string(), file.to_string()),
+            );
             self.file_to_url
                 .write()
                 .unwrap()
@@ -214,6 +222,7 @@ pub struct HmrEngine {
 
 impl HmrEngine {
     /// Create a new HMR engine.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             module_graph: HmrModuleGraph::new(),
@@ -228,6 +237,7 @@ impl HmrEngine {
     /// Generate the HMR client runtime JavaScript.
     ///
     /// This is served at `/@hmr-client` and provides the `import.meta.hot` API.
+    #[must_use]
     pub fn client_runtime(port: u16) -> String {
         HMR_CLIENT_RUNTIME.replace("__HMR_PORT__", &port.to_string())
     }
@@ -235,12 +245,12 @@ impl HmrEngine {
     /// Generate the HMR preamble to inject at the top of each served module.
     ///
     /// Creates the `import.meta.hot` object for the module.
+    #[must_use]
     pub fn module_preamble(module_url: &str) -> String {
         format!(
             r#"import {{ createHotContext as __vite__createHotContext }} from "/@hmr-client";
-import.meta.hot = __vite__createHotContext("{}");
-"#,
-            module_url
+import.meta.hot = __vite__createHotContext("{module_url}");
+"#
         )
     }
 }
@@ -267,7 +277,7 @@ fn now_ms() -> u64 {
 /// - `hot.invalidate()` — Force propagation to importers
 /// - `hot.data` — Persist data across updates
 /// - `hot.on(event, cb)` / `hot.send(event, data)` — Custom events
-const HMR_CLIENT_RUNTIME: &str = r#"
+const HMR_CLIENT_RUNTIME: &str = r"
 // Howth HMR Client Runtime (Vite-compatible)
 const hmrPort = __HMR_PORT__;
 const hotModulesMap = new Map();
@@ -475,7 +485,7 @@ export function createHotContext(ownerPath) {
 
 // Initialize
 setupWebSocket();
-"#;
+";
 
 #[cfg(test)]
 mod tests {

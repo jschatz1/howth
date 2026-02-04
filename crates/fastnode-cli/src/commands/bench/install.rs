@@ -1,6 +1,4 @@
-use fastnode_core::bench::install::{
-    run_install_bench, InstallBenchParams, InstallBenchReport,
-};
+use fastnode_core::bench::install::{run_install_bench, InstallBenchParams, InstallBenchReport};
 use fastnode_core::bench::Severity;
 use miette::{IntoDiagnostic, Result};
 use std::io::{self, Write};
@@ -75,7 +73,12 @@ fn print_human(report: &InstallBenchReport) -> Result<()> {
     writeln!(out).into_diagnostic()?;
 
     // Find the fastest median
-    let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
+    let min_median = report
+        .results
+        .iter()
+        .map(|r| r.median_ns)
+        .min()
+        .unwrap_or(0);
 
     // Results — one block per tool (hyperfine style)
     for (i, result) in report.results.iter().enumerate() {
@@ -116,24 +119,14 @@ fn print_human(report: &InstallBenchReport) -> Result<()> {
         .into_diagnostic()?;
 
         // Samples count
-        writeln!(
-            out,
-            "  \x1b[90m{} runs\x1b[0m",
-            result.samples
-        )
-        .into_diagnostic()?;
+        writeln!(out, "  \x1b[90m{} runs\x1b[0m", result.samples).into_diagnostic()?;
         writeln!(out).into_diagnostic()?;
     }
 
     // Summary
     if !report.comparisons.is_empty() {
         writeln!(out, "\x1b[1mSummary\x1b[0m").into_diagnostic()?;
-        writeln!(
-            out,
-            "  {}\x1b[1;32mhowth\x1b[0m ran",
-            tool_color(0)
-        )
-        .into_diagnostic()?;
+        writeln!(out, "  {}\x1b[1;32mhowth\x1b[0m ran", tool_color(0)).into_diagnostic()?;
         for (i, cmp) in report.comparisons.iter().enumerate() {
             let cmp_color = tool_color(i + 1);
             if cmp.speedup >= 1.0 {
@@ -147,7 +140,8 @@ fn print_human(report: &InstallBenchReport) -> Result<()> {
                 writeln!(
                     out,
                     "    \x1b[1;31m{:.2}\x1b[0m times slower than {cmp_color}{}\x1b[0m",
-                    1.0 / cmp.speedup, cmp.tool
+                    1.0 / cmp.speedup,
+                    cmp.tool
                 )
                 .into_diagnostic()?;
             }

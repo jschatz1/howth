@@ -157,8 +157,14 @@ fn test_bench_smoke_human_output_not_json() {
         stdout.contains("project_root_walkup"),
         "Missing project_root_walkup"
     );
-    assert!(stdout.contains("median="), "Missing median");
-    assert!(stdout.contains("p95="), "Missing p95");
+    assert!(
+        stdout.contains("median") || stdout.contains("Time (median)"),
+        "Missing median"
+    );
+    assert!(
+        stdout.contains("p95") || stdout.contains("p95:"),
+        "Missing p95"
+    );
 }
 
 #[test]

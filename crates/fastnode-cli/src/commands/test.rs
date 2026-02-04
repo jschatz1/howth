@@ -8,12 +8,15 @@ use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
 use fastnode_core::config::Channel;
 use fastnode_core::paths;
 use fastnode_core::Config;
+#[cfg(unix)]
 use fastnode_core::VERSION;
+#[cfg(unix)]
 use fastnode_daemon::ipc::MAX_FRAME_SIZE;
-use fastnode_proto::{encode_frame, Frame, FrameResponse, Request, Response};
+use fastnode_proto::Response;
+#[cfg(unix)]
+use fastnode_proto::{encode_frame, Frame, FrameResponse, Request};
 use miette::Result;
 use serde_json::Value;
-use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use walkdir::WalkDir;
@@ -116,15 +119,40 @@ fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
     }
 }
 
-/// Send RunTests request to daemon using a blocking Unix socket.
+/// Send RunTests request to daemon using a blocking socket.
 /// Avoids tokio runtime initialization overhead (~2-5ms).
+#[cfg(unix)]
 fn send_run_tests_blocking(
     endpoint: &str,
     cwd: &Path,
     files: &[String],
 ) -> std::io::Result<Response> {
     let mut stream = std::os::unix::net::UnixStream::connect(endpoint)?;
+    send_run_tests_blocking_impl(&mut stream, cwd, files)
+}
 
+/// Send RunTests request to daemon using named pipes on Windows.
+#[cfg(windows)]
+fn send_run_tests_blocking(
+    endpoint: &str,
+    _cwd: &Path,
+    _files: &[String],
+) -> std::io::Result<Response> {
+    // On Windows, we can't use blocking named pipes easily without tokio.
+    // Return an error indicating daemon mode isn't supported for blocking tests on Windows.
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("Blocking daemon connection not supported on Windows. Use async mode or run tests directly. Endpoint: {endpoint}"),
+    ))
+}
+
+/// Common implementation for sending test request over a stream.
+#[cfg(unix)]
+fn send_run_tests_blocking_impl(
+    stream: &mut (impl std::io::Read + std::io::Write),
+    cwd: &Path,
+    files: &[String],
+) -> std::io::Result<Response> {
     let frame = Frame::new(
         VERSION,
         Request::RunTests {
@@ -208,7 +236,7 @@ fn handle_test_response(response: Response) -> i32 {
                 eprintln!("{}", result.diagnostics.trim_end());
             }
 
-            if result.ok { 0 } else { 1 }
+            i32::from(!result.ok)
         }
         Response::Error { code, message } => {
             eprintln!("error: {code}: {message}");
@@ -261,7 +289,7 @@ fn discover_test_files(cwd: &Path) -> Vec<PathBuf> {
     for entry in WalkDir::new(cwd)
         .into_iter()
         .filter_entry(|e| !is_excluded_dir(e))
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
     {
         let path = entry.path();
         if path.is_file() && is_test_file(path) {
@@ -379,10 +407,7 @@ fn get_test_script(cwd: &Path) -> Option<String> {
     let content = std::fs::read_to_string(&package_json_path).ok()?;
     let package: Value = serde_json::from_str(&content).ok()?;
 
-    let script = package
-        .get("scripts")?
-        .get("test")?
-        .as_str()?;
+    let script = package.get("scripts")?.get("test")?.as_str()?;
 
     // Avoid infinite recursion if the test script invokes howth test
     let trimmed = script.trim();

@@ -2,6 +2,10 @@
 //!
 //! Handles: resolve → load → transpile → plugin transform → import rewrite.
 
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::format_push_string)]
+
 use crate::bundler::{LoadResult, PluginContainer, ResolveIdResult};
 use crate::dev::rewrite::ImportRewriter;
 use std::collections::HashMap;
@@ -29,12 +33,13 @@ pub struct ModuleTransformer {
     root: PathBuf,
     /// Import rewriter.
     rewriter: ImportRewriter,
-    /// Module cache: file_path → TransformedModule.
+    /// Module cache: `file_path` → `TransformedModule`.
     cache: RwLock<HashMap<String, TransformedModule>>,
 }
 
 impl ModuleTransformer {
     /// Create a new module transformer.
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         let rewriter = ImportRewriter::new(root.clone());
         Self {
@@ -66,15 +71,13 @@ impl ModuleTransformer {
         let source = self.load_module(&file_path_str, plugins)?;
 
         // Determine content type and whether to transpile
-        let ext = file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let (code, content_type) = match ext {
             "ts" | "tsx" | "jsx" | "mts" | "cts" => {
                 let transpiled = self.transpile(&source, &file_path)?;
-                let transformed = self.apply_plugin_transforms(&transpiled, &file_path_str, plugins)?;
+                let transformed =
+                    self.apply_plugin_transforms(&transpiled, &file_path_str, plugins)?;
                 let rewritten = self.rewriter.rewrite(&transformed, &file_path, plugins);
                 (rewritten, "application/javascript")
             }
@@ -90,12 +93,13 @@ impl ModuleTransformer {
             }
             "json" => {
                 let json_module = json_to_esm(&source);
-                let transformed = self.apply_plugin_transforms(&json_module, &file_path_str, plugins)?;
+                let transformed =
+                    self.apply_plugin_transforms(&json_module, &file_path_str, plugins)?;
                 (transformed, "application/javascript")
             }
             _ => {
                 return Err(ModuleTransformError {
-                    message: format!("Unsupported file type: .{}", ext),
+                    message: format!("Unsupported file type: .{ext}"),
                     file: Some(file_path_str),
                 });
             }
@@ -159,14 +163,20 @@ impl ModuleTransformer {
         plugins: &PluginContainer,
     ) -> Result<PathBuf, ModuleTransformError> {
         // Try plugin resolve first
-        if let Ok(Some(ResolveIdResult { id, external: false })) =
-            plugins.resolve_id(url_path, None)
+        if let Ok(Some(ResolveIdResult {
+            id,
+            external: false,
+        })) = plugins.resolve_id(url_path, None)
         {
             let path = PathBuf::from(&id);
             if path.exists() {
                 return Ok(path);
             }
         }
+
+        // Handle /@style/ prefix for CSS modules
+        // /@style/src/styles.css → /src/styles.css
+        let url_path = url_path.strip_prefix("/@style").unwrap_or(url_path);
 
         // URL path is root-relative: /src/App.tsx → {root}/src/App.tsx
         let stripped = url_path.strip_prefix('/').unwrap_or(url_path);
@@ -194,7 +204,7 @@ impl ModuleTransformer {
         }
 
         Err(ModuleTransformError {
-            message: format!("Module not found: {}", url_path),
+            message: format!("Module not found: {url_path}"),
             file: None,
         })
     }
@@ -212,17 +222,13 @@ impl ModuleTransformer {
 
         // Fall back to file system
         std::fs::read_to_string(file_path).map_err(|e| ModuleTransformError {
-            message: format!("Failed to read {}: {}", file_path, e),
+            message: format!("Failed to read {file_path}: {e}"),
             file: Some(file_path.to_string()),
         })
     }
 
     /// Transpile TypeScript/JSX to JavaScript using SWC.
-    fn transpile(
-        &self,
-        source: &str,
-        file_path: &Path,
-    ) -> Result<String, ModuleTransformError> {
+    fn transpile(&self, source: &str, file_path: &Path) -> Result<String, ModuleTransformError> {
         use crate::compiler::{
             CompilerBackend, JsxRuntime, ModuleKind, SourceMapKind, SwcBackend, TranspileSpec,
         };
@@ -243,12 +249,12 @@ impl ModuleTransformer {
             spec.jsx_runtime = JsxRuntime::Automatic;
         }
 
-        let output = backend.transpile(&spec, source).map_err(|e| {
-            ModuleTransformError {
-                message: format!("Transpile error: {}", e),
+        let output = backend
+            .transpile(&spec, source)
+            .map_err(|e| ModuleTransformError {
+                message: format!("Transpile error: {e}"),
                 file: Some(input_name),
-            }
-        })?;
+            })?;
 
         Ok(output.code)
     }
@@ -260,12 +266,12 @@ impl ModuleTransformer {
         id: &str,
         plugins: &PluginContainer,
     ) -> Result<String, ModuleTransformError> {
-        plugins.transform(code, id).map_err(|e| {
-            ModuleTransformError {
-                message: format!("Plugin transform error: {}", e),
+        plugins
+            .transform(code, id)
+            .map_err(|e| ModuleTransformError {
+                message: format!("Plugin transform error: {e}"),
                 file: Some(id.to_string()),
-            }
-        })
+            })
     }
 }
 
@@ -277,7 +283,7 @@ fn create_css_module(css: &str) -> String {
         .replace("${", "\\${");
 
     format!(
-        r#"const css = `{}`;
+        r"const css = `{escaped}`;
 const style = document.createElement('style');
 style.setAttribute('data-howth-css', '');
 style.textContent = css;
@@ -292,8 +298,7 @@ if (import.meta.hot) {{
 }}
 
 export default css;
-"#,
-        escaped
+"
     )
 }
 
@@ -309,9 +314,8 @@ fn json_to_esm(source: &str) -> String {
     let trimmed = source.trim();
 
     // Try to parse as a JSON object for named exports
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed)
-    {
-        let mut out = format!("const __json__ = {};\nexport default __json__;\n", trimmed);
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let mut out = format!("const __json__ = {trimmed};\nexport default __json__;\n");
         for (key, value) in &map {
             // Only export keys that are valid JS identifiers
             if is_valid_js_ident(key) {
@@ -325,7 +329,7 @@ fn json_to_esm(source: &str) -> String {
         out
     } else {
         // Non-object JSON (array, string, number, etc.) — default export only
-        format!("export default {};\n", trimmed)
+        format!("export default {trimmed};\n")
     }
 }
 
@@ -404,7 +408,7 @@ mod tests {
     /// 1: Array JSON produces default export only.
     #[test]
     fn test_json_to_esm_array() {
-        let json = r#"[1, 2, 3]"#;
+        let json = r"[1, 2, 3]";
         let esm = json_to_esm(json);
         assert!(esm.contains("export default [1, 2, 3]"));
         assert!(!esm.contains("export const"));

@@ -71,7 +71,7 @@ impl Default for ReactRefreshPlugin {
 }
 
 impl Plugin for ReactRefreshPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "react-refresh"
     }
 
@@ -142,11 +142,7 @@ window.$RefreshSig$ = () => (type) => type;
 window.__vite_plugin_react_preamble_installed__ = true;
 </script>"#;
 
-            let transformed = html.replacen(
-                "<script",
-                &format!("{}\n  <script", injection),
-                1,
-            );
+            let transformed = html.replacen("<script", &format!("{}\n  <script", injection), 1);
             return Ok(Some(transformed));
         }
         Ok(None)
@@ -183,7 +179,7 @@ window.$RefreshReg$ && window.$RefreshReg$(function() {{}}, "{module_id}");
 /// React Refresh preamble injected at the top of each component file.
 ///
 /// Sets up the registration functions that React Refresh uses to track components.
-const REACT_REFRESH_PREAMBLE: &str = r#"import RefreshRuntime from '/@react-refresh';
+const REACT_REFRESH_PREAMBLE: &str = r"import RefreshRuntime from '/@react-refresh';
 
 const prevRefreshReg = window.$RefreshReg$;
 const prevRefreshSig = window.$RefreshSig$;
@@ -191,7 +187,7 @@ const prevRefreshSig = window.$RefreshSig$;
 window.$RefreshReg$ = (type, id) => {
   RefreshRuntime.register(type, __MODULE_ID__ + ' ' + id);
 };
-window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;"#;
+window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;";
 
 /// The React Refresh runtime module served at `/@react-refresh`.
 ///
@@ -201,7 +197,7 @@ window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;"#;
 /// - `createSignatureFunctionForTransform()` — Track hook signatures
 /// - `performReactRefresh()` — Trigger refresh for registered components
 /// - `injectIntoGlobalHook(window)` — Set up global hooks
-const REACT_REFRESH_RUNTIME: &str = r#"
+const REACT_REFRESH_RUNTIME: &str = r"
 // React Refresh Runtime (minimal implementation for howth dev server)
 //
 // This provides the core APIs that the React Refresh Babel/SWC transform expects.
@@ -314,7 +310,7 @@ export {
   performReactRefresh,
   injectIntoGlobalHook,
 };
-"#;
+";
 
 #[cfg(test)]
 mod tests {
@@ -324,7 +320,9 @@ mod tests {
     fn test_is_refresh_target() {
         assert!(ReactRefreshPlugin::is_refresh_target("App.tsx"));
         assert!(ReactRefreshPlugin::is_refresh_target("Button.jsx"));
-        assert!(ReactRefreshPlugin::is_refresh_target("/src/components/App.tsx"));
+        assert!(ReactRefreshPlugin::is_refresh_target(
+            "/src/components/App.tsx"
+        ));
         assert!(!ReactRefreshPlugin::is_refresh_target("utils.ts"));
         assert!(!ReactRefreshPlugin::is_refresh_target("index.js"));
         assert!(!ReactRefreshPlugin::is_refresh_target("style.css"));
@@ -385,9 +383,7 @@ export default App;
         let plugin = ReactRefreshPlugin::new();
         let ctx = PluginContext::default();
 
-        let result = plugin
-            .resolve_id("/@react-refresh", None, &ctx)
-            .unwrap();
+        let result = plugin.resolve_id("/@react-refresh", None, &ctx).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "\0react-refresh");
     }

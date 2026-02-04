@@ -5,6 +5,9 @@
 //! - Relative imports (`./App`) → `/src/App.tsx` (resolved absolute from project root)
 //! - CSS imports (`./style.css`) → `/@style/src/style.css` (CSS injection module)
 
+#![allow(clippy::case_sensitive_file_extension_comparisons)]
+#![allow(clippy::if_same_then_else)]
+
 use crate::bundler::PluginContainer;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +19,7 @@ pub struct ImportRewriter {
 
 impl ImportRewriter {
     /// Create a new import rewriter.
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
@@ -25,6 +29,7 @@ impl ImportRewriter {
     /// `module_path` is the absolute path of the module being served.
     /// `plugins` is used to resolve aliases via `resolve_id` before falling
     /// through to bare specifier handling.
+    #[must_use]
     pub fn rewrite(&self, code: &str, module_path: &Path, plugins: &PluginContainer) -> String {
         let mut result = String::with_capacity(code.len());
         let module_dir = module_path.parent().unwrap_or(Path::new("/"));
@@ -51,24 +56,32 @@ impl ImportRewriter {
     }
 
     /// Rewrite a single static import/export line.
-    fn rewrite_import_line(&self, line: &str, module_dir: &Path, plugins: &PluginContainer) -> String {
+    fn rewrite_import_line(
+        &self,
+        line: &str,
+        module_dir: &Path,
+        plugins: &PluginContainer,
+    ) -> String {
         // Find the string literal in from 'xxx' or from "xxx"
         if let Some((before, specifier, after, quote)) = extract_from_specifier(line) {
             let rewritten = self.rewrite_specifier(&specifier, module_dir, plugins);
-            format!("{}{}{}{}{}", before, quote, rewritten, quote, after)
-        } else if let Some((before, specifier, after, quote)) =
-            extract_side_effect_import(line)
-        {
+            format!("{before}{quote}{rewritten}{quote}{after}")
+        } else if let Some((before, specifier, after, quote)) = extract_side_effect_import(line) {
             // Side-effect import: import 'xxx'
             let rewritten = self.rewrite_specifier(&specifier, module_dir, plugins);
-            format!("{}{}{}{}{}", before, quote, rewritten, quote, after)
+            format!("{before}{quote}{rewritten}{quote}{after}")
         } else {
             line.to_string()
         }
     }
 
-    /// Rewrite dynamic import() expressions in a line.
-    fn rewrite_dynamic_import_line(&self, line: &str, module_dir: &Path, plugins: &PluginContainer) -> String {
+    /// Rewrite dynamic `import()` expressions in a line.
+    fn rewrite_dynamic_import_line(
+        &self,
+        line: &str,
+        module_dir: &Path,
+        plugins: &PluginContainer,
+    ) -> String {
         let mut result = String::with_capacity(line.len());
         let mut remaining = line;
 
@@ -95,7 +108,12 @@ impl ImportRewriter {
     }
 
     /// Rewrite a single import specifier.
-    fn rewrite_specifier(&self, specifier: &str, module_dir: &Path, plugins: &PluginContainer) -> String {
+    fn rewrite_specifier(
+        &self,
+        specifier: &str,
+        module_dir: &Path,
+        plugins: &PluginContainer,
+    ) -> String {
         // Virtual modules - leave as-is
         if specifier.starts_with('\0') {
             return specifier.to_string();
@@ -114,7 +132,7 @@ impl ImportRewriter {
         // CSS imports → /@style/ prefix
         if specifier.ends_with(".css") {
             let resolved = self.resolve_to_root_path(specifier, module_dir);
-            return format!("/@style{}", resolved);
+            return format!("/@style{resolved}");
         }
 
         // Asset imports → append ?import so the server returns a JS module
@@ -126,7 +144,7 @@ impl ImportRewriter {
             } else {
                 specifier.to_string()
             };
-            return format!("{}?import", resolved);
+            return format!("{resolved}?import");
         }
 
         // Relative imports → resolved absolute from project root
@@ -135,14 +153,17 @@ impl ImportRewriter {
         }
 
         // Try plugin resolve_id (handles aliases like @components/Button → ./src/components/Button)
-        if let Ok(Some(resolved)) = plugins.resolve_id(specifier, Some(&module_dir.display().to_string())) {
+        if let Ok(Some(resolved)) =
+            plugins.resolve_id(specifier, Some(&module_dir.display().to_string()))
+        {
             if !resolved.external {
-                let resolved_path = if resolved.id.starts_with("./") || resolved.id.starts_with("../") {
-                    // Relative path from root (e.g., ./src/components/Button)
-                    self.root.join(&resolved.id)
-                } else {
-                    PathBuf::from(&resolved.id)
-                };
+                let resolved_path =
+                    if resolved.id.starts_with("./") || resolved.id.starts_with("../") {
+                        // Relative path from root (e.g., ./src/components/Button)
+                        self.root.join(&resolved.id)
+                    } else {
+                        PathBuf::from(&resolved.id)
+                    };
                 if let Ok(rel) = resolved_path.strip_prefix(&self.root) {
                     let rel_str = format!("/{}", rel.display());
                     return rel_str;
@@ -155,7 +176,7 @@ impl ImportRewriter {
         }
 
         // Bare specifiers → /@modules/pkg
-        format!("/@modules/{}", specifier)
+        format!("/@modules/{specifier}")
     }
 
     /// Resolve a relative import to an absolute path from the project root.
@@ -226,11 +247,8 @@ fn has_js_extension(path: &str) -> bool {
 
 /// Known asset file extensions that should be served as `export default url` when imported.
 const ASSET_EXTENSIONS: &[&str] = &[
-    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif",
-    ".mp4", ".webm", ".ogg", ".mp3", ".wav", ".flac", ".aac",
-    ".woff", ".woff2", ".eot", ".ttf", ".otf",
-    ".wasm",
-    ".pdf",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".avif", ".mp4", ".webm", ".ogg",
+    ".mp3", ".wav", ".flac", ".aac", ".woff", ".woff2", ".eot", ".ttf", ".otf", ".wasm", ".pdf",
 ];
 
 /// Check if a specifier ends with a known asset extension.
@@ -240,13 +258,14 @@ fn is_asset_extension(specifier: &str) -> bool {
 }
 
 /// Check if a specifier ends with a known asset extension (public).
+#[must_use]
 pub fn is_asset_import(specifier: &str) -> bool {
     is_asset_extension(specifier)
 }
 
 /// Extract the `from 'specifier'` portion of an import/export line.
 ///
-/// Returns (before_quote, specifier, after_quote, quote_char).
+/// Returns (`before_quote`, specifier, `after_quote`, `quote_char`).
 fn extract_from_specifier(line: &str) -> Option<(String, String, String, char)> {
     let from_idx = line.find(" from ")?;
     let after_from = &line[from_idx + 6..];
@@ -289,14 +308,14 @@ fn extract_side_effect_import(line: &str) -> Option<(String, String, String, cha
 
     // Preserve leading whitespace from original line
     let leading_ws: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-    let before = format!("{}import ", leading_ws);
+    let before = format!("{leading_ws}import ");
 
     Some((before, specifier, after, quote))
 }
 
 /// Extract a string literal from the start of a string slice.
 ///
-/// Returns (specifier, quote_char, rest_of_string).
+/// Returns (specifier, `quote_char`, `rest_of_string`).
 fn extract_string_from_start(s: &str) -> Option<(String, char, &str)> {
     let trimmed = s.trim_start();
     let quote = trimmed.chars().next()?;
@@ -318,6 +337,7 @@ fn extract_string_from_start(s: &str) -> Option<(String, char, &str)> {
 /// Scans for static imports (`import ... from '...'`), side-effect imports
 /// (`import '...'`), re-exports (`export ... from '...'`), and dynamic
 /// imports (`import('...')`). Returns deduplicated URL paths.
+#[must_use]
 pub fn extract_import_urls(code: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -328,11 +348,17 @@ pub fn extract_import_urls(code: &str) -> Vec<String> {
         // Static imports and re-exports
         if is_import_line(trimmed) || is_export_from_line(trimmed) {
             if let Some((_, specifier, _, _)) = extract_from_specifier(line) {
-                if !specifier.starts_with("/@modules/") && !specifier.starts_with('\0') && seen.insert(specifier.clone()) {
+                if !specifier.starts_with("/@modules/")
+                    && !specifier.starts_with('\0')
+                    && seen.insert(specifier.clone())
+                {
                     urls.push(specifier);
                 }
             } else if let Some((_, specifier, _, _)) = extract_side_effect_import(line) {
-                if !specifier.starts_with("/@modules/") && !specifier.starts_with('\0') && seen.insert(specifier.clone()) {
+                if !specifier.starts_with("/@modules/")
+                    && !specifier.starts_with('\0')
+                    && seen.insert(specifier.clone())
+                {
                     urls.push(specifier);
                 }
             }
@@ -344,7 +370,10 @@ pub fn extract_import_urls(code: &str) -> Vec<String> {
             while let Some(idx) = remaining.find("import(") {
                 let after = &remaining[idx + 7..];
                 if let Some((specifier, _, rest)) = extract_string_from_start(after) {
-                    if !specifier.starts_with("/@modules/") && !specifier.starts_with('\0') && seen.insert(specifier.clone()) {
+                    if !specifier.starts_with("/@modules/")
+                        && !specifier.starts_with('\0')
+                        && seen.insert(specifier.clone())
+                    {
                         urls.push(specifier);
                     }
                     remaining = rest;
@@ -374,6 +403,7 @@ pub fn extract_import_urls(code: &str) -> Vec<String> {
 /// For howth's use case this is acceptable — a false positive just means we
 /// attempt HMR when we'd otherwise do a full reload, and the worst outcome is
 /// the client falls back to reload anyway.
+#[must_use]
 pub fn is_self_accepting_module(code: &str) -> bool {
     for line in code.lines() {
         let trimmed = line.trim();
@@ -463,11 +493,11 @@ import lodash from "lodash";"#;
 
     #[test]
     fn test_extract_import_urls() {
-        let code = r#"import { useState } from '/@modules/react';
+        let code = r"import { useState } from '/@modules/react';
 import App from '/src/App.tsx';
 import '/src/styles.css';
 export { foo } from '/src/utils.ts';
-const lazy = import('/src/Lazy.tsx');"#;
+const lazy = import('/src/Lazy.tsx');";
 
         let urls = extract_import_urls(code);
         // Should only include local modules, not /@modules/
@@ -481,10 +511,18 @@ const lazy = import('/src/Lazy.tsx');"#;
     #[test]
     fn test_is_self_accepting() {
         assert!(is_self_accepting_module("import.meta.hot.accept();"));
-        assert!(is_self_accepting_module("import.meta.hot.accept(mod => { });"));
-        assert!(is_self_accepting_module("if (import.meta.hot) { import.meta.hot.accept(); }"));
-        assert!(!is_self_accepting_module("import.meta.hot.accept('./dep', cb);"));
-        assert!(!is_self_accepting_module("import.meta.hot.accept(['./a', './b'], cb);"));
+        assert!(is_self_accepting_module(
+            "import.meta.hot.accept(mod => { });"
+        ));
+        assert!(is_self_accepting_module(
+            "if (import.meta.hot) { import.meta.hot.accept(); }"
+        ));
+        assert!(!is_self_accepting_module(
+            "import.meta.hot.accept('./dep', cb);"
+        ));
+        assert!(!is_self_accepting_module(
+            "import.meta.hot.accept(['./a', './b'], cb);"
+        ));
         assert!(!is_self_accepting_module("const x = 42;"));
     }
 
@@ -499,7 +537,10 @@ const lazy = import('/src/Lazy.tsx');"#;
         let plugins = empty_plugins();
         let code = "import logo from './logo.png';";
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
-        assert!(result.contains("?import"), "Expected ?import suffix, got: {}", result);
+        assert!(
+            result.contains("?import"),
+            "Expected ?import suffix, got: {result}"
+        );
     }
 
     /// 1: SVG asset import.
@@ -509,7 +550,10 @@ const lazy = import('/src/Lazy.tsx');"#;
         let plugins = empty_plugins();
         let code = "import icon from './icon.svg';";
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
-        assert!(result.contains("?import"), "Expected ?import suffix, got: {}", result);
+        assert!(
+            result.contains("?import"),
+            "Expected ?import suffix, got: {result}"
+        );
     }
 
     /// 1: Font asset import.
@@ -519,7 +563,10 @@ const lazy = import('/src/Lazy.tsx');"#;
         let plugins = empty_plugins();
         let code = "import font from './font.woff2';";
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
-        assert!(result.contains("?import"), "Expected ?import suffix, got: {}", result);
+        assert!(
+            result.contains("?import"),
+            "Expected ?import suffix, got: {result}"
+        );
     }
 
     /// 0: Non-asset extensions should NOT get ?import.
@@ -529,7 +576,10 @@ const lazy = import('/src/Lazy.tsx');"#;
         let plugins = empty_plugins();
         let code = "import App from '/@modules/react';";
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
-        assert!(!result.contains("?import"), "Should not have ?import: {}", result);
+        assert!(
+            !result.contains("?import"),
+            "Should not have ?import: {result}"
+        );
     }
 
     /// -1: CSS imports should use /@style, not ?import.
@@ -539,11 +589,17 @@ const lazy = import('/src/Lazy.tsx');"#;
         let plugins = empty_plugins();
         let code = "import './styles.css';";
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
-        assert!(result.contains("/@style/"), "CSS should use /@style, got: {}", result);
-        assert!(!result.contains("?import"), "CSS should not have ?import: {}", result);
+        assert!(
+            result.contains("/@style/"),
+            "CSS should use /@style, got: {result}"
+        );
+        assert!(
+            !result.contains("?import"),
+            "CSS should not have ?import: {result}"
+        );
     }
 
-    /// 1: is_asset_extension detects various asset types.
+    /// 1: `is_asset_extension` detects various asset types.
     #[test]
     fn test_is_asset_extension() {
         assert!(is_asset_extension("logo.png"));
@@ -595,19 +651,27 @@ const lazy = import('/src/Lazy.tsx');"#;
         assert!(!result.contains("/@modules//@modules/"));
     }
 
-    /// 1: Alias resolved via plugin resolve_id.
+    /// 1: Alias resolved via plugin `resolve_id`.
     #[test]
     fn test_rewrite_alias_via_plugin() {
         use crate::bundler::AliasPlugin;
         let rewriter = ImportRewriter::new(PathBuf::from("/project"));
         let mut plugins = PluginContainer::new(PathBuf::from("/project"));
-        plugins.add(Box::new(AliasPlugin::new().alias("@components", "/project/src/components")));
+        plugins.add(Box::new(
+            AliasPlugin::new().alias("@components", "/project/src/components"),
+        ));
 
         let code = "import { Button } from '@components/Button';";
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
 
         // Should resolve to root-relative path, not /@modules/
-        assert!(!result.contains("/@modules/"), "Alias should not be treated as bare specifier, got: {}", result);
-        assert!(result.contains("/src/components/Button"), "Should resolve to src/components/Button, got: {}", result);
+        assert!(
+            !result.contains("/@modules/"),
+            "Alias should not be treated as bare specifier, got: {result}"
+        );
+        assert!(
+            result.contains("/src/components/Button"),
+            "Should resolve to src/components/Button, got: {result}"
+        );
     }
 }

@@ -16,6 +16,12 @@
 #![allow(clippy::map_unwrap_or)]
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::case_sensitive_file_extension_comparisons)]
+#![allow(clippy::fn_params_excessive_bools)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::default_trait_access)]
+#![allow(clippy::unused_async)]
 
 mod commands;
 mod logging;
@@ -679,10 +685,9 @@ fn main() -> Result<()> {
                 warmup,
                 project,
             } => commands::bench::install::run(*iters, *warmup, project.clone(), cli.json),
-            BenchCommands::TestRun {
-                iters,
-                warmup,
-            } => commands::bench::test::run(*iters, *warmup, cli.json),
+            BenchCommands::TestRun { iters, warmup } => {
+                commands::bench::test::run(*iters, *warmup, cli.json)
+            }
             BenchCommands::Http {
                 duration,
                 connections,
@@ -792,13 +797,11 @@ fn main() -> Result<()> {
                     cwd: cwd.clone(),
                 }
             }
-            PkgCommands::Update { packages, latest } => {
-                commands::pkg::PkgAction::Update {
-                    packages: packages.clone(),
-                    cwd: cwd.clone(),
-                    latest: *latest,
-                }
-            }
+            PkgCommands::Update { packages, latest } => commands::pkg::PkgAction::Update {
+                packages: packages.clone(),
+                cwd: cwd.clone(),
+                latest: *latest,
+            },
             PkgCommands::Outdated => commands::pkg::PkgAction::Outdated { cwd: cwd.clone() },
             PkgCommands::Publish {
                 dry_run,

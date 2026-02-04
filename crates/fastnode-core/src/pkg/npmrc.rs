@@ -117,7 +117,7 @@ pub fn load_npmrc_files(project_dir: &Path) -> NpmrcConfig {
                 merge_config(&mut merged, &parsed);
             }
         }
-        dir = d.parent().map(|p| p.to_path_buf());
+        dir = d.parent().map(std::path::Path::to_path_buf);
     }
 
     // Also check $HOME/.npmrc (may already be covered by the walk, but

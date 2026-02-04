@@ -58,6 +58,7 @@ pub use lockfile::{
 };
 pub use npmrc::{NpmrcConfig, ScopedRegistry};
 pub use registry::{get_tarball_url, RegistryClient, DEFAULT_REGISTRY, REGISTRY_ENV};
+pub use resolve::{resolve_dependencies, write_lockfile, ResolveOptions, ResolveResult};
 pub use spec::PackageSpec;
 pub use tarball::{download_tarball, extract_tgz_atomic, MAX_TARBALL_SIZE};
 pub use version::{resolve_version, version_satisfies};
@@ -65,4 +66,3 @@ pub use workspaces::{
     detect_workspaces, find_workspace_root, link_workspace_packages, WorkspaceConfig,
     WorkspacePackage,
 };
-pub use resolve::{resolve_dependencies, write_lockfile, ResolveOptions, ResolveResult};

@@ -109,7 +109,7 @@ fn run_and_get_plan(
     entry: &str,
 ) -> Option<serde_json::Value> {
     let output = cargo_bin()
-        .args(["--json", "run", entry, "--daemon", "--cwd"])
+        .args(["--json", "run", entry, "--dry-run", "--daemon", "--cwd"])
         .arg(cwd)
         .env("HOWTH_IPC_ENDPOINT", endpoint)
         .output()

@@ -31,10 +31,13 @@ use axum::{
     Router,
 };
 use fastnode_core::bundler::{
-    AliasPlugin, BundleFormat, BundleOptions, Bundler, DevConfig, PluginContainer, ReplacePlugin,
-    plugins::ReactRefreshPlugin,
+    plugins::ReactRefreshPlugin, AliasPlugin, BundleFormat, BundleOptions, Bundler, DevConfig,
+    PluginContainer, ReplacePlugin,
 };
-use fastnode_core::dev::{HmrEngine, ModuleTransformer, PreBundler, extract_import_urls, is_self_accepting_module, load_config, load_env_files, client_env_replacements};
+use fastnode_core::dev::{
+    client_env_replacements, extract_import_urls, is_self_accepting_module, load_config,
+    load_env_files, HmrEngine, ModuleTransformer, PreBundler,
+};
 use miette::{IntoDiagnostic, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -92,13 +95,9 @@ enum HmrMessage {
     /// Full page reload.
     Reload,
     /// Partial module update (Vite-compatible).
-    Update {
-        updates: Vec<HmrModuleUpdate>,
-    },
+    Update { updates: Vec<HmrModuleUpdate> },
     /// Build error.
-    Error {
-        message: String,
-    },
+    Error { message: String },
     /// Connected confirmation.
     Connected,
 }
@@ -151,9 +150,7 @@ pub async fn run(action: DevAction) -> Result<()> {
     #[allow(unused_variables)]
     let (howth_config, config_file_path) = match load_config(&cwd, action.config.as_deref()) {
         Ok(Some((config_path, config))) => {
-            let rel_path = config_path
-                .strip_prefix(&cwd)
-                .unwrap_or(&config_path);
+            let rel_path = config_path.strip_prefix(&cwd).unwrap_or(&config_path);
             println!("  Loaded config from {}", rel_path.display());
             (Some(config), Some(config_path))
         }
@@ -177,7 +174,10 @@ pub async fn run(action: DevAction) -> Result<()> {
     let effective_host = if action.host != "localhost" {
         action.host.clone()
     } else if let Some(ref cfg) = howth_config {
-        cfg.server.host.clone().unwrap_or_else(|| action.host.clone())
+        cfg.server
+            .host
+            .clone()
+            .unwrap_or_else(|| action.host.clone())
     } else {
         action.host.clone()
     };
@@ -194,7 +194,10 @@ pub async fn run(action: DevAction) -> Result<()> {
     let mode = &action.mode;
     let dot_env = load_env_files(&cwd, mode);
     let env_replacements = client_env_replacements(&dot_env, mode);
-    let env_var_count = dot_env.iter().filter(|(k, _)| k.starts_with("VITE_") || k.starts_with("HOWTH_")).count();
+    let env_var_count = dot_env
+        .iter()
+        .filter(|(k, _)| k.starts_with("VITE_") || k.starts_with("HOWTH_"))
+        .count();
     if !dot_env.is_empty() {
         println!(
             "  Loaded {} env var{} ({} exposed to client)",
@@ -213,7 +216,8 @@ pub async fn run(action: DevAction) -> Result<()> {
 
     // Build alias map: tsconfig.json paths (lower priority) + config file aliases (higher priority)
     {
-        let mut all_aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut all_aliases: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         // Load tsconfig.json / jsconfig.json paths first (lower priority)
         if let Some(tsconfig_aliases) = fastnode_core::dev::config::load_tsconfig_paths(&cwd) {
@@ -255,7 +259,9 @@ pub async fn run(action: DevAction) -> Result<()> {
             }
         }
 
-        if !env_replacements.is_empty() || howth_config.as_ref().map_or(false, |c| !c.define.is_empty()) {
+        if !env_replacements.is_empty()
+            || howth_config.as_ref().is_some_and(|c| !c.define.is_empty())
+        {
             plugins.add(Box::new(replace_plugin));
         }
     }
@@ -270,7 +276,9 @@ pub async fn run(action: DevAction) -> Result<()> {
                     let host = Arc::new(host);
                     for (idx, def) in host.plugin_defs().iter().enumerate() {
                         plugins.add(Box::new(super::js_plugin::JsPlugin::new(
-                            def, idx, Arc::clone(&host),
+                            def,
+                            idx,
+                            Arc::clone(&host),
                         )));
                     }
                     println!("  Loaded {} JS plugin(s)", count);
@@ -351,7 +359,9 @@ pub async fn run(action: DevAction) -> Result<()> {
     };
 
     // Sort plugins by enforce order
-    plugins.context_mut().set_meta("mode", "development".to_string());
+    plugins
+        .context_mut()
+        .set_meta("mode", "development".to_string());
 
     // Create broadcast channel for HMR
     let (hmr_tx, _) = broadcast::channel::<HmrMessage>(16);
@@ -447,7 +457,10 @@ pub async fn run(action: DevAction) -> Result<()> {
         .into_diagnostic()?;
 
     println!();
-    println!("  Dev server running at http://localhost:{}", effective_port);
+    println!(
+        "  Dev server running at http://localhost:{}",
+        effective_port
+    );
     println!("  Vite-compatible unbundled serving enabled");
     println!("  Hot Module Replacement enabled");
     println!();
@@ -532,11 +545,17 @@ async fn serve_css_module(
     AxumPath(path): AxumPath<String>,
 ) -> impl IntoResponse {
     let url_path = format!("/@style/{}", path);
-    match state.transformer.transform_module(&url_path, &state.plugins) {
+    match state
+        .transformer
+        .transform_module(&url_path, &state.plugins)
+    {
         Ok(module) => {
             // Register CSS module in HMR graph (CSS modules are self-accepting)
             let file_path = state.cwd.join(&path).display().to_string();
-            state.hmr_engine.module_graph.ensure_module(&url_path, &file_path);
+            state
+                .hmr_engine
+                .module_graph
+                .ensure_module(&url_path, &file_path);
             state.hmr_engine.module_graph.mark_self_accepting(&url_path);
 
             Response::builder()
@@ -546,14 +565,23 @@ async fn serve_css_module(
                 .body(module.code)
                 .unwrap()
         }
-        Err(e) => Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .header("Content-Type", "application/javascript")
-            .body(format!(
-                "console.error('CSS load error: {}');",
-                e.message.replace('\'', "\\'")
-            ))
-            .unwrap(),
+        Err(e) => {
+            // Return 404 for missing files, 500 for other errors
+            let status =
+                if e.message.contains("not found") || e.message.contains("Module not found") {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+            Response::builder()
+                .status(status)
+                .header("Content-Type", "application/javascript")
+                .body(format!(
+                    "console.error('CSS load error: {}');",
+                    e.message.replace('\'', "\\'")
+                ))
+                .unwrap()
+        }
     }
 }
 
@@ -573,16 +601,13 @@ async fn serve_module(
 
     // Check for ?import query (asset imports from JS)
     // Note: AxumPath does NOT include query parameters, so we use RawQuery
-    let is_asset_import = query.as_deref().map_or(false, |q| q.contains("import"));
+    let is_asset_import = query.as_deref().is_some_and(|q| q.contains("import"));
 
     // Strip query parameters from path (e.g., ?t=1234 for cache busting)
     let url_path = url_path.split('?').next().unwrap_or(&url_path);
 
     // Check if this is a JS/TS module request
-    let ext = url_path
-        .rsplit('.')
-        .next()
-        .unwrap_or("");
+    let ext = url_path.rsplit('.').next().unwrap_or("");
 
     match ext {
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "json" => {
@@ -601,13 +626,27 @@ async fn serve_module(
                         // Resolve the import to a file path for the graph
                         let import_file = if import_url.starts_with("/@style/") {
                             let rel = import_url.strip_prefix("/@style").unwrap_or(import_url);
-                            state.cwd.join(rel.strip_prefix('/').unwrap_or(rel)).display().to_string()
+                            state
+                                .cwd
+                                .join(rel.strip_prefix('/').unwrap_or(rel))
+                                .display()
+                                .to_string()
                         } else {
-                            state.cwd.join(import_url.strip_prefix('/').unwrap_or(import_url)).display().to_string()
+                            state
+                                .cwd
+                                .join(import_url.strip_prefix('/').unwrap_or(import_url))
+                                .display()
+                                .to_string()
                         };
-                        state.hmr_engine.module_graph.ensure_module(import_url, &import_file);
+                        state
+                            .hmr_engine
+                            .module_graph
+                            .ensure_module(import_url, &import_file);
                     }
-                    state.hmr_engine.module_graph.update_module_imports(url_path, &import_urls);
+                    state
+                        .hmr_engine
+                        .module_graph
+                        .update_module_imports(url_path, &import_urls);
 
                     // Detect self-accepting modules (import.meta.hot.accept())
                     if is_self_accepting_module(&module.code) {
@@ -615,11 +654,11 @@ async fn serve_module(
                     }
 
                     // Inject HMR preamble for JS modules
-                    let code = if ext != "json" {
+                    let code = if ext == "json" {
+                        module.code
+                    } else {
                         let preamble = HmrEngine::module_preamble(url_path);
                         format!("{}\n{}", preamble, module.code)
-                    } else {
-                        module.code
                     };
 
                     Response::builder()
@@ -629,14 +668,24 @@ async fn serve_module(
                         .body(code)
                         .unwrap()
                 }
-                Err(e) => Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header("Content-Type", "application/javascript")
-                    .body(format!(
-                        "console.error('Transform error: {}');",
-                        e.message.replace('\'', "\\'")
-                    ))
-                    .unwrap(),
+                Err(e) => {
+                    // Return 404 for missing files, 500 for other errors
+                    let status = if e.message.contains("not found")
+                        || e.message.contains("Module not found")
+                    {
+                        StatusCode::NOT_FOUND
+                    } else {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    };
+                    Response::builder()
+                        .status(status)
+                        .header("Content-Type", "application/javascript")
+                        .body(format!(
+                            "console.error('Transform error: {}');",
+                            e.message.replace('\'', "\\'")
+                        ))
+                        .unwrap()
+                }
             }
         }
         "css" => {
