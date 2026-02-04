@@ -118,6 +118,18 @@ howth is **29x faster** than node and **2.7x faster** than bun.
 
 howth is **25x faster** than node and **7.8x faster** than bun.
 
+### HTTP Server (50 connections, 5 seconds)
+
+| Tool | RPS | Latency | Relative |
+|------|-----|---------|----------|
+| **Bun** | 211K | 236µs | 100% (target) |
+| **howth serveBatch** | 172K | 289µs | 82% |
+| Node.js http | 111K | 450µs | 53% |
+
+howth is **1.5x faster** than Node.js and reaches **82% of Bun's throughput**.
+
+The gap to Bun is due to async channel coordination between Hyper (HTTP) and V8 (JavaScript). Bun's single-threaded architecture with direct JS calls avoids this overhead. See [docs/performance-deep-dive.md](docs/performance-deep-dive.md) for detailed analysis.
+
 ## Building
 
 ```bash
