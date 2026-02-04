@@ -23,8 +23,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-# Build release binaries
-RUN cargo build --release --workspace
+# Build release binaries with native V8 runtime
+RUN cargo build --release --workspace --features native-runtime
 
 # =============================================================================
 # Runtime stage - minimal image with just the binaries
