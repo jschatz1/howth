@@ -31,7 +31,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             archive: tar.gz
-            cross: true
+            use_cross: true
           - target: aarch64-apple-darwin
             runner: macos-latest
             archive: tar.gz
@@ -63,23 +63,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-release-
 
-      - name: Install cross (for cross-compilation)
-        if: matrix.cross && startsWith(matrix.target, 'aarch64-unknown-linux')
+      - name: Install cross (for Linux ARM64 cross-compilation)
+        if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build release
-        run: |
-          if [[ "${{ matrix.cross }}" == "true" && "${{ matrix.target }}" == aarch64-unknown-linux* ]]; then
-            cross build --release --workspace --target ${{ matrix.target }}
-          elif [[ "${{ matrix.cross }}" == "true" ]]; then
-            cargo build --release --workspace --target ${{ matrix.target }}
-          else
-            cargo build --release --workspace
-          fi
-        shell: bash
+      - name: Build release (cross)
+        if: matrix.use_cross
+        run: cross build --release --workspace --target ${{ matrix.target }}
+
+      - name: Build release (cargo with target)
+        if: matrix.cross && !matrix.use_cross
+        run: cargo build --release --workspace --target ${{ matrix.target }}
+
+      - name: Build release (native)
+        if: ${{ !matrix.cross && !matrix.use_cross }}
+        run: cargo build --release --workspace
 
       - name: Smoke test
-        if: ${{ !matrix.cross }}
+        if: ${{ !matrix.cross && !matrix.use_cross }}
         run: cargo run -p fastnode-cli --release -- --version
 
       - name: Package (Unix)
@@ -87,7 +88,11 @@ jobs:
         shell: bash
         run: |
           ARCHIVE_NAME="howth-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
-          RELEASE_DIR="${{ matrix.cross && format('target/{0}/release', matrix.target) || 'target/release' }}"
+          if [[ "${{ matrix.cross }}" == "true" || "${{ matrix.use_cross }}" == "true" ]]; then
+            RELEASE_DIR="target/${{ matrix.target }}/release"
+          else
+            RELEASE_DIR="target/release"
+          fi
           mkdir -p "${ARCHIVE_NAME}"
           cp "${RELEASE_DIR}/howth" "${ARCHIVE_NAME}/"
           cp "${RELEASE_DIR}/fastnode" "${ARCHIVE_NAME}/"
