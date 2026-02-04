@@ -14102,6 +14102,84 @@
         },
       };
     },
+
+    /**
+     * SPSC Ring Buffer HTTP server - maximum performance via lock-free queues.
+     *
+     * Uses dual-thread pipelining:
+     * - Thread 1 (Hyper): Accepts connections, pushes to request queue
+     * - Thread 2 (V8): Blocking sync op pops from queue, processes, responds
+     *
+     * No async machinery on hot path - just memcpy and atomic increments.
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {Function} handler - Request handler function (req) => response
+     */
+    async serveSpsc(options, handler) {
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+
+      const result = await ops.op_howth_http_serve_spsc(port, hostname);
+      let running = true;
+
+      console.log(`SPSC server listening on http://${result.hostname}:${result.port}`);
+      console.log("(Using lock-free ring buffers for maximum performance)");
+
+      // Blocking poll loop - no async on hot path!
+      const loop = () => {
+        while (running) {
+          // Blocking sync op - spins then parks
+          const request = ops.op_howth_http_wait_spsc();
+
+          if (!request) {
+            // No request, op already parked/timed out, try again
+            continue;
+          }
+
+          const [requestId, method, url] = request;
+
+          const req = {
+            method,
+            url,
+            // Body/headers not supported in SPSC mode for simplicity
+            body: "",
+            headers: {},
+          };
+
+          try {
+            const response = handler(req);
+
+            // Only sync handlers supported in SPSC mode
+            if (response && typeof response.then === 'function') {
+              // Async handler - wait for it (but this defeats the purpose)
+              response.then(res => {
+                ops.op_howth_http_respond_spsc(requestId, res.status || 200, res.body || "");
+              }).catch(() => {
+                ops.op_howth_http_respond_spsc(requestId, 500, "Internal Server Error");
+              });
+            } else {
+              ops.op_howth_http_respond_spsc(requestId, response.status || 200, response.body || "");
+            }
+          } catch (err) {
+            ops.op_howth_http_respond_spsc(requestId, 500, "Internal Server Error");
+          }
+        }
+      };
+
+      // Start the blocking loop (this will block the main thread!)
+      // In a real app, you'd want this to be the only thing running
+      setTimeout(loop, 0);
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+        close() {
+          running = false;
+        },
+      };
+    },
   };
 
   globalThis.Howth = Howth;

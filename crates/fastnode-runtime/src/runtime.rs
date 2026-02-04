@@ -233,6 +233,10 @@ extension!(
         op_howth_http_respond_with_headers,
         // HTTP server ops (LocalSet - same thread via join!)
         op_howth_http_serve_local,
+        // HTTP server ops (SPSC - lock-free ring buffers)
+        op_howth_http_serve_spsc,
+        op_howth_http_wait_spsc,
+        op_howth_http_respond_spsc,
         // TCP client ops
         op_howth_tcp_connect,
         op_howth_tcp_read,
@@ -3410,6 +3414,352 @@ async fn http_serve_fast_impl(
 
 // Note: Local server now uses the same ops as serveBatch (op_howth_http_wait_batch_with_info, etc.)
 // The difference is that with --local flag, the Hyper loop runs on the same thread via join!
+
+// ── SPSC Ring Buffer HTTP Server ───────────────────────────────────────────
+//
+// This implementation uses lock-free SPSC ring buffers to eliminate async channel overhead:
+// - Thread 1 (Hyper): Accepts connections, pushes to request queue, drains response queue
+// - Thread 2 (V8): Blocking sync op pops from request queue, pushes to response queue
+// - Signaling via std::thread::park/unpark (much cheaper than Tokio wakers)
+
+use crossbeam_queue::ArrayQueue;
+
+/// Fixed-size request entry for the ring buffer (avoids allocation)
+#[derive(Clone)]
+struct SpscRequestEntry {
+    req_id: u32,
+    method: u8,  // 0=GET, 1=POST, 2=PUT, 3=DELETE, etc.
+    url_len: u16,
+    url_bytes: [u8; 256],
+    body_len: u32,
+    body_bytes: [u8; 4096],
+}
+
+impl Default for SpscRequestEntry {
+    fn default() -> Self {
+        Self {
+            req_id: 0,
+            method: 0,
+            url_len: 0,
+            url_bytes: [0; 256],
+            body_len: 0,
+            body_bytes: [0; 4096],
+        }
+    }
+}
+
+impl SpscRequestEntry {
+    fn method_str(&self) -> &'static str {
+        match self.method {
+            0 => "GET",
+            1 => "POST",
+            2 => "PUT",
+            3 => "DELETE",
+            4 => "PATCH",
+            5 => "HEAD",
+            6 => "OPTIONS",
+            _ => "GET",
+        }
+    }
+
+    fn method_from_str(s: &str) -> u8 {
+        match s {
+            "GET" => 0,
+            "POST" => 1,
+            "PUT" => 2,
+            "DELETE" => 3,
+            "PATCH" => 4,
+            "HEAD" => 5,
+            "OPTIONS" => 6,
+            _ => 0,
+        }
+    }
+
+    fn url(&self) -> &str {
+        std::str::from_utf8(&self.url_bytes[..self.url_len as usize]).unwrap_or("/")
+    }
+
+    fn body(&self) -> &[u8] {
+        &self.body_bytes[..self.body_len as usize]
+    }
+}
+
+/// Fixed-size response entry for the ring buffer
+#[derive(Clone)]
+struct SpscResponseEntry {
+    req_id: u32,
+    status: u16,
+    body_len: u32,
+    body_bytes: [u8; 4096],
+}
+
+impl Default for SpscResponseEntry {
+    fn default() -> Self {
+        Self {
+            req_id: 0,
+            status: 200,
+            body_len: 0,
+            body_bytes: [0; 4096],
+        }
+    }
+}
+
+/// Response channel using crossbeam (lower overhead than tokio channels)
+type ResponseChannel = crossbeam_channel::Sender<SpscResponseEntry>;
+
+/// Global SPSC server state
+struct SpscServerState {
+    /// Request queue: Hyper pushes, V8 pops
+    request_queue: Arc<ArrayQueue<SpscRequestEntry>>,
+    /// Response channels: keyed by request ID, crossbeam for low overhead
+    response_channels: Arc<dashmap::DashMap<u32, ResponseChannel>>,
+    /// V8 thread handle for unparking
+    v8_thread: Option<std::thread::Thread>,
+    /// Server info
+    port: u16,
+    hostname: String,
+    /// Shutdown flag
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+static SPSC_SERVER: std::sync::OnceLock<std::sync::Mutex<Option<SpscServerState>>> =
+    std::sync::OnceLock::new();
+
+fn get_spsc_server() -> &'static std::sync::Mutex<Option<SpscServerState>> {
+    SPSC_SERVER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Start SPSC HTTP server - uses lock-free ring buffers instead of async channels
+#[op2(async)]
+#[serde]
+async fn op_howth_http_serve_spsc(
+    port: u16,
+    #[string] hostname: String,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use http_body_util::{BodyExt, Full};
+    use bytes::Bytes;
+
+    let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
+
+    // Create ring buffer for requests (capacity 1024 entries)
+    let request_queue: Arc<ArrayQueue<SpscRequestEntry>> = Arc::new(ArrayQueue::new(1024));
+    // Response channels using crossbeam (lower overhead than tokio)
+    let response_channels: Arc<dashmap::DashMap<u32, ResponseChannel>> = Arc::new(dashmap::DashMap::new());
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Store V8 thread handle for unparking
+    let v8_thread = std::thread::current();
+
+    // Bind listener synchronously so we can get the port before spawning the thread
+    let std_listener = std::net::TcpListener::bind(addr)?;
+    std_listener.set_nonblocking(true)?;
+    let local_addr = std_listener.local_addr()?;
+
+    // Clone for the Hyper thread
+    let req_queue = request_queue.clone();
+    let resp_channels = response_channels.clone();
+    let shutdown_clone = shutdown.clone();
+
+    // Spawn Hyper on a separate OS thread with its own Tokio runtime
+    let hyper_handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async move {
+            // Convert std listener to tokio listener (inside this thread's runtime!)
+            let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+
+            // Accept loop
+            loop {
+                if shutdown_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let (stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                let _ = stream.set_nodelay(true);
+                let io = TokioIo::new(stream);
+
+                let req_queue = req_queue.clone();
+                let resp_channels = resp_channels.clone();
+                let v8_thread = v8_thread.clone();
+
+                tokio::spawn(async move {
+                    let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let req_queue = req_queue.clone();
+                        let resp_channels = resp_channels.clone();
+                        let v8_thread = v8_thread.clone();
+
+                        async move {
+                            let req_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                            // Build request entry
+                            let mut entry = SpscRequestEntry::default();
+                            entry.req_id = req_id;
+                            entry.method = SpscRequestEntry::method_from_str(req.method().as_str());
+
+                            let uri = req.uri().to_string();
+                            let uri_bytes = uri.as_bytes();
+                            entry.url_len = std::cmp::min(uri_bytes.len(), 256) as u16;
+                            entry.url_bytes[..entry.url_len as usize]
+                                .copy_from_slice(&uri_bytes[..entry.url_len as usize]);
+
+                            // Read body
+                            let body = match req.collect().await {
+                                Ok(collected) => collected.to_bytes(),
+                                Err(_) => Bytes::new(),
+                            };
+                            entry.body_len = std::cmp::min(body.len(), 4096) as u32;
+                            entry.body_bytes[..entry.body_len as usize]
+                                .copy_from_slice(&body[..entry.body_len as usize]);
+
+                            // Create crossbeam channel for response (bounded, capacity 1)
+                            let (tx, rx) = crossbeam_channel::bounded::<SpscResponseEntry>(1);
+                            resp_channels.insert(req_id, tx);
+
+                            // Push to request queue
+                            while req_queue.push(entry.clone()).is_err() {
+                                // Queue full, yield and retry
+                                tokio::task::yield_now().await;
+                            }
+
+                            // Unpark V8 thread to process request
+                            v8_thread.unpark();
+
+                            // Block on crossbeam channel (run in blocking task pool!)
+                            let resp = tokio::task::spawn_blocking(move || {
+                                rx.recv()
+                            }).await;
+
+                            // Clean up
+                            resp_channels.remove(&req_id);
+
+                            match resp {
+                                Ok(Ok(resp)) => {
+                                    let status = hyper::StatusCode::from_u16(resp.status)
+                                        .unwrap_or(hyper::StatusCode::OK);
+                                    let body_bytes = &resp.body_bytes[..resp.body_len as usize];
+
+                                    hyper::Response::builder()
+                                        .status(status)
+                                        .body(Full::new(Bytes::copy_from_slice(body_bytes)))
+                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                }
+                                _ => {
+                                    hyper::Response::builder()
+                                        .status(500)
+                                        .body(Full::new(Bytes::from("Internal Server Error")))
+                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                }
+                            }
+                        }
+                    });
+
+                    let _ = http1::Builder::new()
+                        .keep_alive(true)
+                        .serve_connection(io, service)
+                        .await;
+                });
+            }
+        });
+    });
+
+    // Store server state
+    let _ = hyper_handle; // Keep thread alive
+    if let Ok(mut server) = get_spsc_server().lock() {
+        *server = Some(SpscServerState {
+            request_queue,
+            response_channels,
+            v8_thread: Some(std::thread::current()),
+            port: local_addr.port(),
+            hostname: local_addr.ip().to_string(),
+            shutdown,
+        });
+    }
+
+    Ok(serde_json::json!({
+        "port": local_addr.port(),
+        "hostname": local_addr.ip().to_string(),
+    }))
+}
+
+/// Blocking sync op to wait for next request from SPSC queue
+/// This spins briefly then parks the thread if no request is available
+#[op2]
+#[serde]
+fn op_howth_http_wait_spsc() -> Option<(u32, String, String)> {
+    let server = get_spsc_server().lock().ok()?;
+    let state = server.as_ref()?;
+
+    // Spin for a bit before parking
+    for _ in 0..100 {
+        if let Some(entry) = state.request_queue.pop() {
+            return Some((
+                entry.req_id,
+                entry.method_str().to_string(),
+                entry.url().to_string(),
+            ));
+        }
+        std::hint::spin_loop();
+    }
+
+    // Park and wait for unpark from Hyper
+    drop(server); // Release lock before parking!
+    std::thread::park_timeout(std::time::Duration::from_millis(10));
+
+    // Try again after wake
+    let server = get_spsc_server().lock().ok()?;
+    let state = server.as_ref()?;
+
+    if let Some(entry) = state.request_queue.pop() {
+        Some((
+            entry.req_id,
+            entry.method_str().to_string(),
+            entry.url().to_string(),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Sync op to send response via crossbeam channel
+#[op2(fast)]
+fn op_howth_http_respond_spsc(
+    req_id: u32,
+    status: u16,
+    #[string] body: &str,
+) {
+    if let Ok(server) = get_spsc_server().lock() {
+        if let Some(state) = server.as_ref() {
+            // Look up the response channel for this request
+            if let Some(channel_entry) = state.response_channels.get(&req_id) {
+                let tx = channel_entry.value().clone();
+                drop(channel_entry); // Release DashMap lock early
+
+                // Build response entry
+                let mut entry = SpscResponseEntry::default();
+                entry.req_id = req_id;
+                entry.status = status;
+
+                let body_bytes = body.as_bytes();
+                entry.body_len = std::cmp::min(body_bytes.len(), 4096) as u32;
+                entry.body_bytes[..entry.body_len as usize]
+                    .copy_from_slice(&body_bytes[..entry.body_len as usize]);
+
+                // Send response via crossbeam channel
+                let _ = tx.send(entry);
+            }
+        }
+    }
+}
 
 // ── TCP Client implementation ──────────────────────────────────────────────
 
