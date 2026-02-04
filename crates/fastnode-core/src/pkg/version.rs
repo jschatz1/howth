@@ -201,7 +201,7 @@ fn convert_space_separated_comparators(range: &str) -> String {
     let mut current_token = String::new();
     let mut need_comma = false;
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         match c {
             ' ' => {
                 // End of current token
@@ -269,13 +269,13 @@ fn convert_x_range(range: &str) -> String {
     let parts: Vec<&str> = range.split('.').collect();
 
     match parts.as_slice() {
-        [major, "x" | "X"] | [major, "*"] => {
+        [major, "x" | "X" | "*"] => {
             // "1.x" -> ">=1.0.0, <2.0.0"
             if let Ok(m) = major.parse::<u64>() {
                 return format!(">={m}.0.0, <{}.0.0", m + 1);
             }
         }
-        [major, minor, "x" | "X"] | [major, minor, "*"] => {
+        [major, minor, "x" | "X" | "*"] => {
             // "1.2.x" -> ">=1.2.0, <1.3.0"
             if let (Ok(m), Ok(n)) = (major.parse::<u64>(), minor.parse::<u64>()) {
                 return format!(">={m}.{n}.0, <{m}.{}.0", n + 1);

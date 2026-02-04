@@ -12,24 +12,21 @@ pub fn run(cwd: &Path, json: bool) -> Result<()> {
     let root = find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
 
     // Detect workspaces
-    let config = match detect_workspaces(&root) {
-        Some(c) => c,
-        None => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "ok": true,
-                        "workspaces": false,
-                        "packages": []
-                    })
-                );
-            } else {
-                println!("No workspaces configured.");
-                println!("hint: Add a \"workspaces\" field to package.json");
-            }
-            return Ok(());
+    let config = if let Some(c) = detect_workspaces(&root) { c } else {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "workspaces": false,
+                    "packages": []
+                })
+            );
+        } else {
+            println!("No workspaces configured.");
+            println!("hint: Add a \"workspaces\" field to package.json");
         }
+        return Ok(());
     };
 
     // Collect and sort packages
@@ -74,25 +71,22 @@ pub fn run(cwd: &Path, json: bool) -> Result<()> {
 pub fn link(cwd: &Path, json: bool) -> Result<()> {
     let root = find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
 
-    let config = match detect_workspaces(&root) {
-        Some(c) => c,
-        None => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "ok": false,
-                        "error": {
-                            "code": "NO_WORKSPACES",
-                            "message": "No workspaces configured"
-                        }
-                    })
-                );
-            } else {
-                eprintln!("error: No workspaces configured");
-            }
-            std::process::exit(1);
+    let config = if let Some(c) = detect_workspaces(&root) { c } else {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "error": {
+                        "code": "NO_WORKSPACES",
+                        "message": "No workspaces configured"
+                    }
+                })
+            );
+        } else {
+            eprintln!("error: No workspaces configured");
         }
+        std::process::exit(1);
     };
 
     match link_workspace_packages(cwd, &config) {

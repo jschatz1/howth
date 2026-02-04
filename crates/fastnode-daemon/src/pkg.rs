@@ -421,7 +421,7 @@ pub async fn handle_pkg_update(
             .and_then(|lf| lf.dependencies.get(&name))
             .and_then(|dep| {
                 // Parse version from resolved like "package@1.0.0"
-                dep.resolved.split('@').last().map(|s| s.to_string())
+                dep.resolved.split('@').next_back().map(|s| s.to_string())
             });
 
         // Fetch packument to check for updates
@@ -586,7 +586,7 @@ pub async fn handle_pkg_outdated(cwd: &str, channel: &str) -> Response {
         let current_version = lockfile
             .as_ref()
             .and_then(|lf| lf.dependencies.get(&name))
-            .and_then(|dep| dep.resolved.split('@').last().map(|s| s.to_string()));
+            .and_then(|dep| dep.resolved.split('@').next_back().map(|s| s.to_string()));
 
         let current = current_version.unwrap_or_else(|| "none".to_string());
 
@@ -753,17 +753,13 @@ pub async fn handle_pkg_publish(
             if output.status.success() {
                 // Try to parse npm pack output for file count/size (best effort)
                 let files_count = stdout
-                    .lines()
-                    .filter(|l| l.contains("files:"))
-                    .next()
+                    .lines().find(|l| l.contains("files:"))
                     .and_then(|l| l.split_whitespace().last())
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0u32);
 
                 let tarball_size = stdout
-                    .lines()
-                    .filter(|l| l.contains("size:") || l.contains("unpacked size"))
-                    .next()
+                    .lines().find(|l| l.contains("size:") || l.contains("unpacked size"))
                     .and_then(|l| {
                         l.split_whitespace()
                             .find(|s| s.chars().all(|c| c.is_ascii_digit()))
@@ -1007,7 +1003,7 @@ pub async fn handle_pkg_install_with_progress(
                     pj_ranges.iter().any(|(name, range)| {
                         lf_ranges
                             .get(name)
-                            .map_or(true, |lf_range| range.as_str() != *lf_range)
+                            .is_none_or(|lf_range| range.as_str() != *lf_range)
                     })
                 }
             }

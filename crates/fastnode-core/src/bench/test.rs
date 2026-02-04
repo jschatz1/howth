@@ -228,14 +228,14 @@ fn start_bench_daemon(warnings: &mut Vec<BenchWarning>) -> Option<BenchDaemonCtx
 
     // Wait for daemon to be ready (poll with ping)
     let ready = wait_for_daemon_ready(&endpoint);
-    if !ready {
+    if ready {
+        eprintln!("  Daemon ready.");
+    } else {
         warnings.push(BenchWarning::warn(
             "DAEMON_NOT_READY",
             "Daemon did not become ready; howth bench will use fallback path",
         ));
         // Don't return None — we still have the child to clean up
-    } else {
-        eprintln!("  Daemon ready.");
     }
 
     Some(BenchDaemonCtx { child, endpoint })
@@ -314,13 +314,12 @@ fn bench_node(
     // Collect .test.mjs files
     let test_files: Vec<String> = fs::read_dir(project_dir)
         .ok()?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.path()
                 .file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.ends_with(".test.mjs"))
-                .unwrap_or(false)
+                .is_some_and(|n| n.ends_with(".test.mjs"))
         })
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
@@ -334,7 +333,7 @@ fn bench_node(
     }
 
     let mut args: Vec<&str> = vec!["--test"];
-    let file_refs: Vec<&str> = test_files.iter().map(|s| s.as_str()).collect();
+    let file_refs: Vec<&str> = test_files.iter().map(std::string::String::as_str).collect();
     args.extend(file_refs);
 
     run_bench_iterations(
@@ -624,7 +623,7 @@ fn generate_test_case_bun(file_index: u32, test_index: u32) -> (String, String) 
             let a = seed + 1;
             let b = seed + 2;
             (
-                format!("adds {} + {} correctly", a, b),
+                format!("adds {a} + {b} correctly"),
                 format!(
                     "    const result = {} + {};\n    expect(result).toBe({});\n",
                     a,
@@ -637,14 +636,13 @@ fn generate_test_case_bun(file_index: u32, test_index: u32) -> (String, String) 
             let vals: Vec<u32> = (0..5).map(|i| (seed + i) * 3).collect();
             let sorted = {
                 let mut v = vals.clone();
-                v.sort();
+                v.sort_unstable();
                 v
             };
             (
                 format!("sorts array starting at {}", vals[0]),
                 format!(
-                    "    const arr = {:?};\n    arr.sort((a, b) => a - b);\n    expect(arr).toEqual({:?});\n",
-                    vals, sorted
+                    "    const arr = {vals:?};\n    arr.sort((a, b) => a - b);\n    expect(arr).toEqual({sorted:?});\n"
                 ),
             )
         }
@@ -656,7 +654,7 @@ fn generate_test_case_bun(file_index: u32, test_index: u32) -> (String, String) 
                 _ => "testing",
             };
             (
-                format!("converts {} to uppercase", word),
+                format!("converts {word} to uppercase"),
                 format!(
                     "    const str = \"{}\";\n    expect(str.toUpperCase()).toBe(\"{}\");\n",
                     word,
@@ -667,7 +665,7 @@ fn generate_test_case_bun(file_index: u32, test_index: u32) -> (String, String) 
         3 => {
             let len = (seed % 10) + 3;
             (
-                format!("creates array of length {}", len),
+                format!("creates array of length {len}"),
                 format!(
                     "    const arr = Array.from({{ length: {} }}, (_, i) => i);\n    expect(arr.length).toBe({});\n    expect(arr[0]).toBe(0);\n    expect(arr[arr.length - 1]).toBe({});\n",
                     len, len, len - 1
@@ -675,20 +673,19 @@ fn generate_test_case_bun(file_index: u32, test_index: u32) -> (String, String) 
             )
         }
         4 => {
-            let key = format!("key_{}", seed);
+            let key = format!("key_{seed}");
             let val = seed * 7;
             (
-                format!("handles object property {}", key),
+                format!("handles object property {key}"),
                 format!(
-                    "    const obj = {{ \"{}\": {} }};\n    expect(obj[\"{}\"]).toBe({});\n    expect(Object.hasOwn(obj, \"{}\")).toBe(true);\n",
-                    key, val, key, val, key
+                    "    const obj = {{ \"{key}\": {val} }};\n    expect(obj[\"{key}\"]).toBe({val});\n    expect(Object.hasOwn(obj, \"{key}\")).toBe(true);\n"
                 ),
             )
         }
         _ => {
-            let input = format!("test-string-{}", seed);
+            let input = format!("test-string-{seed}");
             (
-                format!("checks string includes {}", seed),
+                format!("checks string includes {seed}"),
                 format!(
                     "    const str = \"{}\";\n    expect(str.includes(\"{}\")).toBe(true);\n    expect(str.length).toBe({});\n",
                     input, seed, input.len()
@@ -707,7 +704,7 @@ fn generate_test_case(file_index: u32, test_index: u32) -> (String, String) {
             let a = seed + 1;
             let b = seed + 2;
             (
-                format!("adds {} + {} correctly", a, b),
+                format!("adds {a} + {b} correctly"),
                 format!(
                     "    const result = {} + {};\n    assert.strictEqual(result, {});\n",
                     a,
@@ -720,14 +717,13 @@ fn generate_test_case(file_index: u32, test_index: u32) -> (String, String) {
             let vals: Vec<u32> = (0..5).map(|i| (seed + i) * 3).collect();
             let sorted = {
                 let mut v = vals.clone();
-                v.sort();
+                v.sort_unstable();
                 v
             };
             (
                 format!("sorts array starting at {}", vals[0]),
                 format!(
-                    "    const arr = {:?};\n    arr.sort((a, b) => a - b);\n    assert.deepStrictEqual(arr, {:?});\n",
-                    vals, sorted
+                    "    const arr = {vals:?};\n    arr.sort((a, b) => a - b);\n    assert.deepStrictEqual(arr, {sorted:?});\n"
                 ),
             )
         }
@@ -739,7 +735,7 @@ fn generate_test_case(file_index: u32, test_index: u32) -> (String, String) {
                 _ => "testing",
             };
             (
-                format!("converts {} to uppercase", word),
+                format!("converts {word} to uppercase"),
                 format!(
                     "    const str = \"{}\";\n    assert.strictEqual(str.toUpperCase(), \"{}\");\n",
                     word,
@@ -750,7 +746,7 @@ fn generate_test_case(file_index: u32, test_index: u32) -> (String, String) {
         3 => {
             let len = (seed % 10) + 3;
             (
-                format!("creates array of length {}", len),
+                format!("creates array of length {len}"),
                 format!(
                     "    const arr = Array.from({{ length: {} }}, (_, i) => i);\n    assert.strictEqual(arr.length, {});\n    assert.strictEqual(arr[0], 0);\n    assert.strictEqual(arr[arr.length - 1], {});\n",
                     len, len, len - 1
@@ -758,20 +754,19 @@ fn generate_test_case(file_index: u32, test_index: u32) -> (String, String) {
             )
         }
         4 => {
-            let key = format!("key_{}", seed);
+            let key = format!("key_{seed}");
             let val = seed * 7;
             (
-                format!("handles object property {}", key),
+                format!("handles object property {key}"),
                 format!(
-                    "    const obj = {{ \"{}\": {} }};\n    assert.strictEqual(obj[\"{}\"], {});\n    assert.ok(Object.hasOwn(obj, \"{}\"));\n",
-                    key, val, key, val, key
+                    "    const obj = {{ \"{key}\": {val} }};\n    assert.strictEqual(obj[\"{key}\"], {val});\n    assert.ok(Object.hasOwn(obj, \"{key}\"));\n"
                 ),
             )
         }
         _ => {
-            let input = format!("test-string-{}", seed);
+            let input = format!("test-string-{seed}");
             (
-                format!("checks string includes {}", seed),
+                format!("checks string includes {seed}"),
                 format!(
                     "    const str = \"{}\";\n    assert.ok(str.includes(\"{}\"));\n    assert.strictEqual(str.length, {});\n",
                     input, seed, input.len()
@@ -815,7 +810,7 @@ fn tool_available(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Recursively copy directory contents (skips node_modules).
+/// Recursively copy directory contents (skips `node_modules`).
 fn copy_dir_contents(src: &Path, dst: &Path) {
     fs::create_dir_all(dst).expect("Failed to create destination directory");
     for entry in fs::read_dir(src).expect("Failed to read source directory") {

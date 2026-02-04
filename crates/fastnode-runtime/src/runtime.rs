@@ -333,7 +333,7 @@ fn op_howth_fs_readdir(#[string] path: &str) -> Result<Vec<DirEntry>, deno_core:
         .map_err(|e| format_fs_error(e, "scandir", path))?
         .filter_map(|entry| entry.ok())
         .collect();
-    raw_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    raw_entries.sort_by_key(|a| a.file_name());
     let entries = raw_entries
         .into_iter()
         .map(|entry| {
@@ -524,7 +524,7 @@ fn op_howth_fs_append(
 #[op2]
 #[string]
 fn op_howth_fs_read_bytes(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
-    use deno_core::serde_json::json;
+    
     let bytes = std::fs::read(path)?;
     // Return as base64 for efficient transfer
     Ok(base64_encode(&bytes))
@@ -564,7 +564,7 @@ fn op_howth_fs_readlink(#[string] path: &str) -> Result<String, deno_core::error
 fn op_howth_fs_symlink(
     #[string] target: &str,
     #[string] path: &str,
-    #[string] link_type: &str,
+    #[string] _link_type: &str,
 ) -> Result<(), deno_core::error::AnyError> {
     #[cfg(unix)]
     {
@@ -654,11 +654,10 @@ fn op_howth_fs_access(#[string] path: &str, mode: u32) -> Result<(), deno_core::
     }
 
     // Check write access (mode & 2)
-    if mode & 2 != 0 {
-        if metadata.permissions().readonly() {
+    if mode & 2 != 0
+        && metadata.permissions().readonly() {
             return Err(deno_core::error::AnyError::msg("EACCES: permission denied"));
         }
-    }
 
     Ok(())
 }
@@ -1103,7 +1102,7 @@ static NEXT_WORKER_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Thread-local storage for worker context (set when running as a worker)
 thread_local! {
-    static WORKER_CONTEXT: RefCell<Option<WorkerContext>> = RefCell::new(None);
+    static WORKER_CONTEXT: RefCell<Option<WorkerContext>> = const { RefCell::new(None) };
 }
 
 struct WorkerContext {
@@ -1250,7 +1249,7 @@ fn run_worker_script(
         runtime.execute_script("<howth:bootstrap>", bootstrap_code)?;
 
         // Read and execute the worker script
-        let script_content = std::fs::read_to_string(filename)?;
+        let _script_content = std::fs::read_to_string(filename)?;
         let specifier = ModuleSpecifier::from_file_path(filename)
             .map_err(|_| deno_core::error::AnyError::msg("Invalid file path"))?;
 
@@ -1932,7 +1931,7 @@ fn op_howth_http_listen(
 
             let io = TokioIo::new(stream);
             let tx = request_tx.clone();
-            let shutdown_conn = shutdown_clone.clone();
+            let _shutdown_conn = shutdown_clone.clone();
 
             // Spawn a task for each connection
             tokio::spawn(async move {
@@ -2050,14 +2049,14 @@ fn op_howth_http_listen(
                                 let body = response.body.unwrap_or_default();
                                 builder
                                     .body(Full::new(Bytes::from(body)))
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                    .map_err(|e| std::io::Error::other(e))
                             }
                             Err(_) => {
                                 // JS didn't respond, return 500
                                 hyper::Response::builder()
                                     .status(500)
                                     .body(Full::new(Bytes::from("Internal Server Error")))
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                    .map_err(|e| std::io::Error::other(e))
                             }
                         }
                     }
@@ -2507,7 +2506,7 @@ async fn op_howth_http_serve_fast(
 
             let io = TokioIo::new(stream);
             let tx = request_tx.clone();
-            let shutdown_conn = shutdown_clone.clone();
+            let _shutdown_conn = shutdown_clone.clone();
 
             tokio::spawn(async move {
                 let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
@@ -2626,7 +2625,7 @@ async fn op_howth_http_serve_fast(
                                     body_total.fetch_add(body_time, Ordering::Relaxed);
                                     js_total.fetch_add(js_time, Ordering::Relaxed);
 
-                                    if c % 50000 == 0 {
+                                    if c.is_multiple_of(50000) {
                                         let avg_e2e = total.load(Ordering::Relaxed) / c;
                                         let avg_parse = parse_total.load(Ordering::Relaxed) / c;
                                         let avg_body = body_total.load(Ordering::Relaxed) / c;
@@ -2649,12 +2648,12 @@ async fn op_howth_http_serve_fast(
 
                                 builder
                                     .body(Full::new(response.body))
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                    .map_err(|e| std::io::Error::other(e))
                             }
                             Err(_) => hyper::Response::builder()
                                 .status(500)
                                 .body(Full::new(Bytes::from("Internal Server Error")))
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                                .map_err(|e| std::io::Error::other(e)),
                         }
                     }
                 });
@@ -3155,8 +3154,8 @@ fn respond_fast_impl(
                 status,
                 headers: None,
                 body: body
-                    .map(|b| bytes::Bytes::from(b))
-                    .unwrap_or_else(bytes::Bytes::new),
+                    .map(bytes::Bytes::from)
+                    .unwrap_or_default(),
             };
             // oneshot send is synchronous - just transfers ownership
             let _ = req.response_tx.send(response);
@@ -3231,8 +3230,8 @@ async fn op_howth_http_respond_with_headers(
                 status,
                 headers,
                 body: body
-                    .map(|b| bytes::Bytes::from(b))
-                    .unwrap_or_else(bytes::Bytes::new),
+                    .map(bytes::Bytes::from)
+                    .unwrap_or_default(),
             };
             let _ = req.response_tx.send(response);
             Ok(())
@@ -3251,9 +3250,9 @@ async fn op_howth_http_respond_with_headers(
 //
 // Requirements: Must run within a tokio::task::LocalSet context.
 
-use std::collections::VecDeque;
 
 /// Thread-local state for the local HTTP server
+#[derive(Default)]
 struct LocalServerState {
     /// TCP listener (stored here so CLI can retrieve and run with join!)
     listener: Option<tokio::net::TcpListener>,
@@ -3268,18 +3267,6 @@ struct LocalServerState {
     hostname: String,
 }
 
-impl Default for LocalServerState {
-    fn default() -> Self {
-        Self {
-            listener: None,
-            request_tx: None,
-            shutdown: None,
-            server_id: 0,
-            port: 0,
-            hostname: String::new(),
-        }
-    }
-}
 
 thread_local! {
     static LOCAL_SERVER_STATE: RefCell<LocalServerState> = RefCell::new(LocalServerState::default());
@@ -3486,12 +3473,12 @@ pub fn create_local_server_future() -> Option<impl std::future::Future<Output = 
 
                                 builder
                                     .body(Full::new(response.body))
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                    .map_err(|e| std::io::Error::other(e))
                             }
                             Err(_) => hyper::Response::builder()
                                 .status(500)
                                 .body(Full::new(Bytes::from("Internal Server Error")))
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                                .map_err(|e| std::io::Error::other(e)),
                         }
                     }
                 });
@@ -3550,7 +3537,7 @@ async fn http_serve_fast_impl(
                     let tx = tx.clone();
                     async move {
                         let trace = is_trace_enabled();
-                        let start = if trace {
+                        let _start = if trace {
                             Some(std::time::Instant::now())
                         } else {
                             None
@@ -3569,7 +3556,7 @@ async fn http_serve_fast_impl(
                             })
                             .collect();
 
-                        let after_parse = if trace {
+                        let _after_parse = if trace {
                             Some(std::time::Instant::now())
                         } else {
                             None
@@ -3580,7 +3567,7 @@ async fn http_serve_fast_impl(
                             Err(_) => Bytes::new(),
                         };
 
-                        let after_body = if trace {
+                        let _after_body = if trace {
                             Some(std::time::Instant::now())
                         } else {
                             None
@@ -3626,12 +3613,12 @@ async fn http_serve_fast_impl(
 
                                 builder
                                     .body(Full::new(response.body))
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                    .map_err(|e| std::io::Error::other(e))
                             }
                             Err(_) => hyper::Response::builder()
                                 .status(500)
                                 .body(Full::new(Bytes::from("Internal Server Error")))
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                                .map_err(|e| std::io::Error::other(e)),
                         }
                     }
                 });
@@ -3900,13 +3887,13 @@ async fn op_howth_http_serve_spsc(
                                         .status(status)
                                         .body(Full::new(Bytes::copy_from_slice(body_bytes)))
                                         .map_err(|e| {
-                                            std::io::Error::new(std::io::ErrorKind::Other, e)
+                                            std::io::Error::other(e)
                                         })
                                 }
                                 _ => hyper::Response::builder()
                                     .status(500)
                                     .body(Full::new(Bytes::from("Internal Server Error")))
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                                    .map_err(|e| std::io::Error::other(e)),
                             }
                         }
                     });
@@ -3967,15 +3954,11 @@ fn op_howth_http_wait_spsc() -> Option<(u32, String, String)> {
     let server = get_spsc_server().lock().ok()?;
     let state = server.as_ref()?;
 
-    if let Some(entry) = state.request_queue.pop() {
-        Some((
+    state.request_queue.pop().map(|entry| (
             entry.req_id,
             entry.method_str().to_string(),
             entry.url().to_string(),
         ))
-    } else {
-        None
-    }
 }
 
 /// Sync op to send response via crossbeam channel
@@ -4579,7 +4562,7 @@ fn op_howth_pbkdf2(
 
     let dk_len = key_length as usize;
     let mut dk = vec![0u8; dk_len];
-    let num_blocks = (dk_len + hash_len - 1) / hash_len;
+    let num_blocks = dk_len.div_ceil(hash_len);
 
     for block_num in 1..=num_blocks {
         // U_1 = PRF(password, salt || INT_32_BE(i))
@@ -4648,25 +4631,23 @@ fn op_howth_cipher(
                         })?;
                     Ok(pt)
                 }
+            } else if encrypt {
+                let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
+                    .map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                    })?
+                    .encrypt_padded_vec_mut::<Pkcs7>(data);
+                Ok(ct)
             } else {
-                if encrypt {
-                    let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
-                        .map_err(|e| {
-                            deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
-                        })?
-                        .encrypt_padded_vec_mut::<Pkcs7>(data);
-                    Ok(ct)
-                } else {
-                    let pt = cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
-                        .map_err(|e| {
-                            deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
-                        })?
-                        .decrypt_padded_vec_mut::<Pkcs7>(data)
-                        .map_err(|e| {
-                            deno_core::error::AnyError::msg(format!("Decryption error: {}", e))
-                        })?;
-                    Ok(pt)
-                }
+                let pt = cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
+                    .map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                    })?
+                    .decrypt_padded_vec_mut::<Pkcs7>(data)
+                    .map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("Decryption error: {}", e))
+                    })?;
+                Ok(pt)
             }
         }
         "aes-128-ctr" | "aes-256-ctr" => {

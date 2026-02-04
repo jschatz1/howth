@@ -59,6 +59,7 @@ const CONFIG_FILES: &[&str] = &[
 ];
 
 /// Find a config file in the given root directory.
+#[must_use] 
 pub fn find_config_file(root: &Path) -> Option<PathBuf> {
     for name in CONFIG_FILES {
         let path = root.join(name);
@@ -120,7 +121,7 @@ fn transpile_ts_config(source: &str, path: &Path) -> Result<String, String> {
 
     let output = backend
         .transpile(&spec, source)
-        .map_err(|e| format!("Failed to transpile config: {}", e))?;
+        .map_err(|e| format!("Failed to transpile config: {e}"))?;
 
     Ok(output.code)
 }
@@ -163,13 +164,13 @@ fn parse_config_object(source: &str) -> Result<HowthConfig, String> {
     if let Some(obj) = value.as_object() {
         // server
         if let Some(server) = obj.get("server").and_then(|v| v.as_object()) {
-            if let Some(port) = server.get("port").and_then(|v| v.as_u64()) {
+            if let Some(port) = server.get("port").and_then(serde_json::Value::as_u64) {
                 config.server.port = Some(port as u16);
             }
             if let Some(host) = server.get("host").and_then(|v| v.as_str()) {
                 config.server.host = Some(host.to_string());
             }
-            if let Some(open) = server.get("open").and_then(|v| v.as_bool()) {
+            if let Some(open) = server.get("open").and_then(serde_json::Value::as_bool) {
                 config.server.open = Some(open);
             }
         }
@@ -319,7 +320,7 @@ fn strip_comments(source: &str) -> String {
     result
 }
 
-/// Parse a JavaScript object literal into a serde_json::Value.
+/// Parse a JavaScript object literal into a `serde_json::Value`.
 ///
 /// Handles: unquoted keys, single-quoted strings, trailing commas,
 /// nested objects, arrays, numbers, booleans, null.
@@ -368,9 +369,9 @@ impl JsObjectParser {
         match self.peek() {
             Some('{') => self.parse_object(),
             Some('[') => self.parse_array(),
-            Some('"') | Some('\'') => self.parse_string(),
+            Some('"' | '\'') => self.parse_string(),
             Some(ch) if ch == '-' || ch.is_ascii_digit() => self.parse_number(),
-            Some('t') | Some('f') => self.parse_bool(),
+            Some('t' | 'f') => self.parse_bool(),
             Some('n') => self.parse_null(),
             Some(ch) => Err(format!(
                 "Unexpected character '{}' at position {}",
@@ -402,7 +403,7 @@ impl JsObjectParser {
             // Expect ':'
             match self.advance() {
                 Some(':') => {}
-                other => return Err(format!("Expected ':' after key, got {:?}", other)),
+                other => return Err(format!("Expected ':' after key, got {other:?}")),
             }
 
             // Parse value
@@ -417,7 +418,7 @@ impl JsObjectParser {
                 }
                 Some('}') => {} // will be handled at top of loop
                 None => return Err("Unterminated object".to_string()),
-                Some(ch) => return Err(format!("Expected ',' or '}}' in object, got '{}'", ch)),
+                Some(ch) => return Err(format!("Expected ',' or '}}' in object, got '{ch}'")),
             }
         }
     }
@@ -447,7 +448,7 @@ impl JsObjectParser {
                 }
                 Some(']') => {} // will be handled at top of loop
                 None => return Err("Unterminated array".to_string()),
-                Some(ch) => return Err(format!("Expected ',' or ']' in array, got '{}'", ch)),
+                Some(ch) => return Err(format!("Expected ',' or ']' in array, got '{ch}'")),
             }
         }
     }
@@ -455,7 +456,7 @@ impl JsObjectParser {
     fn parse_key(&mut self) -> Result<String, String> {
         self.skip_whitespace();
         match self.peek() {
-            Some('"') | Some('\'') => {
+            Some('"' | '\'') => {
                 if let serde_json::Value::String(s) = self.parse_string()? {
                     Ok(s)
                 } else {
@@ -475,7 +476,7 @@ impl JsObjectParser {
                 }
                 Ok(key)
             }
-            other => Err(format!("Expected object key, got {:?}", other)),
+            other => Err(format!("Expected object key, got {other:?}")),
         }
     }
 
@@ -532,12 +533,12 @@ impl JsObjectParser {
             num_str
                 .parse::<f64>()
                 .map(|n| serde_json::Value::Number(serde_json::Number::from_f64(n).unwrap()))
-                .map_err(|e| format!("Invalid number '{}': {}", num_str, e))
+                .map_err(|e| format!("Invalid number '{num_str}': {e}"))
         } else {
             num_str
                 .parse::<i64>()
                 .map(|n| serde_json::Value::Number(n.into()))
-                .map_err(|e| format!("Invalid number '{}': {}", num_str, e))
+                .map_err(|e| format!("Invalid number '{num_str}': {e}"))
         }
     }
 
@@ -575,6 +576,7 @@ impl JsObjectParser {
 /// like `@ → ./src` (matching Vite/howth alias behavior).
 ///
 /// Returns `None` if no tsconfig/jsconfig exists or has no paths configured.
+#[must_use] 
 pub fn load_tsconfig_paths(root: &Path) -> Option<HashMap<String, String>> {
     // Try tsconfig.json first, then jsconfig.json
     let tsconfig_path = root.join("tsconfig.json");
@@ -660,9 +662,9 @@ fn resolve_tsconfig_target(base_url: &str, target: &str) -> String {
     // Resolve relative to baseUrl
     let base = base_url.trim_end_matches('/');
     if base == "." || base == "./" {
-        format!("./{}", target)
+        format!("./{target}")
     } else {
-        format!("{}/{}", base, target)
+        format!("{base}/{target}")
     }
 }
 

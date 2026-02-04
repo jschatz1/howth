@@ -574,19 +574,17 @@ fn handle_response(
                     error: None,
                 };
                 println!("{}", serde_json::to_string_pretty(&result).unwrap());
+            } else if updated.is_empty() && up_to_date.is_empty() && errors.is_empty() {
+                println!("No dependencies to update.");
             } else {
-                if updated.is_empty() && up_to_date.is_empty() && errors.is_empty() {
-                    println!("No dependencies to update.");
-                } else {
-                    for pkg in &updated {
-                        println!("~ {} {} -> {}", pkg.name, pkg.from_version, pkg.to_version);
-                    }
-                    if !up_to_date.is_empty() {
-                        println!("({} packages already up to date)", up_to_date.len());
-                    }
-                    for err in &errors {
-                        eprintln!("! {}: {} {}", err.spec, err.code, err.message);
-                    }
+                for pkg in &updated {
+                    println!("~ {} {} -> {}", pkg.name, pkg.from_version, pkg.to_version);
+                }
+                if !up_to_date.is_empty() {
+                    println!("({} packages already up to date)", up_to_date.len());
+                }
+                for err in &errors {
+                    eprintln!("! {}: {} {}", err.spec, err.code, err.message);
                 }
             }
 

@@ -100,7 +100,7 @@ fn get_package_script(cwd: &Path, entry: &str) -> Option<String> {
         .get("scripts")?
         .get(entry)?
         .as_str()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 /// Run a package.json script.
@@ -336,23 +336,20 @@ fn needs_transpilation(path: &Path) -> bool {
 
 /// Execute the run plan by running the file with Node.
 fn execute_plan(plan: &RunPlanOutput, cwd: &Path, json: bool) -> Result<()> {
-    let resolved_entry = match &plan.resolved_entry {
-        Some(entry) => entry,
-        None => {
-            if json {
-                let error_json = serde_json::json!({
-                    "ok": false,
-                    "error": {
-                        "code": "ENTRY_NOT_RESOLVED",
-                        "message": "Entry file could not be resolved"
-                    }
-                });
-                println!("{}", serde_json::to_string_pretty(&error_json).unwrap());
-            } else {
-                eprintln!("error: entry file could not be resolved");
-            }
-            std::process::exit(EXIT_VALIDATION_ERROR);
+    let resolved_entry = if let Some(entry) = &plan.resolved_entry { entry } else {
+        if json {
+            let error_json = serde_json::json!({
+                "ok": false,
+                "error": {
+                    "code": "ENTRY_NOT_RESOLVED",
+                    "message": "Entry file could not be resolved"
+                }
+            });
+            println!("{}", serde_json::to_string_pretty(&error_json).unwrap());
+        } else {
+            eprintln!("error: entry file could not be resolved");
         }
+        std::process::exit(EXIT_VALIDATION_ERROR);
     };
 
     let entry_path = Path::new(resolved_entry);

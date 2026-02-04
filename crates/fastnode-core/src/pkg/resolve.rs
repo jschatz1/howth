@@ -51,7 +51,7 @@ type PackumentCache = Arc<RwLock<HashMap<String, Arc<Value>>>>;
 struct ResolveState {
     /// Cached packuments (name -> packument JSON).
     packuments: PackumentCache,
-    /// Resolved packages (key -> LockPackage).
+    /// Resolved packages (key -> `LockPackage`).
     packages: RwLock<BTreeMap<String, LockPackage>>,
     /// Visited package keys to avoid re-resolution.
     visited: RwLock<HashSet<String>>,
@@ -182,7 +182,7 @@ pub async fn resolve_dependencies(
         // For npm: aliases, the original range in package.json uses npm: prefix
         // Reconstruct it for the lockfile dep entry
         let original_range = if let Some(real_name) = pkg_deps.aliases.get(name) {
-            format!("npm:{}@{}", real_name, range)
+            format!("npm:{real_name}@{range}")
         } else {
             range.clone()
         };
@@ -191,13 +191,13 @@ pub async fn resolve_dependencies(
         // Lockfile key uses the alias name (or real name if no alias)
         let version = packages
             .keys()
-            .find(|key| key.starts_with(&format!("{}@", name)))
-            .and_then(|key| key.strip_prefix(&format!("{}@", name)))
+            .find(|key| key.starts_with(&format!("{name}@")))
+            .and_then(|key| key.strip_prefix(&format!("{name}@")))
             .map(String::from)
             .unwrap_or_default();
 
         if !version.is_empty() {
-            let key = format!("{}@{}", name, version);
+            let key = format!("{name}@{version}");
             dependencies.insert(name.clone(), LockDep::new(original_range, kind, key));
         }
     }
@@ -306,7 +306,7 @@ async fn resolve_single_dep(
     let version = resolve_version(&packument, Some(&dep.range))?;
     // Use alias name for the lockfile key so node_modules uses the alias
     let key_name = dep.alias.as_deref().unwrap_or(&dep.name);
-    let key = format!("{}@{}", key_name, version);
+    let key = format!("{key_name}@{version}");
 
     // Check if already resolved
     {
@@ -372,7 +372,7 @@ async fn resolve_single_dep(
         .get("dist")
         .and_then(|d| d.get("tarball"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     // Create lock package entry
     let lock_pkg = LockPackage {
@@ -389,8 +389,7 @@ async fn resolve_single_dep(
         has_scripts: version_data
             .get("scripts")
             .and_then(|s| s.as_object())
-            .map(|o| !o.is_empty())
-            .unwrap_or(false),
+            .is_some_and(|o| !o.is_empty()),
         cpu: Vec::new(),
         os: Vec::new(),
     };
@@ -447,13 +446,13 @@ async fn resolve_missing_peers(
                 for (peer_name, peer_range) in &lock_pkg.peer_dependencies {
                     // Already satisfied by an existing package?
                     let satisfied = packages.iter().any(|(k, _pkg)| {
-                        k.rsplit_once('@').map_or(false, |(n, v)| {
+                        k.rsplit_once('@').is_some_and(|(n, v)| {
                             n == peer_name.as_str() && version_satisfies(v, peer_range)
                         })
                     });
 
                     if !satisfied {
-                        let dedup_key = format!("{}@{}", peer_name, peer_range);
+                        let dedup_key = format!("{peer_name}@{peer_range}");
                         if seen.insert(dedup_key) {
                             out.push((peer_name.clone(), peer_range.clone()));
                         }
@@ -508,7 +507,7 @@ fn is_peer_optional(version_data: &Value, peer_name: &str) -> bool {
         .and_then(|m| m.as_object())
         .and_then(|obj| obj.get(peer_name))
         .and_then(|v| v.get("optional"))
-        .and_then(|o| o.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
 }
 

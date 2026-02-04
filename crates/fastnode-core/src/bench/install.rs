@@ -179,9 +179,7 @@ pub fn run_install_bench(
     let (temp_dir, project_dir, project_info) = if let Some(path) = project_path {
         let dep_count = count_deps_in_package_json(path);
         let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "project".to_string());
+            .file_name().map_or_else(|| "project".to_string(), |n| n.to_string_lossy().to_string());
         (
             None,
             path.to_path_buf(),
@@ -344,7 +342,7 @@ fn bench_tool(
     })
 }
 
-/// Clean node_modules and tool caches before an install run.
+/// Clean `node_modules` and tool caches before an install run.
 fn clean_before_install(tool_name: &str, project_dir: &Path) {
     // Always remove node_modules
     let _ = fs::remove_dir_all(project_dir.join("node_modules"));
@@ -465,7 +463,7 @@ fn tool_available(tool: &str) -> bool {
 fn parse_command(cmd: &str) -> (String, Vec<String>) {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     let program = parts[0].to_string();
-    let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = parts[1..].iter().map(std::string::ToString::to_string).collect();
     (program, args)
 }
 
@@ -482,13 +480,11 @@ fn count_deps_in_package_json(project_dir: &Path) -> u32 {
     let deps = value
         .get("dependencies")
         .and_then(|v| v.as_object())
-        .map(|o| o.len() as u32)
-        .unwrap_or(0);
+        .map_or(0, |o| o.len() as u32);
     let dev_deps = value
         .get("devDependencies")
         .and_then(|v| v.as_object())
-        .map(|o| o.len() as u32)
-        .unwrap_or(0);
+        .map_or(0, |o| o.len() as u32);
 
     deps + dev_deps
 }

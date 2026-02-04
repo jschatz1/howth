@@ -27,12 +27,14 @@ pub struct RusageDelta {
 
 impl RusageDelta {
     /// Total CPU time (user + system) in microseconds.
+    #[must_use] 
     pub fn total_cpu_us(&self) -> u64 {
         self.user_time_us + self.system_time_us
     }
 }
 
 /// Compute the delta between two snapshots.
+#[must_use] 
 pub fn delta(before: &RusageSnapshot, after: &RusageSnapshot) -> RusageDelta {
     RusageDelta {
         user_time_us: after.user_time_us.saturating_sub(before.user_time_us),
@@ -68,7 +70,7 @@ mod platform {
     /// Snapshot resource usage for the current process (`RUSAGE_SELF`).
     pub fn snapshot_self() -> Option<RusageSnapshot> {
         let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-        let ret = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
+        let ret = unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut ru) };
         if ret == 0 {
             Some(from_rusage(ru))
         } else {
@@ -79,7 +81,7 @@ mod platform {
     /// Snapshot resource usage for child processes (`RUSAGE_CHILDREN`).
     pub fn snapshot_children() -> Option<RusageSnapshot> {
         let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-        let ret = unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) };
+        let ret = unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &raw mut ru) };
         if ret == 0 {
             Some(from_rusage(ru))
         } else {
@@ -102,11 +104,13 @@ mod platform {
 }
 
 /// Snapshot resource usage for the current process.
+#[must_use] 
 pub fn snapshot_self() -> Option<RusageSnapshot> {
     platform::snapshot_self()
 }
 
 /// Snapshot resource usage for child processes.
+#[must_use] 
 pub fn snapshot_children() -> Option<RusageSnapshot> {
     platform::snapshot_children()
 }

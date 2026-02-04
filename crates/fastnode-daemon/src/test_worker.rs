@@ -99,11 +99,11 @@ impl NodeTestWorker {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stdin"))?;
+            .ok_or_else(|| io::Error::other("failed to capture stdin"))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture stdout"))?;
+            .ok_or_else(|| io::Error::other("failed to capture stdout"))?;
 
         Ok((child, stdin, BufReader::new(stdout)))
     }

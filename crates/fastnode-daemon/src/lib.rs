@@ -64,7 +64,7 @@ use fastnode_proto::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// Handle a request and produce a response (sync version).
 ///
@@ -863,7 +863,7 @@ fn try_v8_test_worker(
     let mut guard = state
         .v8_test_worker
         .lock()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "V8 worker mutex poisoned"))?;
+        .map_err(|_| std::io::Error::other("V8 worker mutex poisoned"))?;
 
     // Drop the old worker first and wait briefly for its thread to clean up
     // (close DB connections, etc.) before creating a new one.

@@ -93,8 +93,7 @@ impl V8TestWorker {
                 });
             })
             .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
+                io::Error::other(
                     format!("failed to spawn V8 worker thread: {e}"),
                 )
             })?;
@@ -166,8 +165,7 @@ async fn v8_worker_loop(rx: mpsc::Receiver<V8Request>, temp_dir: &std::path::Pat
             warn!("failed to create V8 runtime: {e}");
             // Drain and error all requests
             while let Ok(req) = rx.recv() {
-                let _ = req.reply.send(Err(io::Error::new(
-                    io::ErrorKind::Other,
+                let _ = req.reply.send(Err(io::Error::other(
                     format!("V8 runtime init failed: {e}"),
                 )));
             }

@@ -208,11 +208,7 @@ fn handle_test_response(response: Response) -> i32 {
                 eprintln!("{}", result.diagnostics.trim_end());
             }
 
-            if result.ok {
-                0
-            } else {
-                1
-            }
+            i32::from(!result.ok)
         }
         Response::Error { code, message } => {
             eprintln!("error: {code}: {message}");
@@ -265,7 +261,7 @@ fn discover_test_files(cwd: &Path) -> Vec<PathBuf> {
     for entry in WalkDir::new(cwd)
         .into_iter()
         .filter_entry(|e| !is_excluded_dir(e))
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
     {
         let path = entry.path();
         if path.is_file() && is_test_file(path) {

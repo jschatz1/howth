@@ -29,12 +29,13 @@ pub struct ModuleTransformer {
     root: PathBuf,
     /// Import rewriter.
     rewriter: ImportRewriter,
-    /// Module cache: file_path → TransformedModule.
+    /// Module cache: `file_path` → `TransformedModule`.
     cache: RwLock<HashMap<String, TransformedModule>>,
 }
 
 impl ModuleTransformer {
     /// Create a new module transformer.
+    #[must_use] 
     pub fn new(root: PathBuf) -> Self {
         let rewriter = ImportRewriter::new(root.clone());
         Self {
@@ -94,7 +95,7 @@ impl ModuleTransformer {
             }
             _ => {
                 return Err(ModuleTransformError {
-                    message: format!("Unsupported file type: .{}", ext),
+                    message: format!("Unsupported file type: .{ext}"),
                     file: Some(file_path_str),
                 });
             }
@@ -199,7 +200,7 @@ impl ModuleTransformer {
         }
 
         Err(ModuleTransformError {
-            message: format!("Module not found: {}", url_path),
+            message: format!("Module not found: {url_path}"),
             file: None,
         })
     }
@@ -217,7 +218,7 @@ impl ModuleTransformer {
 
         // Fall back to file system
         std::fs::read_to_string(file_path).map_err(|e| ModuleTransformError {
-            message: format!("Failed to read {}: {}", file_path, e),
+            message: format!("Failed to read {file_path}: {e}"),
             file: Some(file_path.to_string()),
         })
     }
@@ -247,7 +248,7 @@ impl ModuleTransformer {
         let output = backend
             .transpile(&spec, source)
             .map_err(|e| ModuleTransformError {
-                message: format!("Transpile error: {}", e),
+                message: format!("Transpile error: {e}"),
                 file: Some(input_name),
             })?;
 
@@ -264,7 +265,7 @@ impl ModuleTransformer {
         plugins
             .transform(code, id)
             .map_err(|e| ModuleTransformError {
-                message: format!("Plugin transform error: {}", e),
+                message: format!("Plugin transform error: {e}"),
                 file: Some(id.to_string()),
             })
     }
@@ -278,7 +279,7 @@ fn create_css_module(css: &str) -> String {
         .replace("${", "\\${");
 
     format!(
-        r#"const css = `{}`;
+        r"const css = `{escaped}`;
 const style = document.createElement('style');
 style.setAttribute('data-howth-css', '');
 style.textContent = css;
@@ -293,8 +294,7 @@ if (import.meta.hot) {{
 }}
 
 export default css;
-"#,
-        escaped
+"
     )
 }
 
@@ -311,7 +311,7 @@ fn json_to_esm(source: &str) -> String {
 
     // Try to parse as a JSON object for named exports
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        let mut out = format!("const __json__ = {};\nexport default __json__;\n", trimmed);
+        let mut out = format!("const __json__ = {trimmed};\nexport default __json__;\n");
         for (key, value) in &map {
             // Only export keys that are valid JS identifiers
             if is_valid_js_ident(key) {
@@ -325,7 +325,7 @@ fn json_to_esm(source: &str) -> String {
         out
     } else {
         // Non-object JSON (array, string, number, etc.) — default export only
-        format!("export default {};\n", trimmed)
+        format!("export default {trimmed};\n")
     }
 }
 

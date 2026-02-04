@@ -158,7 +158,7 @@ fn find_extracted_root(temp_dir: &Path) -> Result<std::path::PathBuf, PkgError> 
     // Otherwise, look for a single top-level directory
     let entries: Vec<_> = fs::read_dir(temp_dir)
         .map_err(|e| PkgError::extract_failed(format!("Failed to read extracted dir: {e}")))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.file_type()
                 .map(|ft| ft.is_dir())

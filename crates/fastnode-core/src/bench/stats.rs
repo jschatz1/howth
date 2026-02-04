@@ -81,7 +81,7 @@ pub fn compute_median(samples: &[u64]) -> u64 {
         sorted[len / 2]
     } else {
         // Average of the two middle values
-        (sorted[len / 2 - 1] + sorted[len / 2]) / 2
+        u64::midpoint(sorted[len / 2 - 1], sorted[len / 2])
     }
 }
 

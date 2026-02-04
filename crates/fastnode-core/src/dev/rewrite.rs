@@ -16,6 +16,7 @@ pub struct ImportRewriter {
 
 impl ImportRewriter {
     /// Create a new import rewriter.
+    #[must_use] 
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
@@ -25,6 +26,7 @@ impl ImportRewriter {
     /// `module_path` is the absolute path of the module being served.
     /// `plugins` is used to resolve aliases via `resolve_id` before falling
     /// through to bare specifier handling.
+    #[must_use] 
     pub fn rewrite(&self, code: &str, module_path: &Path, plugins: &PluginContainer) -> String {
         let mut result = String::with_capacity(code.len());
         let module_dir = module_path.parent().unwrap_or(Path::new("/"));
@@ -60,17 +62,17 @@ impl ImportRewriter {
         // Find the string literal in from 'xxx' or from "xxx"
         if let Some((before, specifier, after, quote)) = extract_from_specifier(line) {
             let rewritten = self.rewrite_specifier(&specifier, module_dir, plugins);
-            format!("{}{}{}{}{}", before, quote, rewritten, quote, after)
+            format!("{before}{quote}{rewritten}{quote}{after}")
         } else if let Some((before, specifier, after, quote)) = extract_side_effect_import(line) {
             // Side-effect import: import 'xxx'
             let rewritten = self.rewrite_specifier(&specifier, module_dir, plugins);
-            format!("{}{}{}{}{}", before, quote, rewritten, quote, after)
+            format!("{before}{quote}{rewritten}{quote}{after}")
         } else {
             line.to_string()
         }
     }
 
-    /// Rewrite dynamic import() expressions in a line.
+    /// Rewrite dynamic `import()` expressions in a line.
     fn rewrite_dynamic_import_line(
         &self,
         line: &str,
@@ -127,7 +129,7 @@ impl ImportRewriter {
         // CSS imports → /@style/ prefix
         if specifier.ends_with(".css") {
             let resolved = self.resolve_to_root_path(specifier, module_dir);
-            return format!("/@style{}", resolved);
+            return format!("/@style{resolved}");
         }
 
         // Asset imports → append ?import so the server returns a JS module
@@ -139,7 +141,7 @@ impl ImportRewriter {
             } else {
                 specifier.to_string()
             };
-            return format!("{}?import", resolved);
+            return format!("{resolved}?import");
         }
 
         // Relative imports → resolved absolute from project root
@@ -171,7 +173,7 @@ impl ImportRewriter {
         }
 
         // Bare specifiers → /@modules/pkg
-        format!("/@modules/{}", specifier)
+        format!("/@modules/{specifier}")
     }
 
     /// Resolve a relative import to an absolute path from the project root.
@@ -253,13 +255,14 @@ fn is_asset_extension(specifier: &str) -> bool {
 }
 
 /// Check if a specifier ends with a known asset extension (public).
+#[must_use] 
 pub fn is_asset_import(specifier: &str) -> bool {
     is_asset_extension(specifier)
 }
 
 /// Extract the `from 'specifier'` portion of an import/export line.
 ///
-/// Returns (before_quote, specifier, after_quote, quote_char).
+/// Returns (`before_quote`, specifier, `after_quote`, `quote_char`).
 fn extract_from_specifier(line: &str) -> Option<(String, String, String, char)> {
     let from_idx = line.find(" from ")?;
     let after_from = &line[from_idx + 6..];
@@ -302,14 +305,14 @@ fn extract_side_effect_import(line: &str) -> Option<(String, String, String, cha
 
     // Preserve leading whitespace from original line
     let leading_ws: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-    let before = format!("{}import ", leading_ws);
+    let before = format!("{leading_ws}import ");
 
     Some((before, specifier, after, quote))
 }
 
 /// Extract a string literal from the start of a string slice.
 ///
-/// Returns (specifier, quote_char, rest_of_string).
+/// Returns (specifier, `quote_char`, `rest_of_string`).
 fn extract_string_from_start(s: &str) -> Option<(String, char, &str)> {
     let trimmed = s.trim_start();
     let quote = trimmed.chars().next()?;
@@ -331,6 +334,7 @@ fn extract_string_from_start(s: &str) -> Option<(String, char, &str)> {
 /// Scans for static imports (`import ... from '...'`), side-effect imports
 /// (`import '...'`), re-exports (`export ... from '...'`), and dynamic
 /// imports (`import('...')`). Returns deduplicated URL paths.
+#[must_use] 
 pub fn extract_import_urls(code: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -396,6 +400,7 @@ pub fn extract_import_urls(code: &str) -> Vec<String> {
 /// For howth's use case this is acceptable — a false positive just means we
 /// attempt HMR when we'd otherwise do a full reload, and the worst outcome is
 /// the client falls back to reload anyway.
+#[must_use] 
 pub fn is_self_accepting_module(code: &str) -> bool {
     for line in code.lines() {
         let trimmed = line.trim();

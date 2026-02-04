@@ -262,7 +262,7 @@ pub async fn run(action: DevAction) -> Result<()> {
         if !env_replacements.is_empty()
             || howth_config
                 .as_ref()
-                .map_or(false, |c| !c.define.is_empty())
+                .is_some_and(|c| !c.define.is_empty())
         {
             plugins.add(Box::new(replace_plugin));
         }
@@ -603,7 +603,7 @@ async fn serve_module(
 
     // Check for ?import query (asset imports from JS)
     // Note: AxumPath does NOT include query parameters, so we use RawQuery
-    let is_asset_import = query.as_deref().map_or(false, |q| q.contains("import"));
+    let is_asset_import = query.as_deref().is_some_and(|q| q.contains("import"));
 
     // Strip query parameters from path (e.g., ?t=1234 for cache busting)
     let url_path = url_path.split('?').next().unwrap_or(&url_path);
@@ -656,11 +656,11 @@ async fn serve_module(
                     }
 
                     // Inject HMR preamble for JS modules
-                    let code = if ext != "json" {
+                    let code = if ext == "json" {
+                        module.code
+                    } else {
                         let preamble = HmrEngine::module_preamble(url_path);
                         format!("{}\n{}", preamble, module.code)
-                    } else {
-                        module.code
                     };
 
                     Response::builder()

@@ -106,11 +106,7 @@ impl HowthModuleLoader {
                 let bare_specifier = if let Some(ref parent) = parent_name {
                     if parent.starts_with('@') {
                         // Scoped package: parent is @scope, filename is package name
-                        if let Some(ref name) = filename {
-                            Some(format!("{}/{}", parent, name))
-                        } else {
-                            None
-                        }
+                        filename.as_ref().map(|name| format!("{}/{}", parent, name))
                     } else {
                         filename.clone()
                     }
@@ -233,7 +229,7 @@ impl HowthModuleLoader {
     /// - 'lodash/fp' -> ('lodash', Some('fp'))
     /// - '@scope/pkg' -> ('@scope/pkg', None)
     /// - '@scope/pkg/sub' -> ('@scope/pkg', Some('sub'))
-    fn parse_bare_specifier<'a>(&self, specifier: &'a str) -> (String, Option<String>) {
+    fn parse_bare_specifier(&self, specifier: &str) -> (String, Option<String>) {
         if specifier.starts_with('@') {
             // Scoped package: @scope/package or @scope/package/subpath
             let parts: Vec<&str> = specifier.splitn(3, '/').collect();
@@ -683,7 +679,7 @@ impl ModuleLoader for HowthModuleLoader {
         // Parse referrer as URL
         let referrer_url = if referrer == "." || referrer.is_empty() {
             // Entry point - use cwd
-            ModuleSpecifier::from_file_path(&self.cwd.join("__entry__"))
+            ModuleSpecifier::from_file_path(self.cwd.join("__entry__"))
                 .map_err(|_| AnyError::msg("Invalid cwd"))?
         } else {
             // Try to parse the referrer as a URL
@@ -692,7 +688,7 @@ impl ModuleLoader for HowthModuleLoader {
                 Err(_) => {
                     // Fall back to cwd for unknown referrers (like eval'd code)
                     let actual_cwd = std::env::current_dir().unwrap_or_else(|_| self.cwd.clone());
-                    ModuleSpecifier::from_file_path(&actual_cwd.join("__eval__"))
+                    ModuleSpecifier::from_file_path(actual_cwd.join("__eval__"))
                         .map_err(|_| AnyError::msg("Invalid cwd"))?
                 }
             }

@@ -14,7 +14,7 @@ pub struct PackageDeps {
     /// Valid dependencies as (name, range) pairs, sorted by name.
     /// For `npm:` aliases, name is the alias and range is the resolved version range.
     pub deps: Vec<(String, String)>,
-    /// Alias mappings: alias_name -> real_package_name.
+    /// Alias mappings: `alias_name` -> `real_package_name`.
     /// Only populated for dependencies using `npm:` protocol aliases.
     pub aliases: HashMap<String, String>,
     /// Errors encountered during extraction.
@@ -194,6 +194,7 @@ fn extract_section(
 /// or `None` for regular version ranges.
 ///
 /// Handles scoped packages like `"npm:@scope/pkg@^1.0.0"`.
+#[must_use] 
 pub fn parse_npm_alias(range: &str) -> Option<(&str, &str)> {
     let rest = range.strip_prefix("npm:")?;
     if rest.starts_with('@') {

@@ -40,36 +40,33 @@ pub fn run(cwd: &Path, binary: &str, args: &[String], json: bool) -> Result<()> 
     // Try to find the binary
     let (resolved_path, search_path) = resolve_binary(cwd, binary);
 
-    match &resolved_path {
-        Some(path) => {
-            if !json {
-                // Don't print anything in non-JSON mode, just execute
-            }
+    if let Some(path) = &resolved_path {
+        if !json {
+            // Don't print anything in non-JSON mode, just execute
+        }
 
-            // Execute the binary
-            execute_binary(path, args, cwd, &search_path, json)
+        // Execute the binary
+        execute_binary(path, args, cwd, &search_path, json)
+    } else {
+        if json {
+            let result = ExecResult {
+                ok: false,
+                binary: binary.to_string(),
+                resolved_path: None,
+                error: Some(ExecError {
+                    code: "BINARY_NOT_FOUND".to_string(),
+                    message: format!(
+                        "Binary '{}' not found in node_modules/.bin or PATH",
+                        binary
+                    ),
+                }),
+            };
+            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+        } else {
+            eprintln!("error: binary '{}' not found", binary);
+            eprintln!("hint: install with `howth pkg add {}`", binary);
         }
-        None => {
-            if json {
-                let result = ExecResult {
-                    ok: false,
-                    binary: binary.to_string(),
-                    resolved_path: None,
-                    error: Some(ExecError {
-                        code: "BINARY_NOT_FOUND".to_string(),
-                        message: format!(
-                            "Binary '{}' not found in node_modules/.bin or PATH",
-                            binary
-                        ),
-                    }),
-                };
-                println!("{}", serde_json::to_string_pretty(&result).unwrap());
-            } else {
-                eprintln!("error: binary '{}' not found", binary);
-                eprintln!("hint: install with `howth pkg add {}`", binary);
-            }
-            std::process::exit(EXIT_NOT_FOUND);
-        }
+        std::process::exit(EXIT_NOT_FOUND);
     }
 }
 

@@ -143,7 +143,7 @@ pub fn run_http_bench(params: HttpBenchParams) -> HttpBenchReport {
 /// Write HTTP server scripts for each runtime.
 fn write_server_scripts(dir: &Path) {
     // Howth native server (uses Howth.serveBatch)
-    let howth_server = r#"
+    let howth_server = r"
 const port = parseInt(process.argv[2] || '3000', 10);
 
 Howth.serveBatch({ port, hostname: '127.0.0.1', batchSize: 64 }, (req) => {
@@ -151,11 +151,11 @@ Howth.serveBatch({ port, hostname: '127.0.0.1', batchSize: 64 }, (req) => {
 });
 
 console.log(`READY:${port}`);
-"#;
+";
     fs::write(dir.join("server-howth.ts"), howth_server).expect("Failed to write howth server");
 
     // Node.js server (uses node:http)
-    let node_server = r#"
+    let node_server = r"
 import { createServer } from 'node:http';
 
 const port = parseInt(process.argv[2] || '3000', 10);
@@ -167,11 +167,11 @@ const server = createServer((req, res) => {
 server.listen(port, '127.0.0.1', () => {
     console.log(`READY:${port}`);
 });
-"#;
+";
     fs::write(dir.join("server.mjs"), node_server).expect("Failed to write node server");
 
     // Bun server (uses Bun.serve)
-    let bun_server = r#"
+    let bun_server = r"
 const port = parseInt(Bun.argv[2] || '3000', 10);
 
 const server = Bun.serve({
@@ -183,11 +183,11 @@ const server = Bun.serve({
 });
 
 console.log(`READY:${server.port}`);
-"#;
+";
     fs::write(dir.join("server-bun.ts"), bun_server).expect("Failed to write bun server");
 
     // Deno server (uses Deno.serve)
-    let deno_server = r#"
+    let deno_server = r"
 const port = parseInt(Deno.args[0] || '3000', 10);
 
 Deno.serve({
@@ -199,7 +199,7 @@ Deno.serve({
 }, (_req) => {
     return new Response('Hello World\n');
 });
-"#;
+";
     fs::write(dir.join("server-deno.ts"), deno_server).expect("Failed to write deno server");
 }
 
@@ -322,11 +322,9 @@ fn wait_for_ready(server: &mut Child, port: u16, timeout: Duration) -> bool {
     if let Some(stdout) = server.stdout.take() {
         let reader = BufReader::new(stdout);
         let handle = thread::spawn(move || {
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if line.contains("READY:") {
-                        return true;
-                    }
+            for line in reader.lines().flatten() {
+                if line.contains("READY:") {
+                    return true;
                 }
             }
             false
@@ -371,7 +369,7 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
     let total_errors = Arc::new(AtomicU64::new(0));
     let latencies = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    let duration = Duration::from_secs(duration_secs as u64);
+    let duration = Duration::from_secs(u64::from(duration_secs));
     let start = Instant::now();
 
     // Spawn worker threads - each maintains a persistent connection
@@ -392,17 +390,14 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
                 // Get or create connection
                 let stream = match conn.take() {
                     Some(s) => s,
-                    None => match TcpStream::connect(&addr) {
-                        Ok(s) => {
-                            let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
-                            let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-                            let _ = s.set_nodelay(true);
-                            s
-                        }
-                        Err(_) => {
-                            errors.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        }
+                    None => if let Ok(s) = TcpStream::connect(&addr) {
+                        let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                        let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
+                        let _ = s.set_nodelay(true);
+                        s
+                    } else {
+                        errors.fetch_add(1, Ordering::Relaxed);
+                        continue;
                     },
                 };
 

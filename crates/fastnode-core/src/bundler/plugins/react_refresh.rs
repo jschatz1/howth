@@ -71,7 +71,7 @@ impl Default for ReactRefreshPlugin {
 }
 
 impl Plugin for ReactRefreshPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "react-refresh"
     }
 
@@ -179,7 +179,7 @@ window.$RefreshReg$ && window.$RefreshReg$(function() {{}}, "{module_id}");
 /// React Refresh preamble injected at the top of each component file.
 ///
 /// Sets up the registration functions that React Refresh uses to track components.
-const REACT_REFRESH_PREAMBLE: &str = r#"import RefreshRuntime from '/@react-refresh';
+const REACT_REFRESH_PREAMBLE: &str = r"import RefreshRuntime from '/@react-refresh';
 
 const prevRefreshReg = window.$RefreshReg$;
 const prevRefreshSig = window.$RefreshSig$;
@@ -187,7 +187,7 @@ const prevRefreshSig = window.$RefreshSig$;
 window.$RefreshReg$ = (type, id) => {
   RefreshRuntime.register(type, __MODULE_ID__ + ' ' + id);
 };
-window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;"#;
+window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;";
 
 /// The React Refresh runtime module served at `/@react-refresh`.
 ///
@@ -197,7 +197,7 @@ window.$RefreshSig$ = RefreshRuntime.createSignatureFunctionForTransform;"#;
 /// - `createSignatureFunctionForTransform()` — Track hook signatures
 /// - `performReactRefresh()` — Trigger refresh for registered components
 /// - `injectIntoGlobalHook(window)` — Set up global hooks
-const REACT_REFRESH_RUNTIME: &str = r#"
+const REACT_REFRESH_RUNTIME: &str = r"
 // React Refresh Runtime (minimal implementation for howth dev server)
 //
 // This provides the core APIs that the React Refresh Babel/SWC transform expects.
@@ -310,7 +310,7 @@ export {
   performReactRefresh,
   injectIntoGlobalHook,
 };
-"#;
+";
 
 #[cfg(test)]
 mod tests {
