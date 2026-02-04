@@ -1,6 +1,10 @@
 //! Integration tests for `howth pkg doctor`.
 //!
 //! These tests create node_modules structures and verify the doctor output.
+//! These tests require Unix domain sockets for daemon IPC, so they are
+//! disabled on Windows.
+
+#![cfg(unix)]
 
 use serial_test::serial;
 use std::process::{Child, Command, Stdio};
