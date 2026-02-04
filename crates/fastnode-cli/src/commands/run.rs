@@ -176,8 +176,7 @@ fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool
         cwd.join(entry)
     };
 
-    let entry_path = entry_path
-        .canonicalize()
+    let entry_path = dunce::canonicalize(&entry_path)
         .map_err(|e| miette::miette!("Cannot find file {}: {}", entry.display(), e))?;
 
     // Build process.argv: ['howth', '/path/to/script.js', ...args]

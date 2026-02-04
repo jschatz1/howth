@@ -483,7 +483,7 @@ impl Bundler {
             cwd.join(entry)
         };
 
-        let entry_path = entry_path.canonicalize().map_err(|e| BundleError {
+        let entry_path = dunce::canonicalize(entry_path).map_err(|e| BundleError {
             code: "BUNDLE_ENTRY_NOT_FOUND",
             message: format!("Cannot find entry point: {}", e),
             path: Some(entry.display().to_string()),

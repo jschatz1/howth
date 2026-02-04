@@ -1016,6 +1016,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1067,6 +1073,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
+ "dunce",
  "fastnode-core",
  "fastnode-daemon",
  "fastnode-proto",
@@ -1100,6 +1107,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dirs-next",
+ "dunce",
  "fastnode-util",
  "flate2",
  "futures",
@@ -1133,6 +1141,7 @@ dependencies = [
 name = "fastnode-daemon"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "fastnode-core",
  "fastnode-proto",
  "fastnode-runtime",
@@ -1170,6 +1179,7 @@ dependencies = [
  "deno_core",
  "deno_napi",
  "digest",
+ "dunce",
  "fastnode-core",
  "flate2",
  "hmac",

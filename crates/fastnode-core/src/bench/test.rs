@@ -204,9 +204,13 @@ fn start_bench_daemon(warnings: &mut Vec<BenchWarning>) -> Option<BenchDaemonCtx
     }
 
     // Create a unique socket path for the bench daemon
+    #[cfg(unix)]
     let endpoint = format!("/tmp/howth-bench-test-{}.sock", std::process::id());
+    #[cfg(windows)]
+    let endpoint = format!(r"\\.\pipe\howth-bench-test-{}", std::process::id());
 
-    // Clean up any stale socket
+    // Clean up any stale socket (Unix only - Windows named pipes are cleaned up automatically)
+    #[cfg(unix)]
     let _ = fs::remove_file(&endpoint);
 
     eprintln!("  Starting daemon for howth benchmarks...");

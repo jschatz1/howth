@@ -186,7 +186,7 @@ impl ImportRewriter {
         let resolved = module_dir.join(specifier);
 
         // Try to canonicalize, falling back to the joined path
-        let absolute = resolved.canonicalize().unwrap_or(resolved);
+        let absolute = dunce::canonicalize(&resolved).unwrap_or(resolved);
 
         // Strip project root to get root-relative path
         if let Ok(relative) = absolute.strip_prefix(&self.root) {

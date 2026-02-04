@@ -401,7 +401,7 @@ fn resolve_path(
 ) -> ResolveResult {
     // Try exact path first
     if base.is_file() {
-        let canonical = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+        let canonical = dunce::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
         return ResolveResult::resolved(canonical, tried.clone());
     }
 
@@ -416,7 +416,7 @@ fn resolve_path(
         add_tried(tried, &with_ext);
 
         if with_ext.is_file() {
-            let canonical = with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+            let canonical = dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
             return ResolveResult::resolved(canonical, tried.clone());
         }
     }
@@ -457,9 +457,8 @@ fn resolve_directory(
 
                 // Try exact path
                 if target_path.is_file() {
-                    let canonical = target_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| target_path.clone());
+                    let canonical =
+                        dunce::canonicalize(&target_path).unwrap_or_else(|_| target_path.clone());
                     return ResolveResult::resolved(canonical, tried.clone());
                 }
 
@@ -470,7 +469,7 @@ fn resolve_directory(
 
                     if with_ext.is_file() {
                         let canonical =
-                            with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+                            dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
                         return ResolveResult::resolved(canonical, tried.clone());
                     }
                 }
@@ -488,9 +487,8 @@ fn resolve_directory(
 
                 // Try exact main path
                 if main_path.is_file() {
-                    let canonical = main_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| main_path.clone());
+                    let canonical =
+                        dunce::canonicalize(&main_path).unwrap_or_else(|_| main_path.clone());
                     return ResolveResult::resolved(canonical, tried.clone());
                 }
 
@@ -501,7 +499,7 @@ fn resolve_directory(
 
                     if with_ext.is_file() {
                         let canonical =
-                            with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+                            dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
                         return ResolveResult::resolved(canonical, tried.clone());
                     }
                 }
@@ -513,7 +511,7 @@ fn resolve_directory(
                         add_tried(tried, &index);
 
                         if index.is_file() {
-                            let canonical = index.canonicalize().unwrap_or_else(|_| index.clone());
+                            let canonical = dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
                             return ResolveResult::resolved(canonical, tried.clone());
                         }
                     }
@@ -528,7 +526,7 @@ fn resolve_directory(
         add_tried(tried, &index);
 
         if index.is_file() {
-            let canonical = index.canonicalize().unwrap_or_else(|_| index.clone());
+            let canonical = dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
             return ResolveResult::resolved(canonical, tried.clone());
         }
     }
@@ -665,9 +663,8 @@ fn resolve_package_subpath(
 
                     // Try exact path
                     if target_path.is_file() {
-                        let canonical = target_path
-                            .canonicalize()
-                            .unwrap_or_else(|_| target_path.clone());
+                        let canonical =
+                            dunce::canonicalize(&target_path).unwrap_or_else(|_| target_path.clone());
                         return ResolveResult::resolved(canonical, tried.clone());
                     }
 
@@ -678,7 +675,7 @@ fn resolve_package_subpath(
 
                         if with_ext.is_file() {
                             let canonical =
-                                with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+                                dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
                             return ResolveResult::resolved(canonical, tried.clone());
                         }
                     }
@@ -954,7 +951,7 @@ fn resolve_path_traced(
         trace.add_step(
             ResolveTraceStep::new(steps::FILE_EXISTS, true, "Exact file exists").with_path(base),
         );
-        let canonical = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+        let canonical = dunce::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
         trace.add_step(
             ResolveTraceStep::new(steps::FINAL_PATH, true, "Resolution complete")
                 .with_path(&canonical),
@@ -988,7 +985,7 @@ fn resolve_path_traced(
                 )
                 .with_path(&with_ext),
             );
-            let canonical = with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+            let canonical = dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
             trace.add_step(
                 ResolveTraceStep::new(steps::FINAL_PATH, true, "Resolution complete")
                     .with_path(&canonical),
@@ -1053,9 +1050,8 @@ fn resolve_directory_traced(
 
                 // Try exact path
                 if target_path.is_file() {
-                    let canonical = target_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| target_path.clone());
+                    let canonical =
+                        dunce::canonicalize(&target_path).unwrap_or_else(|_| target_path.clone());
                     trace.add_step(
                         ResolveTraceStep::new(
                             steps::FINAL_PATH,
@@ -1077,7 +1073,7 @@ fn resolve_directory_traced(
 
                     if with_ext.is_file() {
                         let canonical =
-                            with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+                            dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
                         trace.add_step(
                             ResolveTraceStep::new(
                                 steps::FINAL_PATH,
@@ -1133,9 +1129,8 @@ fn resolve_directory_traced(
 
                 // Try exact main path
                 if main_path.is_file() {
-                    let canonical = main_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| main_path.clone());
+                    let canonical =
+                        dunce::canonicalize(&main_path).unwrap_or_else(|_| main_path.clone());
                     trace.add_step(
                         ResolveTraceStep::new(
                             steps::FINAL_PATH,
@@ -1157,7 +1152,7 @@ fn resolve_directory_traced(
 
                     if with_ext.is_file() {
                         let canonical =
-                            with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+                            dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
                         trace.add_step(
                             ResolveTraceStep::new(
                                 steps::FINAL_PATH,
@@ -1180,7 +1175,7 @@ fn resolve_directory_traced(
                         add_tried(tried, &index);
 
                         if index.is_file() {
-                            let canonical = index.canonicalize().unwrap_or_else(|_| index.clone());
+                            let canonical = dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
                             trace.add_step(
                                 ResolveTraceStep::new(
                                     steps::FINAL_PATH,
@@ -1217,7 +1212,7 @@ fn resolve_directory_traced(
         add_tried(tried, &index);
 
         if index.is_file() {
-            let canonical = index.canonicalize().unwrap_or_else(|_| index.clone());
+            let canonical = dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
             trace.add_step(
                 ResolveTraceStep::new(
                     steps::FINAL_PATH,
@@ -1424,9 +1419,8 @@ fn resolve_package_subpath_traced(
 
                     // Try exact path
                     if target_path.is_file() {
-                        let canonical = target_path
-                            .canonicalize()
-                            .unwrap_or_else(|_| target_path.clone());
+                        let canonical =
+                            dunce::canonicalize(&target_path).unwrap_or_else(|_| target_path.clone());
                         trace.add_step(
                             ResolveTraceStep::new(
                                 steps::FINAL_PATH,
@@ -1448,7 +1442,7 @@ fn resolve_package_subpath_traced(
 
                         if with_ext.is_file() {
                             let canonical =
-                                with_ext.canonicalize().unwrap_or_else(|_| with_ext.clone());
+                                dunce::canonicalize(&with_ext).unwrap_or_else(|_| with_ext.clone());
                             trace.add_step(
                                 ResolveTraceStep::new(steps::FINAL_PATH, true, format!("Resolution complete via exports subpath with extension: {ext}"))
                                     .with_path(&canonical)

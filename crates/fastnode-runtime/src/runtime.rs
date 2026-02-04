@@ -544,7 +544,7 @@ fn op_howth_fs_write_bytes(
 #[op2]
 #[string]
 fn op_howth_fs_realpath(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
-    std::fs::canonicalize(path)
+    dunce::canonicalize(path)
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| e.into())
 }
@@ -5013,7 +5013,7 @@ impl Runtime {
             .map_err(|_| RuntimeError::Io(format!("Invalid path: {}", path.display())))?;
 
         // Set up the main module context for require
-        let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let abs_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let main_module_path = abs_path.to_string_lossy().to_string();
         let main_module_dir = abs_path
             .parent()

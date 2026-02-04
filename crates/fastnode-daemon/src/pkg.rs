@@ -897,7 +897,7 @@ pub async fn handle_pkg_install_with_progress(
     let project_root = PathBuf::from(cwd);
 
     // Canonicalize the path
-    let project_root = match project_root.canonicalize() {
+    let project_root = match dunce::canonicalize(&project_root) {
         Ok(p) => p,
         Err(e) => {
             return Response::error(
@@ -1472,7 +1472,7 @@ pub fn handle_pkg_graph(
     let project_root = Path::new(cwd);
 
     // Canonicalize the path
-    let project_root = match project_root.canonicalize() {
+    let project_root = match dunce::canonicalize(project_root) {
         Ok(p) => p,
         Err(e) => {
             return Response::error(
@@ -1605,7 +1605,7 @@ pub fn handle_pkg_explain(
             format!("Working directory does not exist: {}", cwd),
         );
     }
-    let cwd_canonical = match cwd_path.canonicalize() {
+    let cwd_canonical = match dunce::canonicalize(&cwd_path) {
         Ok(p) => p,
         Err(e) => {
             return Response::error(
@@ -1623,7 +1623,7 @@ pub fn handle_pkg_explain(
             format!("Parent directory does not exist: {}", parent),
         );
     }
-    let parent_canonical = match parent_path.canonicalize() {
+    let parent_canonical = match dunce::canonicalize(&parent_path) {
         Ok(p) => p,
         Err(e) => {
             return Response::error(
@@ -1789,7 +1789,7 @@ pub fn handle_pkg_why(opts: WhyRequestOptions<'_>, pkg_json_cache: &dyn PkgJsonC
             format!("Working directory does not exist: {}", cwd),
         );
     }
-    let cwd_canonical = match cwd_path.canonicalize() {
+    let cwd_canonical = match dunce::canonicalize(&cwd_path) {
         Ok(p) => p,
         Err(e) => {
             return Response::error(
@@ -1857,7 +1857,7 @@ pub fn handle_pkg_why(opts: WhyRequestOptions<'_>, pkg_json_cache: &dyn PkgJsonC
             }
         });
 
-        let trace_parent_canonical = trace_parent.canonicalize().unwrap_or(trace_parent);
+        let trace_parent_canonical = dunce::canonicalize(&trace_parent).unwrap_or(trace_parent);
         let trace_kind = opts.trace_kind.unwrap_or("auto");
 
         // Call explain for the trace
@@ -1962,7 +1962,7 @@ pub fn handle_pkg_doctor(
             format!("Working directory does not exist: {}", cwd),
         );
     }
-    let cwd_canonical = match cwd_path.canonicalize() {
+    let cwd_canonical = match dunce::canonicalize(&cwd_path) {
         Ok(p) => p,
         Err(e) => {
             return Response::error(
