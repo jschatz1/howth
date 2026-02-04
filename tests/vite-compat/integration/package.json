@@ -1,0 +1,13 @@
+{
+  "name": "vite-compat-integration-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --experimental-test-coverage *.test.js",
+    "test:vite-only": "VITE_ONLY=1 node --test *.test.js",
+    "test:howth-only": "HOWTH_ONLY=1 node --test *.test.js"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
