@@ -5819,9 +5819,9 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
 
         let main_file = temp.path().join("main.js");
-        let temp_path = temp.path().to_string_lossy();
+        let _temp_path = temp.path().to_string_lossy();
 
-        fs::write(&main_file, format!(r#"
+        fs::write(&main_file, r#"
             import path from 'node:path';
 
             // Test resolve with absolute path
@@ -5834,7 +5834,7 @@ mod tests {
             if (!rel.startsWith('/')) throw new Error('resolve relative should be absolute: ' + rel);
 
             console.log('✓ path.resolve works!');
-        "#)).unwrap();
+        "#.to_string()).unwrap();
 
         let mut runtime = Runtime::new(RuntimeOptions {
             cwd: Some(temp.path().to_path_buf()),

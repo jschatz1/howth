@@ -6,6 +6,7 @@
 
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::missing_panics_doc)]
 
 use crate::bench::build::MachineInfo;
 use crate::bench::rusage;

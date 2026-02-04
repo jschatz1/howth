@@ -6,6 +6,8 @@
 //! - In-memory cache shared across clones
 //! - Abbreviated packuments for smaller downloads
 
+#![allow(clippy::manual_let_else)]
+
 use super::cache::PackageCache;
 use super::error::PkgError;
 use super::npmrc::{load_npmrc_files, resolve_scoped_registries, ScopedRegistry};

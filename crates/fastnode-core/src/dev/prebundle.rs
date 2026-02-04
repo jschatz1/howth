@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn test_scan_bare_imports() {
         let prebundler = PreBundler::new(PathBuf::from("/project"));
-        let source = r#"
+        let source = r"
 import React from 'react';
 import { useState, useEffect } from 'react';
 import lodash from 'lodash';
@@ -335,7 +335,7 @@ import { Button } from './components/Button';
 import path from 'node:path';
 export { helper } from '@scope/utils';
 const lazy = import('lazy-module');
-"#;
+";
 
         let imports = prebundler.scan_bare_imports(source);
 

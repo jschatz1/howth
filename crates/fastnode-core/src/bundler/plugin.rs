@@ -18,6 +18,8 @@
 //!             return Ok(Some(format!("export default {:?};", code)));
 //!         }
 //!         Ok(None)
+
+#![allow(clippy::type_complexity)]
 //!     }
 //! }
 //! ```

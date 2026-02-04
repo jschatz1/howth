@@ -4,6 +4,8 @@
 //! in order, with later files overriding earlier ones. System environment variables
 //! already set take precedence (are not overwritten).
 
+#![allow(clippy::implicit_hasher)]
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -309,8 +311,8 @@ mod tests {
             replacements.get("import.meta.env.HOWTH_SECRET").unwrap(),
             "\"abc123\""
         );
-        assert!(replacements.get("import.meta.env.DATABASE_URL").is_none());
-        assert!(replacements.get("import.meta.env.SECRET_KEY").is_none());
+        assert!(!replacements.contains_key("import.meta.env.DATABASE_URL"));
+        assert!(!replacements.contains_key("import.meta.env.SECRET_KEY"));
     }
 
     #[test]

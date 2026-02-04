@@ -1,5 +1,8 @@
 //! Version resolution using semver.
 
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::redundant_else)]
+
 use super::error::PkgError;
 use super::registry::{get_latest_version, get_versions};
 use semver::{Version, VersionReq};
@@ -112,13 +115,10 @@ fn resolve_or_range(name: &str, range: &str, versions: &[Version]) -> Result<Str
         if alt.is_empty() {
             continue;
         }
-        match parse_range(alt) {
-            Ok(req) => reqs.push(req),
-            Err(_) => {
-                // Skip invalid alternatives, try others
-                continue;
-            }
+        if let Ok(req) = parse_range(alt) {
+            reqs.push(req);
         }
+        // Skip invalid alternatives, try others
     }
 
     if reqs.is_empty() {

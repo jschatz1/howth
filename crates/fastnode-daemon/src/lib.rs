@@ -21,6 +21,10 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::if_not_else)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::used_underscore_binding)]
+#![allow(clippy::unused_async)]
 
 //! Long-running daemon for fastnode.
 //!

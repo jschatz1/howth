@@ -18,6 +18,9 @@
 //!   chalk -> .pnpm/chalk@4.1.2/node_modules/chalk
 //! ```
 
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::items_after_statements)]
+
 use super::error::PkgError;
 use serde_json::Value;
 use std::collections::BTreeMap;

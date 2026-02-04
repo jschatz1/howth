@@ -2,6 +2,10 @@
 //!
 //! Handles: resolve → load → transpile → plugin transform → import rewrite.
 
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::format_push_string)]
+
 use crate::bundler::{LoadResult, PluginContainer, ResolveIdResult};
 use crate::dev::rewrite::ImportRewriter;
 use std::collections::HashMap;
@@ -404,7 +408,7 @@ mod tests {
     /// 1: Array JSON produces default export only.
     #[test]
     fn test_json_to_esm_array() {
-        let json = r#"[1, 2, 3]"#;
+        let json = r"[1, 2, 3]";
         let esm = json_to_esm(json);
         assert!(esm.contains("export default [1, 2, 3]"));
         assert!(!esm.contains("export const"));

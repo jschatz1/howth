@@ -635,11 +635,11 @@ mod tests {
         // utils.ts - has three exports but only one is used
         let utils_module = Module {
             path: "/test/utils.ts".to_string(),
-            source: r#"
+            source: r"
 export function add(a, b) { return a + b; }
 export function subtract(a, b) { return a - b; }
 export function multiply(a, b) { return a * b; }
-"#
+"
             .to_string(),
             imports: Vec::new(),
             dependencies: Vec::new(),
@@ -650,10 +650,10 @@ export function multiply(a, b) { return a * b; }
         // entry.ts - only imports `add`
         let entry_module = Module {
             path: "/test/entry.ts".to_string(),
-            source: r#"
+            source: r"
 import { add } from './utils';
 console.log(add(1, 2));
-"#
+"
             .to_string(),
             imports: vec![Import {
                 specifier: "./utils".to_string(),

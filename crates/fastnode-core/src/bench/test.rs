@@ -6,6 +6,9 @@
 
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::format_push_string)]
 
 use crate::bench::build::MachineInfo;
 use crate::bench::rusage;
@@ -939,12 +942,11 @@ mod tests {
         // Count test files
         let test_files: Vec<_> = fs::read_dir(path)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 e.file_name()
                     .to_str()
-                    .map(|n| n.ends_with(".test.ts"))
-                    .unwrap_or(false)
+                    .is_some_and(|n| n.ends_with(".test.ts"))
             })
             .collect();
         assert_eq!(test_files.len(), NUM_TEST_FILES as usize);

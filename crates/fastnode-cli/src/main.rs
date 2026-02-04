@@ -16,6 +16,12 @@
 #![allow(clippy::map_unwrap_or)]
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::format_push_string)]
+#![allow(clippy::case_sensitive_file_extension_comparisons)]
+#![allow(clippy::fn_params_excessive_bools)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::default_trait_access)]
+#![allow(clippy::unused_async)]
 
 mod commands;
 mod logging;

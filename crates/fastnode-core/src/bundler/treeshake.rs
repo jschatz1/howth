@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_extract_exports() {
-        let source = r#"
+        let source = r"
 export const foo = 1;
 export let bar = 2;
 export function add(a, b) { return a + b; }
@@ -551,7 +551,7 @@ export async function fetchData() { }
 export class User {}
 export default App;
 export { x, y as z };
-"#;
+";
         let exports = extract_exports(source);
         let names: Vec<&str> = exports.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"foo"));
@@ -566,11 +566,11 @@ export { x, y as z };
 
     #[test]
     fn test_extract_re_exports() {
-        let source = r#"
+        let source = r"
 export { foo, bar as baz } from './utils';
 export * from './helpers';
 export * as utils from './utils';
-"#;
+";
         let re_exports = extract_re_exports(source);
 
         // Check foo re-export

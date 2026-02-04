@@ -5,6 +5,9 @@
 //! - Relative imports (`./App`) → `/src/App.tsx` (resolved absolute from project root)
 //! - CSS imports (`./style.css`) → `/@style/src/style.css` (CSS injection module)
 
+#![allow(clippy::case_sensitive_file_extension_comparisons)]
+#![allow(clippy::if_same_then_else)]
+
 use crate::bundler::PluginContainer;
 use std::path::{Path, PathBuf};
 
@@ -490,11 +493,11 @@ import lodash from "lodash";"#;
 
     #[test]
     fn test_extract_import_urls() {
-        let code = r#"import { useState } from '/@modules/react';
+        let code = r"import { useState } from '/@modules/react';
 import App from '/src/App.tsx';
 import '/src/styles.css';
 export { foo } from '/src/utils.ts';
-const lazy = import('/src/Lazy.tsx');"#;
+const lazy = import('/src/Lazy.tsx');";
 
         let urls = extract_import_urls(code);
         // Should only include local modules, not /@modules/
@@ -536,8 +539,7 @@ const lazy = import('/src/Lazy.tsx');"#;
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
         assert!(
             result.contains("?import"),
-            "Expected ?import suffix, got: {}",
-            result
+            "Expected ?import suffix, got: {result}"
         );
     }
 
@@ -550,8 +552,7 @@ const lazy = import('/src/Lazy.tsx');"#;
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
         assert!(
             result.contains("?import"),
-            "Expected ?import suffix, got: {}",
-            result
+            "Expected ?import suffix, got: {result}"
         );
     }
 
@@ -564,8 +565,7 @@ const lazy = import('/src/Lazy.tsx');"#;
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
         assert!(
             result.contains("?import"),
-            "Expected ?import suffix, got: {}",
-            result
+            "Expected ?import suffix, got: {result}"
         );
     }
 
@@ -578,8 +578,7 @@ const lazy = import('/src/Lazy.tsx');"#;
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
         assert!(
             !result.contains("?import"),
-            "Should not have ?import: {}",
-            result
+            "Should not have ?import: {result}"
         );
     }
 
@@ -592,17 +591,15 @@ const lazy = import('/src/Lazy.tsx');"#;
         let result = rewriter.rewrite(code, Path::new("/project/src/main.tsx"), &plugins);
         assert!(
             result.contains("/@style/"),
-            "CSS should use /@style, got: {}",
-            result
+            "CSS should use /@style, got: {result}"
         );
         assert!(
             !result.contains("?import"),
-            "CSS should not have ?import: {}",
-            result
+            "CSS should not have ?import: {result}"
         );
     }
 
-    /// 1: is_asset_extension detects various asset types.
+    /// 1: `is_asset_extension` detects various asset types.
     #[test]
     fn test_is_asset_extension() {
         assert!(is_asset_extension("logo.png"));
@@ -654,7 +651,7 @@ const lazy = import('/src/Lazy.tsx');"#;
         assert!(!result.contains("/@modules//@modules/"));
     }
 
-    /// 1: Alias resolved via plugin resolve_id.
+    /// 1: Alias resolved via plugin `resolve_id`.
     #[test]
     fn test_rewrite_alias_via_plugin() {
         use crate::bundler::AliasPlugin;
@@ -670,13 +667,11 @@ const lazy = import('/src/Lazy.tsx');"#;
         // Should resolve to root-relative path, not /@modules/
         assert!(
             !result.contains("/@modules/"),
-            "Alias should not be treated as bare specifier, got: {}",
-            result
+            "Alias should not be treated as bare specifier, got: {result}"
         );
         assert!(
             result.contains("/src/components/Button"),
-            "Should resolve to src/components/Button, got: {}",
-            result
+            "Should resolve to src/components/Button, got: {result}"
         );
     }
 }

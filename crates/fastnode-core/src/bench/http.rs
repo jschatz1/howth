@@ -89,6 +89,10 @@ pub struct HttpBenchReport {
 }
 
 /// Run the HTTP benchmark.
+///
+/// # Panics
+///
+/// Panics if temp directory creation fails.
 #[must_use]
 pub fn run_http_bench(params: HttpBenchParams) -> HttpBenchReport {
     let mut warnings = Vec::new();
@@ -322,7 +326,7 @@ fn wait_for_ready(server: &mut Child, port: u16, timeout: Duration) -> bool {
     if let Some(stdout) = server.stdout.take() {
         let reader = BufReader::new(stdout);
         let handle = thread::spawn(move || {
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if line.contains("READY:") {
                     return true;
                 }
@@ -440,7 +444,7 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
         } else {
             lats.sort_unstable();
             let avg = lats.iter().sum::<u64>() / lats.len() as u64;
-            let p99_idx = (lats.len() as f64 * 0.99) as usize;
+            let p99_idx = (lats.len() * 99) / 100;
             let p99 = lats.get(p99_idx.min(lats.len() - 1)).copied().unwrap_or(0);
             (avg, p99)
         }
@@ -470,7 +474,9 @@ fn make_request_keepalive(mut stream: TcpStream) -> Result<TcpStream, std::io::E
     // Read response headers to find Content-Length
     let mut buf = [0u8; 4096];
     let mut total_read = 0;
+    #[allow(unused_assignments)]
     let mut headers_end = None;
+    #[allow(unused_assignments)]
     let mut content_length: Option<usize> = None;
 
     // Read until we have complete headers
@@ -582,7 +588,7 @@ mod tests {
             HttpToolResult {
                 tool: "howth".to_string(),
                 rps: 50000.0,
-                total_requests: 500000,
+                total_requests: 500_000,
                 avg_latency_us: 100,
                 p99_latency_us: 500,
                 errors: 0,
@@ -590,7 +596,7 @@ mod tests {
             HttpToolResult {
                 tool: "node".to_string(),
                 rps: 25000.0,
-                total_requests: 250000,
+                total_requests: 250_000,
                 avg_latency_us: 200,
                 p99_latency_us: 1000,
                 errors: 0,

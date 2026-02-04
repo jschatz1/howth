@@ -6,6 +6,9 @@
 //! - Vite-compatible WebSocket protocol
 //! - HMR preamble injection into served modules
 
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::manual_let_else)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 

@@ -18,6 +18,8 @@
 //!   "packages": { ... },
 //!   "dependencies": { ... }
 //! }
+
+#![allow(clippy::missing_panics_doc)]
 //! ```
 
 use serde::{Deserialize, Serialize};
