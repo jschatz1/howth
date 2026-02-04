@@ -416,7 +416,9 @@ impl Resolver {
             for index in &["index.ts", "index.tsx", "index.js", "index.jsx"] {
                 let index_path = target.join(index);
                 if index_path.is_file() {
-                    return Ok(ResolveResult::Found(dunce::canonicalize(index_path).unwrap()));
+                    return Ok(ResolveResult::Found(
+                        dunce::canonicalize(index_path).unwrap(),
+                    ));
                 }
             }
         }

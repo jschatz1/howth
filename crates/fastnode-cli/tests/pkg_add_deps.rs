@@ -305,6 +305,7 @@ fn wait_for_daemon(endpoint: &str, registry_url: &str) -> bool {
     false
 }
 
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_deps_installs_only_dependencies() {
@@ -376,6 +377,7 @@ fn test_deps_installs_only_dependencies() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_deps_with_dev_includes_dev_dependencies() {
@@ -454,6 +456,7 @@ fn test_deps_with_dev_includes_dev_dependencies() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_deps_invalid_range_produces_exit_2_but_installs_others() {
@@ -523,6 +526,7 @@ fn test_deps_invalid_range_produces_exit_2_but_installs_others() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_deps_deterministic_ordering() {
@@ -589,6 +593,7 @@ fn test_deps_deterministic_ordering() {
     assert!(project.path().join("node_modules/c").exists());
 }
 
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_deps_package_json_not_found_exit_2() {
@@ -648,6 +653,7 @@ fn test_deps_package_json_not_found_exit_2() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_deps_no_dependencies_succeeds_with_empty_result() {
@@ -703,6 +709,7 @@ fn test_deps_no_dependencies_succeeds_with_empty_result() {
     assert!(installed.is_empty(), "Should have no installed packages");
 }
 
+#[cfg(unix)]
 #[test]
 #[serial]
 fn test_deps_human_output_exit_code_2_on_error() {

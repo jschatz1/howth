@@ -511,7 +511,8 @@ fn resolve_directory(
                         add_tried(tried, &index);
 
                         if index.is_file() {
-                            let canonical = dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
+                            let canonical =
+                                dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
                             return ResolveResult::resolved(canonical, tried.clone());
                         }
                     }
@@ -663,8 +664,8 @@ fn resolve_package_subpath(
 
                     // Try exact path
                     if target_path.is_file() {
-                        let canonical =
-                            dunce::canonicalize(&target_path).unwrap_or_else(|_| target_path.clone());
+                        let canonical = dunce::canonicalize(&target_path)
+                            .unwrap_or_else(|_| target_path.clone());
                         return ResolveResult::resolved(canonical, tried.clone());
                     }
 
@@ -1175,7 +1176,8 @@ fn resolve_directory_traced(
                         add_tried(tried, &index);
 
                         if index.is_file() {
-                            let canonical = dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
+                            let canonical =
+                                dunce::canonicalize(&index).unwrap_or_else(|_| index.clone());
                             trace.add_step(
                                 ResolveTraceStep::new(
                                     steps::FINAL_PATH,
@@ -1419,8 +1421,8 @@ fn resolve_package_subpath_traced(
 
                     // Try exact path
                     if target_path.is_file() {
-                        let canonical =
-                            dunce::canonicalize(&target_path).unwrap_or_else(|_| target_path.clone());
+                        let canonical = dunce::canonicalize(&target_path)
+                            .unwrap_or_else(|_| target_path.clone());
                         trace.add_step(
                             ResolveTraceStep::new(
                                 steps::FINAL_PATH,

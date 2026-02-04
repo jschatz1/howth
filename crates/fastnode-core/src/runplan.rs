@@ -239,10 +239,9 @@ where
     C: crate::resolver::ResolverCache,
 {
     // Resolve cwd to absolute, canonicalize if possible
-    let resolved_cwd = dunce::canonicalize(&input.cwd)
-        .map_err(|_| RunPlanError::CwdInvalid {
-            path: input.cwd.clone(),
-        })?;
+    let resolved_cwd = dunce::canonicalize(&input.cwd).map_err(|_| RunPlanError::CwdInvalid {
+        path: input.cwd.clone(),
+    })?;
 
     // Resolve entry path
     let entry_path = if input.entry.is_absolute() {
@@ -258,8 +257,8 @@ where
                 return Err(RunPlanError::EntryIsDir { path: entry_path });
             } else if meta.is_file() {
                 // Try to canonicalize for the resolved path
-                let canonical = dunce::canonicalize(&entry_path)
-                    .unwrap_or_else(|_| entry_path.clone());
+                let canonical =
+                    dunce::canonicalize(&entry_path).unwrap_or_else(|_| entry_path.clone());
                 (
                     Some(canonical.to_string_lossy().into_owned()),
                     "file",
@@ -267,8 +266,8 @@ where
                 )
             } else {
                 // Symlink or other - treat as unknown but present
-                let canonical = dunce::canonicalize(&entry_path)
-                    .unwrap_or_else(|_| entry_path.clone());
+                let canonical =
+                    dunce::canonicalize(&entry_path).unwrap_or_else(|_| entry_path.clone());
                 (
                     Some(canonical.to_string_lossy().into_owned()),
                     "unknown",
