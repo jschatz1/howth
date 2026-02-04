@@ -25,6 +25,7 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dirs-next.workspace = true
+dunce = "1.0"
 tempfile.workspace = true
 fastnode-util.workspace = true
 reqwest.workspace = true

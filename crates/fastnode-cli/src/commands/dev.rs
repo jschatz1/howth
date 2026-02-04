@@ -144,7 +144,7 @@ impl HmrMessage {
 
 /// Run the dev server.
 pub async fn run(action: DevAction) -> Result<()> {
-    let cwd = action.cwd.canonicalize().into_diagnostic()?;
+    let cwd = dunce::canonicalize(&action.cwd).into_diagnostic()?;
 
     // Load config file (howth.config.ts, vite.config.ts, etc.)
     #[allow(unused_variables)]

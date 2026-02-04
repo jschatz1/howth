@@ -16,6 +16,7 @@ serde_json.workspace = true
 notify.workspace = true
 futures.workspace = true
 rayon.workspace = true
+dunce = "1.0"
 
 [dev-dependencies]
 tempfile.workspace = true

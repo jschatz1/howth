@@ -131,7 +131,7 @@ impl Resolver {
         let target = PathBuf::from(specifier);
 
         if target.exists() {
-            let resolved = target.canonicalize().map_err(|e| ResolveError {
+            let resolved = dunce::canonicalize(target).map_err(|e| ResolveError {
                 specifier: specifier.to_string(),
                 from: String::new(),
                 message: e.to_string(),
@@ -143,7 +143,7 @@ impl Resolver {
         for ext in &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
             let with_ext = target.with_extension(&ext[1..]);
             if with_ext.exists() {
-                let resolved = with_ext.canonicalize().map_err(|e| ResolveError {
+                let resolved = dunce::canonicalize(with_ext).map_err(|e| ResolveError {
                     specifier: specifier.to_string(),
                     from: "".to_string(),
                     message: e.to_string(),
@@ -198,7 +198,7 @@ impl Resolver {
                     for entry in &["index.js", "index.ts", "index.mjs"] {
                         let target = node_modules.join(entry);
                         if target.exists() {
-                            return Ok(ResolveResult::Found(target.canonicalize().unwrap()));
+                            return Ok(ResolveResult::Found(dunce::canonicalize(target).unwrap()));
                         }
                     }
                 }
@@ -270,7 +270,7 @@ impl Resolver {
                 if let Some(entry) = self.resolve_exports(exports, &format!("./{}", sub)) {
                     let target = pkg_dir.join(entry);
                     if target.exists() {
-                        return target.canonicalize().map_err(|e| ResolveError {
+                        return dunce::canonicalize(target).map_err(|e| ResolveError {
                             specifier: "".to_string(),
                             from: pkg_json.display().to_string(),
                             message: e.to_string(),
@@ -295,7 +295,7 @@ impl Resolver {
             if let Some(entry) = self.resolve_exports(exports, ".") {
                 let target = pkg_dir.join(entry);
                 if target.exists() {
-                    return target.canonicalize().map_err(|e| ResolveError {
+                    return dunce::canonicalize(target).map_err(|e| ResolveError {
                         specifier: "".to_string(),
                         from: pkg_json.display().to_string(),
                         message: e.to_string(),
@@ -308,7 +308,7 @@ impl Resolver {
         if let Some(module) = json.get("module").and_then(|v| v.as_str()) {
             let target = pkg_dir.join(module);
             if target.exists() {
-                return target.canonicalize().map_err(|e| ResolveError {
+                return dunce::canonicalize(target).map_err(|e| ResolveError {
                     specifier: "".to_string(),
                     from: pkg_json.display().to_string(),
                     message: e.to_string(),
@@ -320,7 +320,7 @@ impl Resolver {
         if let Some(main) = json.get("main").and_then(|v| v.as_str()) {
             let target = pkg_dir.join(main);
             if target.exists() {
-                return target.canonicalize().map_err(|e| ResolveError {
+                return dunce::canonicalize(target).map_err(|e| ResolveError {
                     specifier: "".to_string(),
                     from: pkg_json.display().to_string(),
                     message: e.to_string(),
@@ -331,7 +331,7 @@ impl Resolver {
         // Fallback to index.js
         let index = pkg_dir.join("index.js");
         if index.exists() {
-            return index.canonicalize().map_err(|e| ResolveError {
+            return dunce::canonicalize(index).map_err(|e| ResolveError {
                 specifier: "".to_string(),
                 from: pkg_json.display().to_string(),
                 message: e.to_string(),
@@ -400,14 +400,14 @@ impl Resolver {
     ) -> Result<ResolveResult, ResolveError> {
         // If it exists as-is
         if target.is_file() {
-            return Ok(ResolveResult::Found(target.canonicalize().unwrap()));
+            return Ok(ResolveResult::Found(dunce::canonicalize(target).unwrap()));
         }
 
         // Try with extensions
         for ext in &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
             let with_ext = PathBuf::from(format!("{}{}", target.display(), ext));
             if with_ext.is_file() {
-                return Ok(ResolveResult::Found(with_ext.canonicalize().unwrap()));
+                return Ok(ResolveResult::Found(dunce::canonicalize(with_ext).unwrap()));
             }
         }
 
@@ -416,7 +416,7 @@ impl Resolver {
             for index in &["index.ts", "index.tsx", "index.js", "index.jsx"] {
                 let index_path = target.join(index);
                 if index_path.is_file() {
-                    return Ok(ResolveResult::Found(index_path.canonicalize().unwrap()));
+                    return Ok(ResolveResult::Found(dunce::canonicalize(index_path).unwrap()));
                 }
             }
         }

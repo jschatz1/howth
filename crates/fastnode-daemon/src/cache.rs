@@ -94,7 +94,7 @@ impl DaemonResolverCache {
     /// Returns the number of entries invalidated.
     pub fn invalidate_path(&self, path: &Path) -> usize {
         // Try to canonicalize the path for consistent matching
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let canonical = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
         // Get keys to invalidate
         let keys_to_remove: Vec<ResolverCacheKey> = {
@@ -214,7 +214,7 @@ impl DaemonPkgJsonCache {
     ///
     /// Returns true if an entry was removed.
     pub fn invalidate(&self, path: &Path) -> bool {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let canonical = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut entries = self.entries.write().unwrap();
         entries.remove(&canonical).is_some()
     }
@@ -237,7 +237,7 @@ impl DaemonPkgJsonCache {
 
 impl PkgJsonCache for DaemonPkgJsonCache {
     fn get(&self, path: &Path) -> Option<Value> {
-        let canonical = path.canonicalize().ok()?;
+        let canonical = dunce::canonicalize(path).ok()?;
         let entries = self.entries.read().unwrap();
         let entry = entries.get(&canonical)?;
 
@@ -252,7 +252,7 @@ impl PkgJsonCache for DaemonPkgJsonCache {
     }
 
     fn set(&self, path: &Path, value: Value) {
-        let Ok(canonical) = path.canonicalize() else {
+        let Ok(canonical) = dunce::canonicalize(path) else {
             return;
         };
 
@@ -321,7 +321,7 @@ impl DaemonBuildCache {
 
     /// Add a file path to the reverse index for a node.
     pub fn add_file_dependency(&self, node_id: &str, path: &Path) {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let canonical = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut index = self.reverse_index.write().unwrap();
         index
             .entry(canonical)
@@ -333,7 +333,7 @@ impl DaemonBuildCache {
     ///
     /// Returns the number of entries invalidated.
     pub fn invalidate_path(&self, path: &Path) -> usize {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let canonical = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
         // Get node IDs to invalidate
         let node_ids: Vec<String> = {
@@ -472,7 +472,7 @@ mod tests {
 
         let cache = DaemonResolverCache::new();
         let key = make_key("./dep");
-        let result = make_resolved_result(file.canonicalize().unwrap());
+        let result = make_resolved_result(dunce::canonicalize(&file).unwrap());
 
         cache.put(key, &result);
 
@@ -486,7 +486,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let file = dir.path().join("dep.js");
         fs::write(&file, "export const x = 1;").unwrap();
-        let canonical = file.canonicalize().unwrap();
+        let canonical = dunce::canonicalize(&file).unwrap();
 
         let cache = DaemonResolverCache::new();
         let key = make_key("./dep");
@@ -514,7 +514,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let file = dir.path().join("shared.js");
         fs::write(&file, "export const x = 1;").unwrap();
-        let canonical = file.canonicalize().unwrap();
+        let canonical = dunce::canonicalize(&file).unwrap();
 
         let cache = DaemonResolverCache::new();
 
