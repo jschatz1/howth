@@ -13,7 +13,6 @@ use fastnode_daemon::ipc::MAX_FRAME_SIZE;
 use fastnode_proto::{encode_frame, Frame, FrameResponse, Request, Response};
 use miette::Result;
 use serde_json::Value;
-use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use walkdir::WalkDir;
@@ -116,15 +115,40 @@ fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
     }
 }
 
-/// Send RunTests request to daemon using a blocking Unix socket.
+/// Send RunTests request to daemon using a blocking socket.
 /// Avoids tokio runtime initialization overhead (~2-5ms).
+#[cfg(unix)]
 fn send_run_tests_blocking(
     endpoint: &str,
     cwd: &Path,
     files: &[String],
 ) -> std::io::Result<Response> {
     let mut stream = std::os::unix::net::UnixStream::connect(endpoint)?;
+    send_run_tests_blocking_impl(&mut stream, cwd, files)
+}
 
+/// Send RunTests request to daemon using named pipes on Windows.
+#[cfg(windows)]
+fn send_run_tests_blocking(
+    endpoint: &str,
+    _cwd: &Path,
+    _files: &[String],
+) -> std::io::Result<Response> {
+    // On Windows, we can't use blocking named pipes easily without tokio.
+    // Return an error indicating daemon mode isn't supported for blocking tests on Windows.
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("Blocking daemon connection not supported on Windows. Use async mode or run tests directly. Endpoint: {endpoint}"),
+    ))
+}
+
+/// Common implementation for sending test request over a stream.
+#[cfg(unix)]
+fn send_run_tests_blocking_impl(
+    stream: &mut (impl std::io::Read + std::io::Write),
+    cwd: &Path,
+    files: &[String],
+) -> std::io::Result<Response> {
     let frame = Frame::new(
         VERSION,
         Request::RunTests {
