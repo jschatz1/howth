@@ -10,7 +10,7 @@ deno_core = "0.311"
 deno_napi = "0.100"
 napi_sym = { path = "../napi-sym" }
 log = "0.4"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 tokio.workspace = true
 hyper = { version = "1.4", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
