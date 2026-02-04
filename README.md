@@ -130,6 +130,29 @@ howth is **1.5x faster** than Node.js and reaches **82% of Bun's throughput**.
 
 The gap to Bun is due to async channel coordination between Hyper (HTTP) and V8 (JavaScript). Bun's single-threaded architecture with direct JS calls avoids this overhead. See [docs/performance-deep-dive.md](docs/performance-deep-dive.md) for detailed analysis.
 
+## Docker
+
+Pull and run the official Docker image:
+
+```bash
+docker pull ghcr.io/jschatz1/howth:latest
+```
+
+Run a script:
+
+```bash
+docker run -v $(pwd):/app ghcr.io/jschatz1/howth run script.js
+```
+
+Use as a base image:
+
+```dockerfile
+FROM ghcr.io/jschatz1/howth:latest
+WORKDIR /app
+COPY . .
+CMD ["howth", "run", "index.js"]
+```
+
 ## Building
 
 ```bash

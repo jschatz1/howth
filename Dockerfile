@@ -43,5 +43,8 @@ COPY --from=builder /build/target/release/fastnode /usr/local/bin/
 # Set up working directory
 WORKDIR /app
 
+# Set howth as the entrypoint
+ENTRYPOINT ["howth"]
+
 # Default command shows version
-CMD ["howth", "--version"]
+CMD ["--version"]
