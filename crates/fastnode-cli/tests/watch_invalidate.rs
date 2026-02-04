@@ -2,6 +2,10 @@
 //!
 //! Tests that file changes trigger cache invalidation, causing subsequent
 //! `fastnode run` commands to re-resolve imports instead of using cached results.
+//! These tests require Unix domain sockets for daemon IPC, so they are
+//! disabled on Windows.
+
+#![cfg(unix)]
 
 use serial_test::serial;
 use std::process::{Child, Command, Stdio};

@@ -1,7 +1,10 @@
 //! Integration tests for `fastnode pkg graph`.
 //!
 //! These tests create node_modules structures and verify the graph output.
+//! These tests require Unix domain sockets for daemon IPC, so they are
+//! disabled on Windows.
 
+#![cfg(unix)]
 #![allow(clippy::type_complexity)]
 
 use serial_test::serial;
