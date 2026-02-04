@@ -15,7 +15,7 @@ use std::path::Path;
 /// - `KEY='value'` (single-quoted, literal)
 /// - Comments (`#`) and blank lines are skipped
 /// - Inline comments after unquoted values
-#[must_use] 
+#[must_use]
 pub fn parse_env_file(content: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
@@ -120,7 +120,7 @@ fn parse_unquoted(raw: &str) -> String {
 ///
 /// Later files override earlier ones. System environment variables already set
 /// take precedence and are not overwritten.
-#[must_use] 
+#[must_use]
 pub fn load_env_files(root: &Path, mode: &str) -> HashMap<String, String> {
     let files = [
         root.join(".env"),
@@ -155,7 +155,7 @@ pub fn load_env_files(root: &Path, mode: &str) -> HashMap<String, String> {
 /// - `import.meta.env.DEV` → `true` / `false`
 /// - `import.meta.env.PROD` → `true` / `false`
 /// - `import.meta.env.BASE_URL` → `"/"`
-#[must_use] 
+#[must_use]
 pub fn client_env_replacements(
     env: &HashMap<String, String>,
     mode: &str,

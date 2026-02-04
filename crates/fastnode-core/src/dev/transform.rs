@@ -35,7 +35,7 @@ pub struct ModuleTransformer {
 
 impl ModuleTransformer {
     /// Create a new module transformer.
-    #[must_use] 
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         let rewriter = ImportRewriter::new(root.clone());
         Self {

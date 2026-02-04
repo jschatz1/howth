@@ -36,7 +36,7 @@ pub struct PreBundler {
 
 impl PreBundler {
     /// Create a new pre-bundler.
-    #[must_use] 
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         let deps_dir = root.join(".howth").join("deps");
         Self {
@@ -49,7 +49,7 @@ impl PreBundler {
     /// Scan entry source code for bare import specifiers.
     ///
     /// Returns a set of package names found.
-    #[must_use] 
+    #[must_use]
     pub fn scan_bare_imports(&self, source: &str) -> HashSet<String> {
         let mut bare_imports = HashSet::new();
 
@@ -83,7 +83,7 @@ impl PreBundler {
     }
 
     /// Scan a file and all its dependencies recursively for bare imports.
-    #[must_use] 
+    #[must_use]
     pub fn scan_file_recursive(&self, entry: &Path) -> HashSet<String> {
         let mut bare_imports = HashSet::new();
         let mut visited = HashSet::new();
@@ -221,13 +221,13 @@ impl PreBundler {
     }
 
     /// Get a pre-bundled dependency by package name.
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, pkg: &str) -> Option<&PreBundledDep> {
         self.deps.get(pkg)
     }
 
     /// Check if a package has been pre-bundled.
-    #[must_use] 
+    #[must_use]
     pub fn has(&self, pkg: &str) -> bool {
         self.deps.contains_key(pkg)
     }

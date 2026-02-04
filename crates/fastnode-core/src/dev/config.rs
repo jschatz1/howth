@@ -59,7 +59,7 @@ const CONFIG_FILES: &[&str] = &[
 ];
 
 /// Find a config file in the given root directory.
-#[must_use] 
+#[must_use]
 pub fn find_config_file(root: &Path) -> Option<PathBuf> {
     for name in CONFIG_FILES {
         let path = root.join(name);
@@ -576,7 +576,7 @@ impl JsObjectParser {
 /// like `@ → ./src` (matching Vite/howth alias behavior).
 ///
 /// Returns `None` if no tsconfig/jsconfig exists or has no paths configured.
-#[must_use] 
+#[must_use]
 pub fn load_tsconfig_paths(root: &Path) -> Option<HashMap<String, String>> {
     // Try tsconfig.json first, then jsconfig.json
     let tsconfig_path = root.join("tsconfig.json");

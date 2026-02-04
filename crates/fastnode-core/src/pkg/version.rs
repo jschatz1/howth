@@ -197,7 +197,7 @@ fn convert_space_separated_comparators(range: &str) -> String {
     // Regex-like parsing: split on spaces, but keep operators attached to versions
     // Comparator patterns: >=, <=, >, <, =, ~, ^, or bare version
     let mut result = String::new();
-    let mut chars = range.chars().peekable();
+    let chars = range.chars().peekable();
     let mut current_token = String::new();
     let mut need_comma = false;
 

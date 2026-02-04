@@ -16,7 +16,7 @@ pub struct ImportRewriter {
 
 impl ImportRewriter {
     /// Create a new import rewriter.
-    #[must_use] 
+    #[must_use]
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
@@ -26,7 +26,7 @@ impl ImportRewriter {
     /// `module_path` is the absolute path of the module being served.
     /// `plugins` is used to resolve aliases via `resolve_id` before falling
     /// through to bare specifier handling.
-    #[must_use] 
+    #[must_use]
     pub fn rewrite(&self, code: &str, module_path: &Path, plugins: &PluginContainer) -> String {
         let mut result = String::with_capacity(code.len());
         let module_dir = module_path.parent().unwrap_or(Path::new("/"));
@@ -255,7 +255,7 @@ fn is_asset_extension(specifier: &str) -> bool {
 }
 
 /// Check if a specifier ends with a known asset extension (public).
-#[must_use] 
+#[must_use]
 pub fn is_asset_import(specifier: &str) -> bool {
     is_asset_extension(specifier)
 }
@@ -334,7 +334,7 @@ fn extract_string_from_start(s: &str) -> Option<(String, char, &str)> {
 /// Scans for static imports (`import ... from '...'`), side-effect imports
 /// (`import '...'`), re-exports (`export ... from '...'`), and dynamic
 /// imports (`import('...')`). Returns deduplicated URL paths.
-#[must_use] 
+#[must_use]
 pub fn extract_import_urls(code: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -400,7 +400,7 @@ pub fn extract_import_urls(code: &str) -> Vec<String> {
 /// For howth's use case this is acceptable — a false positive just means we
 /// attempt HMR when we'd otherwise do a full reload, and the worst outcome is
 /// the client falls back to reload anyway.
-#[must_use] 
+#[must_use]
 pub fn is_self_accepting_module(code: &str) -> bool {
     for line in code.lines() {
         let trimmed = line.trim();

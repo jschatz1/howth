@@ -753,13 +753,15 @@ pub async fn handle_pkg_publish(
             if output.status.success() {
                 // Try to parse npm pack output for file count/size (best effort)
                 let files_count = stdout
-                    .lines().find(|l| l.contains("files:"))
+                    .lines()
+                    .find(|l| l.contains("files:"))
                     .and_then(|l| l.split_whitespace().last())
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0u32);
 
                 let tarball_size = stdout
-                    .lines().find(|l| l.contains("size:") || l.contains("unpacked size"))
+                    .lines()
+                    .find(|l| l.contains("size:") || l.contains("unpacked size"))
                     .and_then(|l| {
                         l.split_whitespace()
                             .find(|s| s.chars().all(|c| c.is_ascii_digit()))

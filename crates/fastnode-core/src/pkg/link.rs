@@ -46,15 +46,11 @@ pub fn link_package_binaries(
 
     // Read and parse package.json
     let package_json_content = fs::read_to_string(&package_json_path).map_err(|e| {
-        PkgError::link_failed(format!(
-            "Failed to read package.json for {pkg_name}: {e}"
-        ))
+        PkgError::link_failed(format!("Failed to read package.json for {pkg_name}: {e}"))
     })?;
 
     let package_json: Value = serde_json::from_str(&package_json_content).map_err(|e| {
-        PkgError::link_failed(format!(
-            "Failed to parse package.json for {pkg_name}: {e}"
-        ))
+        PkgError::link_failed(format!("Failed to parse package.json for {pkg_name}: {e}"))
     })?;
 
     // Get the bin field - can be string or object
@@ -389,7 +385,7 @@ pub fn link_package_dependencies(
 
 /// Format a pnpm directory key for a package.
 /// Handles scoped packages by replacing '/' with '+'.
-#[must_use] 
+#[must_use]
 pub fn format_pnpm_key(name: &str, version: &str) -> String {
     if name.starts_with('@') {
         // @scope/name@version -> @scope+name@version

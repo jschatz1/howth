@@ -12,7 +12,9 @@ pub fn run(cwd: &Path, json: bool) -> Result<()> {
     let root = find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
 
     // Detect workspaces
-    let config = if let Some(c) = detect_workspaces(&root) { c } else {
+    let config = if let Some(c) = detect_workspaces(&root) {
+        c
+    } else {
         if json {
             println!(
                 "{}",
@@ -71,7 +73,9 @@ pub fn run(cwd: &Path, json: bool) -> Result<()> {
 pub fn link(cwd: &Path, json: bool) -> Result<()> {
     let root = find_workspace_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
 
-    let config = if let Some(c) = detect_workspaces(&root) { c } else {
+    let config = if let Some(c) = detect_workspaces(&root) {
+        c
+    } else {
         if json {
             println!(
                 "{}",

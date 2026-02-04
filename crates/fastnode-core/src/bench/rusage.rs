@@ -27,14 +27,14 @@ pub struct RusageDelta {
 
 impl RusageDelta {
     /// Total CPU time (user + system) in microseconds.
-    #[must_use] 
+    #[must_use]
     pub fn total_cpu_us(&self) -> u64 {
         self.user_time_us + self.system_time_us
     }
 }
 
 /// Compute the delta between two snapshots.
-#[must_use] 
+#[must_use]
 pub fn delta(before: &RusageSnapshot, after: &RusageSnapshot) -> RusageDelta {
     RusageDelta {
         user_time_us: after.user_time_us.saturating_sub(before.user_time_us),
@@ -104,13 +104,13 @@ mod platform {
 }
 
 /// Snapshot resource usage for the current process.
-#[must_use] 
+#[must_use]
 pub fn snapshot_self() -> Option<RusageSnapshot> {
     platform::snapshot_self()
 }
 
 /// Snapshot resource usage for child processes.
-#[must_use] 
+#[must_use]
 pub fn snapshot_children() -> Option<RusageSnapshot> {
     platform::snapshot_children()
 }

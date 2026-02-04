@@ -156,8 +156,7 @@ impl TransformResult {
 ///
 /// Controls where a plugin runs relative to others in the pipeline.
 /// Mirrors Vite's `enforce` option.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum PluginEnforce {
     /// Runs before normal plugins (e.g., alias resolution).
     Pre,
@@ -167,7 +166,6 @@ pub enum PluginEnforce {
     /// Runs after normal plugins (e.g., minification).
     Post,
 }
-
 
 /// Development server configuration.
 ///

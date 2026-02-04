@@ -194,7 +194,7 @@ fn extract_section(
 /// or `None` for regular version ranges.
 ///
 /// Handles scoped packages like `"npm:@scope/pkg@^1.0.0"`.
-#[must_use] 
+#[must_use]
 pub fn parse_npm_alias(range: &str) -> Option<(&str, &str)> {
     let rest = range.strip_prefix("npm:")?;
     if rest.starts_with('@') {

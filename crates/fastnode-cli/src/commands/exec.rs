@@ -55,10 +55,7 @@ pub fn run(cwd: &Path, binary: &str, args: &[String], json: bool) -> Result<()> 
                 resolved_path: None,
                 error: Some(ExecError {
                     code: "BINARY_NOT_FOUND".to_string(),
-                    message: format!(
-                        "Binary '{}' not found in node_modules/.bin or PATH",
-                        binary
-                    ),
+                    message: format!("Binary '{}' not found in node_modules/.bin or PATH", binary),
                 }),
             };
             println!("{}", serde_json::to_string_pretty(&result).unwrap());

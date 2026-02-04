@@ -114,7 +114,7 @@ impl RegistryClient {
     }
 
     /// Create a client with persistent cache.
-    #[must_use] 
+    #[must_use]
     pub fn with_cache(self, cache: PackageCache) -> Self {
         // Ensure cache directories exist
         let _ = cache.ensure_dirs();
@@ -373,7 +373,9 @@ impl RegistryClient {
                 let path = c.root().join("packuments");
                 std::fs::read_dir(path).ok()
             })
-            .map_or(0, |entries| entries.filter_map(std::result::Result::ok).count());
+            .map_or(0, |entries| {
+                entries.filter_map(std::result::Result::ok).count()
+            });
         (memory_count, disk_count)
     }
 }

@@ -260,9 +260,7 @@ pub async fn run(action: DevAction) -> Result<()> {
         }
 
         if !env_replacements.is_empty()
-            || howth_config
-                .as_ref()
-                .is_some_and(|c| !c.define.is_empty())
+            || howth_config.as_ref().is_some_and(|c| !c.define.is_empty())
         {
             plugins.add(Box::new(replace_plugin));
         }

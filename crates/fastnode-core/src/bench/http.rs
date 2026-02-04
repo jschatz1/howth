@@ -390,15 +390,17 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
                 // Get or create connection
                 let stream = match conn.take() {
                     Some(s) => s,
-                    None => if let Ok(s) = TcpStream::connect(&addr) {
-                        let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
-                        let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
-                        let _ = s.set_nodelay(true);
-                        s
-                    } else {
-                        errors.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    },
+                    None => {
+                        if let Ok(s) = TcpStream::connect(&addr) {
+                            let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                            let _ = s.set_write_timeout(Some(Duration::from_secs(5)));
+                            let _ = s.set_nodelay(true);
+                            s
+                        } else {
+                            errors.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                    }
                 };
 
                 match make_request_keepalive(stream) {

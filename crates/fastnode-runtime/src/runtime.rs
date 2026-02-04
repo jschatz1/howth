@@ -524,7 +524,6 @@ fn op_howth_fs_append(
 #[op2]
 #[string]
 fn op_howth_fs_read_bytes(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
-    
     let bytes = std::fs::read(path)?;
     // Return as base64 for efficient transfer
     Ok(base64_encode(&bytes))
@@ -654,10 +653,9 @@ fn op_howth_fs_access(#[string] path: &str, mode: u32) -> Result<(), deno_core::
     }
 
     // Check write access (mode & 2)
-    if mode & 2 != 0
-        && metadata.permissions().readonly() {
-            return Err(deno_core::error::AnyError::msg("EACCES: permission denied"));
-        }
+    if mode & 2 != 0 && metadata.permissions().readonly() {
+        return Err(deno_core::error::AnyError::msg("EACCES: permission denied"));
+    }
 
     Ok(())
 }
@@ -2049,14 +2047,14 @@ fn op_howth_http_listen(
                                 let body = response.body.unwrap_or_default();
                                 builder
                                     .body(Full::new(Bytes::from(body)))
-                                    .map_err(|e| std::io::Error::other(e))
+                                    .map_err(std::io::Error::other)
                             }
                             Err(_) => {
                                 // JS didn't respond, return 500
                                 hyper::Response::builder()
                                     .status(500)
                                     .body(Full::new(Bytes::from("Internal Server Error")))
-                                    .map_err(|e| std::io::Error::other(e))
+                                    .map_err(std::io::Error::other)
                             }
                         }
                     }
@@ -2648,12 +2646,12 @@ async fn op_howth_http_serve_fast(
 
                                 builder
                                     .body(Full::new(response.body))
-                                    .map_err(|e| std::io::Error::other(e))
+                                    .map_err(std::io::Error::other)
                             }
                             Err(_) => hyper::Response::builder()
                                 .status(500)
                                 .body(Full::new(Bytes::from("Internal Server Error")))
-                                .map_err(|e| std::io::Error::other(e)),
+                                .map_err(std::io::Error::other),
                         }
                     }
                 });
@@ -3153,9 +3151,7 @@ fn respond_fast_impl(
             let response = RawHttpResponse {
                 status,
                 headers: None,
-                body: body
-                    .map(bytes::Bytes::from)
-                    .unwrap_or_default(),
+                body: body.map(bytes::Bytes::from).unwrap_or_default(),
             };
             // oneshot send is synchronous - just transfers ownership
             let _ = req.response_tx.send(response);
@@ -3229,9 +3225,7 @@ async fn op_howth_http_respond_with_headers(
             let response = RawHttpResponse {
                 status,
                 headers,
-                body: body
-                    .map(bytes::Bytes::from)
-                    .unwrap_or_default(),
+                body: body.map(bytes::Bytes::from).unwrap_or_default(),
             };
             let _ = req.response_tx.send(response);
             Ok(())
@@ -3250,7 +3244,6 @@ async fn op_howth_http_respond_with_headers(
 //
 // Requirements: Must run within a tokio::task::LocalSet context.
 
-
 /// Thread-local state for the local HTTP server
 #[derive(Default)]
 struct LocalServerState {
@@ -3266,7 +3259,6 @@ struct LocalServerState {
     port: u16,
     hostname: String,
 }
-
 
 thread_local! {
     static LOCAL_SERVER_STATE: RefCell<LocalServerState> = RefCell::new(LocalServerState::default());
@@ -3473,12 +3465,12 @@ pub fn create_local_server_future() -> Option<impl std::future::Future<Output = 
 
                                 builder
                                     .body(Full::new(response.body))
-                                    .map_err(|e| std::io::Error::other(e))
+                                    .map_err(std::io::Error::other)
                             }
                             Err(_) => hyper::Response::builder()
                                 .status(500)
                                 .body(Full::new(Bytes::from("Internal Server Error")))
-                                .map_err(|e| std::io::Error::other(e)),
+                                .map_err(std::io::Error::other),
                         }
                     }
                 });
@@ -3613,12 +3605,12 @@ async fn http_serve_fast_impl(
 
                                 builder
                                     .body(Full::new(response.body))
-                                    .map_err(|e| std::io::Error::other(e))
+                                    .map_err(std::io::Error::other)
                             }
                             Err(_) => hyper::Response::builder()
                                 .status(500)
                                 .body(Full::new(Bytes::from("Internal Server Error")))
-                                .map_err(|e| std::io::Error::other(e)),
+                                .map_err(std::io::Error::other),
                         }
                     }
                 });
@@ -3886,14 +3878,12 @@ async fn op_howth_http_serve_spsc(
                                     hyper::Response::builder()
                                         .status(status)
                                         .body(Full::new(Bytes::copy_from_slice(body_bytes)))
-                                        .map_err(|e| {
-                                            std::io::Error::other(e)
-                                        })
+                                        .map_err(std::io::Error::other)
                                 }
                                 _ => hyper::Response::builder()
                                     .status(500)
                                     .body(Full::new(Bytes::from("Internal Server Error")))
-                                    .map_err(|e| std::io::Error::other(e)),
+                                    .map_err(std::io::Error::other),
                             }
                         }
                     });
@@ -3954,11 +3944,13 @@ fn op_howth_http_wait_spsc() -> Option<(u32, String, String)> {
     let server = get_spsc_server().lock().ok()?;
     let state = server.as_ref()?;
 
-    state.request_queue.pop().map(|entry| (
+    state.request_queue.pop().map(|entry| {
+        (
             entry.req_id,
             entry.method_str().to_string(),
             entry.url().to_string(),
-        ))
+        )
+    })
 }
 
 /// Sync op to send response via crossbeam channel

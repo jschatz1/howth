@@ -29,13 +29,13 @@ pub struct WorkspaceConfig {
 
 impl WorkspaceConfig {
     /// Check if a package name is a workspace package.
-    #[must_use] 
+    #[must_use]
     pub fn is_workspace_package(&self, name: &str) -> bool {
         self.packages.contains_key(name)
     }
 
     /// Get workspace package info by name.
-    #[must_use] 
+    #[must_use]
     pub fn get_package(&self, name: &str) -> Option<&WorkspacePackage> {
         self.packages.get(name)
     }
@@ -44,7 +44,7 @@ impl WorkspaceConfig {
 /// Detect and parse workspace configuration from a project root.
 ///
 /// Returns `None` if the project doesn't use workspaces.
-#[must_use] 
+#[must_use]
 pub fn detect_workspaces(project_root: &Path) -> Option<WorkspaceConfig> {
     let package_json_path = project_root.join("package.json");
     let content = std::fs::read_to_string(&package_json_path).ok()?;
@@ -166,7 +166,7 @@ pub fn link_workspace_packages(
 /// Find the workspace root by walking up the directory tree.
 ///
 /// Returns the first directory containing a package.json with a "workspaces" field.
-#[must_use] 
+#[must_use]
 pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
 

@@ -336,7 +336,9 @@ fn needs_transpilation(path: &Path) -> bool {
 
 /// Execute the run plan by running the file with Node.
 fn execute_plan(plan: &RunPlanOutput, cwd: &Path, json: bool) -> Result<()> {
-    let resolved_entry = if let Some(entry) = &plan.resolved_entry { entry } else {
+    let resolved_entry = if let Some(entry) = &plan.resolved_entry {
+        entry
+    } else {
         if json {
             let error_json = serde_json::json!({
                 "ok": false,
