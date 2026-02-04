@@ -19,7 +19,11 @@ pub fn version_satisfies(version: &str, range: &str) -> bool {
             .split("||")
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .any(|alt| parse_range(alt).map(|req| req.matches(&ver)).unwrap_or(false))
+            .any(|alt| {
+                parse_range(alt)
+                    .map(|req| req.matches(&ver))
+                    .unwrap_or(false)
+            })
     } else {
         parse_range(range)
             .map(|req| req.matches(&ver))
@@ -148,17 +152,15 @@ fn parse_range(range: &str) -> Result<VersionReq, PkgError> {
     // Handle hyphen ranges: "1.0.0 - 2.0.0" -> ">=1.0.0, <=2.0.0"
     if let Some((start, end)) = parse_hyphen_range(range) {
         let converted = format!(">={start}, <={end}");
-        return VersionReq::parse(&converted).map_err(|e| {
-            PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
-        });
+        return VersionReq::parse(&converted)
+            .map_err(|e| PkgError::spec_invalid(format!("Invalid version range '{range}': {e}")));
     }
 
     // Handle x-ranges: "1.x" -> ">=1.0.0, <2.0.0"
     if range.contains('x') || range.contains('X') || range == "*" {
         let converted = convert_x_range(range);
-        return VersionReq::parse(&converted).map_err(|e| {
-            PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
-        });
+        return VersionReq::parse(&converted)
+            .map_err(|e| PkgError::spec_invalid(format!("Invalid version range '{range}': {e}")));
     }
 
     // Handle space-separated comparators: ">= 2.1.2 < 3.0.0" -> ">=2.1.2, <3.0.0"
@@ -166,9 +168,8 @@ fn parse_range(range: &str) -> Result<VersionReq, PkgError> {
     let converted = convert_space_separated_comparators(range);
 
     // Standard semver range
-    VersionReq::parse(&converted).map_err(|e| {
-        PkgError::spec_invalid(format!("Invalid version range '{range}': {e}"))
-    })
+    VersionReq::parse(&converted)
+        .map_err(|e| PkgError::spec_invalid(format!("Invalid version range '{range}': {e}")))
 }
 
 /// Parse a hyphen range like "1.0.0 - 2.0.0".

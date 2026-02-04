@@ -154,10 +154,7 @@ fn link_binary(
 fn create_cmd_shim(link_path: &Path, target_path: &Path) -> Result<(), PkgError> {
     // Create a .cmd file that runs the target
     let cmd_path = link_path.with_extension("cmd");
-    let shim_content = format!(
-        "@ECHO off\r\nnode \"{}\" %*\r\n",
-        target_path.display()
-    );
+    let shim_content = format!("@ECHO off\r\nnode \"{}\" %*\r\n", target_path.display());
 
     fs::write(&cmd_path, shim_content).map_err(|e| {
         PkgError::link_failed(format!(
@@ -283,10 +280,8 @@ fn needs_relink(cache_dir: &Path, dest_dir: &Path) -> bool {
     let cache_pkg = cache_dir.join("package.json");
     let dest_pkg = dest_dir.join("package.json");
 
-    let (Ok(cache_meta), Ok(dest_meta)) = (
-        fs::metadata(&cache_pkg),
-        fs::metadata(&dest_pkg),
-    ) else {
+    let (Ok(cache_meta), Ok(dest_meta)) = (fs::metadata(&cache_pkg), fs::metadata(&dest_pkg))
+    else {
         return true; // Missing file — needs linking
     };
 
@@ -602,9 +597,13 @@ mod tests {
         fs::write(cached_pkg.join("package.json"), "{}").unwrap();
 
         // Link into project
-        let link_path =
-            link_into_node_modules_with_version(project.path(), "@types/node", "20.0.0", &cached_pkg)
-                .unwrap();
+        let link_path = link_into_node_modules_with_version(
+            project.path(),
+            "@types/node",
+            "20.0.0",
+            &cached_pkg,
+        )
+        .unwrap();
 
         assert!(link_path.exists());
         assert_eq!(
@@ -728,7 +727,8 @@ mod tests {
         link_into_node_modules(project.path(), "prettier", &cached_pkg).unwrap();
 
         // Link binaries
-        let binaries = link_package_binaries(project.path(), "prettier", &cached_pkg, None).unwrap();
+        let binaries =
+            link_package_binaries(project.path(), "prettier", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 1);
         assert!(project.path().join("node_modules/.bin/prettier").exists());
@@ -740,7 +740,11 @@ mod tests {
         let cache = tempdir().unwrap();
 
         // Create a fake cached package with bin as object
-        let cached_pkg = cache.path().join("typescript").join("5.0.0").join("package");
+        let cached_pkg = cache
+            .path()
+            .join("typescript")
+            .join("5.0.0")
+            .join("package");
         fs::create_dir_all(&cached_pkg).unwrap();
         fs::create_dir_all(cached_pkg.join("bin")).unwrap();
         fs::write(
@@ -763,7 +767,8 @@ mod tests {
         link_into_node_modules(project.path(), "typescript", &cached_pkg).unwrap();
 
         // Link binaries
-        let binaries = link_package_binaries(project.path(), "typescript", &cached_pkg, None).unwrap();
+        let binaries =
+            link_package_binaries(project.path(), "typescript", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 2);
         assert!(project.path().join("node_modules/.bin/tsc").exists());

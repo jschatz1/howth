@@ -741,7 +741,10 @@ mod tests {
 
         assert_eq!(result.deps.len(), 2);
         // Alias dep should have the alias name as key and resolved range as value
-        assert!(result.deps.iter().any(|(n, r)| n == "regular" && r == "^1.0.0"));
+        assert!(result
+            .deps
+            .iter()
+            .any(|(n, r)| n == "regular" && r == "^1.0.0"));
         assert!(result
             .deps
             .iter()
@@ -771,7 +774,10 @@ mod tests {
         let result = read_package_deps(&path, false, false).unwrap();
 
         assert_eq!(result.deps.len(), 1);
-        assert_eq!(result.deps[0], ("my-alias".to_string(), "^7.0.0".to_string()));
+        assert_eq!(
+            result.deps[0],
+            ("my-alias".to_string(), "^7.0.0".to_string())
+        );
         assert_eq!(
             result.aliases.get("my-alias"),
             Some(&"@babel/core".to_string())

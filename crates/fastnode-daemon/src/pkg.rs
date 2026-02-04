@@ -10,9 +10,9 @@ use fastnode_core::pkg::{
     link_into_node_modules, link_into_node_modules_direct, link_into_node_modules_with_version,
     link_package_binaries, link_package_dependencies, lockfile_content_hash, read_package_deps,
     remove_dependency_from_package_json, resolve_dependencies, resolve_version, version_satisfies,
-    why_from_graph, write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions, LockPackage, Lockfile,
-    PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult, RegistryClient,
-    ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
+    why_from_graph, write_lockfile, DoctorOptions, DoctorSeverity, GraphOptions, LockPackage,
+    Lockfile, PackageCache, PackageSpec, PkgError, PkgWhyResult as CorePkgWhyResult,
+    RegistryClient, ResolveOptions, WhyOptions, LOCKFILE_NAME, MAX_TARBALL_SIZE,
 };
 use fastnode_core::resolver::{
     resolve_with_trace, PkgJsonCache, ResolutionKind, ResolveContext, ResolverConfig,
@@ -72,7 +72,12 @@ fn parse_channel(channel: &str) -> Channel {
 }
 
 /// Handle a PkgAdd request.
-pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str, save_dev: bool) -> Response {
+pub async fn handle_pkg_add(
+    specs: &[String],
+    cwd: &str,
+    channel: &str,
+    save_dev: bool,
+) -> Response {
     let project_root = Path::new(cwd);
     let package_json_path = project_root.join("package.json");
 
@@ -96,7 +101,11 @@ pub async fn handle_pkg_add(specs: &[String], cwd: &str, channel: &str, save_dev
         match add_single_package(spec_str, project_root, &cache, &registry).await {
             Ok((pkg, from_cache, version_range)) => {
                 // Update package.json with the dependency
-                let dep_section = if save_dev { "devDependencies" } else { "dependencies" };
+                let dep_section = if save_dev {
+                    "devDependencies"
+                } else {
+                    "dependencies"
+                };
                 debug!(
                     name = %pkg.name,
                     version = %pkg.version,
@@ -191,10 +200,7 @@ async fn add_single_package(
 
     // Determine version range for package.json
     // If user specified a range, use it; otherwise use "^{resolved_version}"
-    let version_range = spec
-        .range
-        .clone()
-        .unwrap_or_else(|| format!("^{version}"));
+    let version_range = spec.range.clone().unwrap_or_else(|| format!("^{version}"));
 
     // Check if already cached
     let package_dir = cache.package_dir(&spec.name, &version);
@@ -212,18 +218,17 @@ async fn add_single_package(
 
         // Download tarball (with auth token for scoped registries)
         let auth_token = registry.auth_token_for(&spec.name);
-        let bytes = download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
+        let bytes =
+            download_tarball(registry.http(), tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
 
         debug!(size = bytes.len(), "Downloaded tarball");
 
         // Extract to cache (offload CPU-bound decompression to thread pool)
         let extract_bytes = bytes.clone();
         let extract_dest = package_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            extract_tgz_atomic(&extract_bytes, &extract_dest)
-        })
-        .await
-        .map_err(|e| PkgError::extract_failed(format!("Extraction task failed: {e}")))??;
+        tokio::task::spawn_blocking(move || extract_tgz_atomic(&extract_bytes, &extract_dest))
+            .await
+            .map_err(|e| PkgError::extract_failed(format!("Extraction task failed: {e}")))??;
 
         debug!(path = %package_dir.display(), "Extracted to cache");
     }
@@ -241,7 +246,9 @@ async fn add_single_package(
         .join(&spec.name);
 
     // Link binaries into .bin
-    if let Ok(binaries) = link_package_binaries(project_root, &spec.name, &package_dir, Some(&pnpm_pkg_dir)) {
+    if let Ok(binaries) =
+        link_package_binaries(project_root, &spec.name, &package_dir, Some(&pnpm_pkg_dir))
+    {
         for bin in &binaries {
             debug!(bin = %bin.display(), "Linked binary");
         }
@@ -998,7 +1005,9 @@ pub async fn handle_pkg_install_with_progress(
                     true
                 } else {
                     pj_ranges.iter().any(|(name, range)| {
-                        lf_ranges.get(name).map_or(true, |lf_range| range.as_str() != *lf_range)
+                        lf_ranges
+                            .get(name)
+                            .map_or(true, |lf_range| range.as_str() != *lf_range)
                     })
                 }
             }
@@ -1131,7 +1140,10 @@ pub async fn handle_pkg_install_with_progress(
 
         // Check if this is a workspace package
         if let Some(ref config) = workspace_config {
-            if let Some(ws_pkg) = config.get_package(name).filter(|ws| ws.version == lock_pkg.version) {
+            if let Some(ws_pkg) = config
+                .get_package(name)
+                .filter(|ws| ws.version == lock_pkg.version)
+            {
                 // Link workspace package directly instead of fetching from registry
                 debug!(name = %name, path = %ws_pkg.path.display(), "Linking workspace package");
 
@@ -1139,7 +1151,9 @@ pub async fn handle_pkg_install_with_progress(
                 match link_into_node_modules_direct(&project_root, name, &ws_pkg.path) {
                     Ok(link_path) => {
                         // Link binaries for workspace package (no pnpm layout)
-                        if let Ok(binaries) = link_package_binaries(&project_root, name, &ws_pkg.path, None) {
+                        if let Ok(binaries) =
+                            link_package_binaries(&project_root, name, &ws_pkg.path, None)
+                        {
                             for bin in &binaries {
                                 debug!(bin = %bin.display(), "Linked workspace binary");
                             }
@@ -1158,13 +1172,15 @@ pub async fn handle_pkg_install_with_progress(
 
                         // Send progress event
                         if let Some(ref tx) = progress_tx {
-                            let _ = tx.send(Response::PkgInstallProgress {
-                                name: name.to_string(),
-                                version: ws_pkg.version.clone(),
-                                status: "workspace".to_string(),
-                                completed,
-                                total: total_packages,
-                            }).await;
+                            let _ = tx
+                                .send(Response::PkgInstallProgress {
+                                    name: name.to_string(),
+                                    version: ws_pkg.version.clone(),
+                                    status: "workspace".to_string(),
+                                    completed,
+                                    total: total_packages,
+                                })
+                                .await;
                         }
 
                         continue;
@@ -1195,7 +1211,8 @@ pub async fn handle_pkg_install_with_progress(
             let cache = cache.clone();
             let registry = registry.clone();
             async move {
-                let result = install_from_lockfile(&name, &lock_pkg, &project_root, &cache, &registry).await;
+                let result =
+                    install_from_lockfile(&name, &lock_pkg, &project_root, &cache, &registry).await;
                 (name, lock_pkg.version.clone(), result)
             }
         })
@@ -1216,13 +1233,15 @@ pub async fn handle_pkg_install_with_progress(
 
                 // Send progress event
                 if let Some(ref tx) = progress_tx {
-                    let _ = tx.send(Response::PkgInstallProgress {
-                        name: name.clone(),
-                        version: version.clone(),
-                        status: status.to_string(),
-                        completed,
-                        total: total_packages,
-                    }).await;
+                    let _ = tx
+                        .send(Response::PkgInstallProgress {
+                            name: name.clone(),
+                            version: version.clone(),
+                            status: status.to_string(),
+                            completed,
+                            total: total_packages,
+                        })
+                        .await;
                 }
 
                 installed.push(pkg_info);
@@ -1246,7 +1265,8 @@ pub async fn handle_pkg_install_with_progress(
     debug!("Linking package dependencies (pnpm layout)");
 
     // Collect work items: (name, version, resolved_deps)
-    let mut link_work: Vec<(String, String, std::collections::BTreeMap<String, String>)> = Vec::new();
+    let mut link_work: Vec<(String, String, std::collections::BTreeMap<String, String>)> =
+        Vec::new();
     for (key, lock_pkg) in &lockfile.packages {
         if lock_pkg.dependencies.is_empty() && lock_pkg.peer_dependencies.is_empty() {
             continue;
@@ -1380,7 +1400,10 @@ async fn install_from_lockfile(
             let packument = registry.fetch_packument(fetch_name).await?;
             get_tarball_url(&packument, version)
                 .ok_or_else(|| {
-                    PkgError::download_failed(format!("No tarball URL for {}@{}", fetch_name, version))
+                    PkgError::download_failed(format!(
+                        "No tarball URL for {}@{}",
+                        fetch_name, version
+                    ))
                 })?
                 .to_string()
         };
@@ -1389,7 +1412,8 @@ async fn install_from_lockfile(
 
         // Download tarball (with auth token for scoped registries)
         let auth_token = registry.auth_token_for(fetch_name);
-        let bytes = download_tarball(registry.http(), &tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
+        let bytes =
+            download_tarball(registry.http(), &tarball_url, MAX_TARBALL_SIZE, auth_token).await?;
 
         // TODO: Verify integrity hash matches lock_pkg.integrity
         // For now, just extract
@@ -1399,11 +1423,9 @@ async fn install_from_lockfile(
         // Extract to cache (offload CPU-bound decompression to thread pool)
         let extract_bytes = bytes.clone();
         let extract_dest = package_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            extract_tgz_atomic(&extract_bytes, &extract_dest)
-        })
-        .await
-        .map_err(|e| PkgError::extract_failed(format!("Extraction task failed: {e}")))??;
+        tokio::task::spawn_blocking(move || extract_tgz_atomic(&extract_bytes, &extract_dest))
+            .await
+            .map_err(|e| PkgError::extract_failed(format!("Extraction task failed: {e}")))??;
 
         debug!(path = %package_dir.display(), "Extracted to cache");
     }
@@ -1420,7 +1442,9 @@ async fn install_from_lockfile(
         .join(name);
 
     // Link binaries into .bin
-    if let Ok(binaries) = link_package_binaries(project_root, name, &package_dir, Some(&pnpm_pkg_dir)) {
+    if let Ok(binaries) =
+        link_package_binaries(project_root, name, &package_dir, Some(&pnpm_pkg_dir))
+    {
         for bin in &binaries {
             debug!(bin = %bin.display(), "Linked binary");
         }

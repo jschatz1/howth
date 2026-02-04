@@ -679,10 +679,9 @@ fn main() -> Result<()> {
                 warmup,
                 project,
             } => commands::bench::install::run(*iters, *warmup, project.clone(), cli.json),
-            BenchCommands::TestRun {
-                iters,
-                warmup,
-            } => commands::bench::test::run(*iters, *warmup, cli.json),
+            BenchCommands::TestRun { iters, warmup } => {
+                commands::bench::test::run(*iters, *warmup, cli.json)
+            }
             BenchCommands::Http {
                 duration,
                 connections,
@@ -792,13 +791,11 @@ fn main() -> Result<()> {
                     cwd: cwd.clone(),
                 }
             }
-            PkgCommands::Update { packages, latest } => {
-                commands::pkg::PkgAction::Update {
-                    packages: packages.clone(),
-                    cwd: cwd.clone(),
-                    latest: *latest,
-                }
-            }
+            PkgCommands::Update { packages, latest } => commands::pkg::PkgAction::Update {
+                packages: packages.clone(),
+                cwd: cwd.clone(),
+                latest: *latest,
+            },
             PkgCommands::Outdated => commands::pkg::PkgAction::Outdated { cwd: cwd.clone() },
             PkgCommands::Publish {
                 dry_run,

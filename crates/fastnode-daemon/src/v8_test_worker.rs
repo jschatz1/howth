@@ -178,8 +178,14 @@ async fn v8_worker_loop(rx: mpsc::Receiver<V8Request>, temp_dir: &std::path::Pat
     debug!("V8 runtime ready, waiting for test requests");
 
     while let Ok(req) = rx.recv() {
-        let result =
-            run_tests_in_v8(&mut runtime, &req.id, &req.files, temp_dir, &virtual_modules).await;
+        let result = run_tests_in_v8(
+            &mut runtime,
+            &req.id,
+            &req.files,
+            temp_dir,
+            &virtual_modules,
+        )
+        .await;
         let _ = req.reply.send(result);
     }
 
@@ -264,10 +270,7 @@ async fn run_tests_in_v8(
     let runner_path = temp_dir.join(format!("{id}-runner.mjs"));
     {
         let mut vm = virtual_modules.borrow_mut();
-        vm.insert(
-            runner_path.to_string_lossy().to_string(),
-            runner_code,
-        );
+        vm.insert(runner_path.to_string_lossy().to_string(), runner_code);
     }
 
     // Execute as a side module (reusable runtime — no "main module" restriction)
@@ -327,12 +330,24 @@ async fn run_tests_in_v8(
         .map(|arr| {
             arr.iter()
                 .map(|t| WorkerTestCase {
-                    name: t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                    name: t
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     file: String::new(),
-                    status: t.get("status").and_then(|s| s.as_str()).unwrap_or("fail").to_string(),
+                    status: t
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("fail")
+                        .to_string(),
                     duration_ms: t.get("duration_ms").and_then(|d| d.as_f64()).unwrap_or(0.0),
                     error: t.get("error").and_then(|e| {
-                        if e.is_null() { None } else { e.as_str().map(String::from) }
+                        if e.is_null() {
+                            None
+                        } else {
+                            e.as_str().map(String::from)
+                        }
                     }),
                 })
                 .collect()

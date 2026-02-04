@@ -47,7 +47,9 @@ const SMOKE_COLORS: &[&str] = &[
 ];
 
 fn smoke_color(index: usize) -> &'static str {
-    SMOKE_COLORS.get(index % SMOKE_COLORS.len()).unwrap_or(&"\x1b[1;37m")
+    SMOKE_COLORS
+        .get(index % SMOKE_COLORS.len())
+        .unwrap_or(&"\x1b[1;37m")
 }
 
 fn print_human(report: &BenchReport) -> Result<()> {
@@ -66,7 +68,12 @@ fn print_human(report: &BenchReport) -> Result<()> {
     writeln!(out).into_diagnostic()?;
 
     // Find the fastest median
-    let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
+    let min_median = report
+        .results
+        .iter()
+        .map(|r| r.median_ns)
+        .min()
+        .unwrap_or(0);
 
     // Results — one block per benchmark
     for (i, result) in report.results.iter().enumerate() {

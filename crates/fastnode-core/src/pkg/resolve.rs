@@ -118,8 +118,11 @@ pub async fn resolve_dependencies(
         .map(String::from);
 
     // Read dependencies from package.json
-    let pkg_deps =
-        read_package_deps(&package_json_path, options.include_dev, options.include_optional)?;
+    let pkg_deps = read_package_deps(
+        &package_json_path,
+        options.include_dev,
+        options.include_optional,
+    )?;
 
     // Initialize resolution state
     let state = Arc::new(ResolveState::new());

@@ -92,7 +92,12 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
     writeln!(out).into_diagnostic()?;
 
     // Find the fastest median
-    let min_median = report.results.iter().map(|r| r.median_ns).min().unwrap_or(0);
+    let min_median = report
+        .results
+        .iter()
+        .map(|r| r.median_ns)
+        .min()
+        .unwrap_or(0);
 
     // Results — one block per case (hyperfine style)
     for (i, result) in report.results.iter().enumerate() {
@@ -174,8 +179,12 @@ fn print_human(report: &BuildBenchReport) -> Result<()> {
                 extras.push(format!("RSS: \x1b[33m{}\x1b[0m", format_bytes(rss)));
             }
             if extras.is_empty() {
-                writeln!(out, "  \x1b[1;31m{}\x1b[0m: \x1b[31m{median}\x1b[0m", baseline.name)
-                    .into_diagnostic()?;
+                writeln!(
+                    out,
+                    "  \x1b[1;31m{}\x1b[0m: \x1b[31m{median}\x1b[0m",
+                    baseline.name
+                )
+                .into_diagnostic()?;
             } else {
                 writeln!(
                     out,

@@ -70,8 +70,10 @@ impl DaemonState {
         let compiler: Arc<dyn CompilerBackend> = Arc::new(SwcBackend::new());
 
         // Create shared registry client with persistent packument cache
-        let registry = RegistryClient::from_env_with_cache((*pkg_cache).clone())
-            .unwrap_or_else(|_| RegistryClient::from_env().expect("Failed to create registry client"));
+        let registry =
+            RegistryClient::from_env_with_cache((*pkg_cache).clone()).unwrap_or_else(|_| {
+                RegistryClient::from_env().expect("Failed to create registry client")
+            });
 
         Self {
             cache,
@@ -96,8 +98,10 @@ impl DaemonState {
         let compiler: Arc<dyn CompilerBackend> = Arc::new(SwcBackend::new());
 
         // Create shared registry client with persistent packument cache
-        let registry = RegistryClient::from_env_with_cache((*pkg_cache).clone())
-            .unwrap_or_else(|_| RegistryClient::from_env().expect("Failed to create registry client"));
+        let registry =
+            RegistryClient::from_env_with_cache((*pkg_cache).clone()).unwrap_or_else(|_| {
+                RegistryClient::from_env().expect("Failed to create registry client")
+            });
 
         Self {
             cache,
@@ -122,8 +126,10 @@ impl DaemonState {
         let build_cache = Arc::new(DaemonBuildCache::new());
 
         // Create shared registry client with persistent packument cache
-        let registry = RegistryClient::from_env_with_cache((*pkg_cache).clone())
-            .unwrap_or_else(|_| RegistryClient::from_env().expect("Failed to create registry client"));
+        let registry =
+            RegistryClient::from_env_with_cache((*pkg_cache).clone()).unwrap_or_else(|_| {
+                RegistryClient::from_env().expect("Failed to create registry client")
+            });
 
         Self {
             cache,

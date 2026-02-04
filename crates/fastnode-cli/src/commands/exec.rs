@@ -90,8 +90,10 @@ fn resolve_binary(cwd: &Path, binary: &str) -> (Option<String>, String) {
             if binary_path.exists() {
                 // Build search path with all bin dirs prepended
                 let system_path = std::env::var("PATH").unwrap_or_default();
-                let bin_path_strs: Vec<String> =
-                    bin_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                let bin_path_strs: Vec<String> = bin_dirs
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
                 let search_path = format!("{}:{}", bin_path_strs.join(":"), system_path);
 
                 return (
@@ -112,8 +114,10 @@ fn resolve_binary(cwd: &Path, binary: &str) -> (Option<String>, String) {
     let search_path = if bin_dirs.is_empty() {
         system_path.clone()
     } else {
-        let bin_path_strs: Vec<String> =
-            bin_dirs.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let bin_path_strs: Vec<String> = bin_dirs
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         format!("{}:{}", bin_path_strs.join(":"), system_path)
     };
 

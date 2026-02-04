@@ -145,8 +145,8 @@ impl PreBundler {
         let bundler = Bundler::with_cwd(&self.root);
         let options = BundleOptions {
             format: BundleFormat::Esm,
-            treeshake: false,  // Don't treeshake deps (we need all exports)
-            minify: false,     // No minification in dev
+            treeshake: false, // Don't treeshake deps (we need all exports)
+            minify: false,    // No minification in dev
             ..Default::default()
         };
 
@@ -183,7 +183,9 @@ impl PreBundler {
 
         // Create a virtual entry that re-exports everything
         let entry_code = format!("export * from '{}';", pkg);
-        let entry_path = self.deps_dir.join(format!("_entry_{}.js", sanitize_pkg_name(pkg)));
+        let entry_path = self
+            .deps_dir
+            .join(format!("_entry_{}.js", sanitize_pkg_name(pkg)));
 
         std::fs::write(&entry_path, &entry_code).map_err(|e| PreBundleError {
             message: format!("Failed to write entry: {}", e),
@@ -345,10 +347,7 @@ const lazy = import('lazy-module');
     fn test_package_name_from_specifier() {
         assert_eq!(package_name_from_specifier("react"), "react");
         assert_eq!(package_name_from_specifier("react/jsx-runtime"), "react");
-        assert_eq!(
-            package_name_from_specifier("@scope/pkg"),
-            "@scope/pkg"
-        );
+        assert_eq!(package_name_from_specifier("@scope/pkg"), "@scope/pkg");
         assert_eq!(
             package_name_from_specifier("@scope/pkg/utils"),
             "@scope/pkg"

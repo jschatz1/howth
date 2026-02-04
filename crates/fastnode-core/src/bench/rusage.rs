@@ -49,8 +49,7 @@ mod platform {
     #[allow(clippy::cast_sign_loss)]
     fn from_rusage(ru: libc::rusage) -> RusageSnapshot {
         let user_time_us = ru.ru_utime.tv_sec as u64 * 1_000_000 + ru.ru_utime.tv_usec as u64;
-        let system_time_us =
-            ru.ru_stime.tv_sec as u64 * 1_000_000 + ru.ru_stime.tv_usec as u64;
+        let system_time_us = ru.ru_stime.tv_sec as u64 * 1_000_000 + ru.ru_stime.tv_usec as u64;
 
         // On macOS, ru_maxrss is in bytes. On Linux, it's in kilobytes.
         let max_rss = if cfg!(target_os = "macos") {

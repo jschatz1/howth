@@ -21,8 +21,10 @@ pub fn run(duration_secs: u32, connections: u32, warmup_secs: u32, json: bool) -
     };
 
     eprintln!("Running HTTP benchmark...");
-    eprintln!("  Duration: {}s, Connections: {}, Warmup: {}s",
-        duration_secs, connections, warmup_secs);
+    eprintln!(
+        "  Duration: {}s, Connections: {}, Warmup: {}s",
+        duration_secs, connections, warmup_secs
+    );
     eprintln!();
 
     let report = run_http_bench(params);
@@ -146,7 +148,8 @@ fn print_human(report: &HttpBenchReport) -> Result<()> {
                     writeln!(
                         out,
                         "    \x1b[1;31m{:.2}x\x1b[0m slower than {}",
-                        1.0 / cmp.speedup, cmp.tool
+                        1.0 / cmp.speedup,
+                        cmp.tool
                     )
                     .into_diagnostic()?;
                 }
@@ -162,12 +165,7 @@ fn print_human(report: &HttpBenchReport) -> Result<()> {
                 Severity::Info => "\x1b[34minfo\x1b[0m",
                 Severity::Warn => "\x1b[33mwarn\x1b[0m",
             };
-            writeln!(
-                out,
-                "[{prefix}] {}: {}",
-                warning.code, warning.message
-            )
-            .into_diagnostic()?;
+            writeln!(out, "[{prefix}] {}: {}", warning.code, warning.message).into_diagnostic()?;
         }
     }
 

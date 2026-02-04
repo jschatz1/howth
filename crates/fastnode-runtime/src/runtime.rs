@@ -1,16 +1,18 @@
 //! Runtime implementation using deno_core.
 
 use crate::module_loader::HowthModuleLoader;
-use deno_core::{extension, op2, JsBuffer, JsRuntime, ModuleSpecifier, RuntimeOptions as DenoRuntimeOptions};
+use deno_core::{
+    extension, op2, JsBuffer, JsRuntime, ModuleSpecifier, RuntimeOptions as DenoRuntimeOptions,
+};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{ErrorKind, Read, Write, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use std::sync::mpsc;
-use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event};
+use std::sync::Arc;
 
 /// Permissive NAPI permissions — howth has no permission system.
 struct HowthNapiPermissions;
@@ -35,41 +37,56 @@ fn format_fs_error(err: std::io::Error, syscall: &str, path: &str) -> deno_core:
             #[cfg(unix)]
             if let Some(os_err) = err.raw_os_error() {
                 match os_err {
-                    libc::ENOTDIR => return deno_core::error::AnyError::msg(format!(
-                        "ENOTDIR: not a directory, {syscall} '{path}'"
-                    )),
-                    libc::EISDIR => return deno_core::error::AnyError::msg(format!(
-                        "EISDIR: illegal operation on a directory, {syscall} '{path}'"
-                    )),
-                    libc::ENOTEMPTY => return deno_core::error::AnyError::msg(format!(
-                        "ENOTEMPTY: directory not empty, {syscall} '{path}'"
-                    )),
-                    libc::EROFS => return deno_core::error::AnyError::msg(format!(
-                        "EROFS: read-only file system, {syscall} '{path}'"
-                    )),
-                    libc::EFBIG => return deno_core::error::AnyError::msg(format!(
-                        "EFBIG: file too large, {syscall} '{path}'"
-                    )),
-                    libc::EXDEV => return deno_core::error::AnyError::msg(format!(
-                        "EXDEV: cross-device link not permitted, {syscall} '{path}'"
-                    )),
-                    libc::EMLINK => return deno_core::error::AnyError::msg(format!(
-                        "EMLINK: too many links, {syscall} '{path}'"
-                    )),
-                    libc::ENAMETOOLONG => return deno_core::error::AnyError::msg(format!(
-                        "ENAMETOOLONG: name too long, {syscall} '{path}'"
-                    )),
-                    libc::ELOOP => return deno_core::error::AnyError::msg(format!(
-                        "ELOOP: too many levels of symbolic links, {syscall} '{path}'"
-                    )),
+                    libc::ENOTDIR => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "ENOTDIR: not a directory, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::EISDIR => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "EISDIR: illegal operation on a directory, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::ENOTEMPTY => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "ENOTEMPTY: directory not empty, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::EROFS => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "EROFS: read-only file system, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::EFBIG => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "EFBIG: file too large, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::EXDEV => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "EXDEV: cross-device link not permitted, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::EMLINK => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "EMLINK: too many links, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::ENAMETOOLONG => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "ENAMETOOLONG: name too long, {syscall} '{path}'"
+                        ))
+                    }
+                    libc::ELOOP => {
+                        return deno_core::error::AnyError::msg(format!(
+                            "ELOOP: too many levels of symbolic links, {syscall} '{path}'"
+                        ))
+                    }
                     _ => {}
                 }
             }
             // Fallback to generic error
-            return deno_core::error::AnyError::msg(format!(
-                "{}, {syscall} '{path}'",
-                err
-            ));
+            return deno_core::error::AnyError::msg(format!("{}, {syscall} '{path}'", err));
         }
     };
 
@@ -317,7 +334,9 @@ fn op_howth_fs_readdir(#[string] path: &str) -> Result<Vec<DirEntry>, deno_core:
         .filter_map(|entry| entry.ok())
         .collect();
     raw_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-    let entries = raw_entries.into_iter().map(|entry| {
+    let entries = raw_entries
+        .into_iter()
+        .map(|entry| {
             let file_type = entry.file_type().ok();
             let is_symlink = file_type.map(|ft| ft.is_symlink()).unwrap_or(false);
             // For symlinks, follow the link to determine the target type
@@ -549,8 +568,7 @@ fn op_howth_fs_symlink(
 ) -> Result<(), deno_core::error::AnyError> {
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(target, path)
-            .map_err(|e| format_fs_error(e, "symlink", path))
+        std::os::unix::fs::symlink(target, path).map_err(|e| format_fs_error(e, "symlink", path))
     }
     #[cfg(windows)]
     {
@@ -668,24 +686,34 @@ pub struct FileOpenResult {
 /// Open a file and return a handle ID
 #[op2]
 #[serde]
-fn op_howth_fs_open_fd(
-    #[string] path: &str,
-    #[string] flags: &str,
-    mode: u32,
-) -> FileOpenResult {
+fn op_howth_fs_open_fd(#[string] path: &str, #[string] flags: &str, mode: u32) -> FileOpenResult {
     use std::fs::OpenOptions;
 
     let mut opts = OpenOptions::new();
 
     // Parse flags like Node.js: r, r+, w, w+, a, a+, etc.
     match flags {
-        "r" => { opts.read(true); }
-        "r+" | "rs+" => { opts.read(true).write(true); }
-        "w" => { opts.write(true).create(true).truncate(true); }
-        "w+" | "wx+" => { opts.read(true).write(true).create(true).truncate(true); }
-        "a" => { opts.write(true).create(true).append(true); }
-        "a+" | "ax+" => { opts.read(true).write(true).create(true).append(true); }
-        _ => { opts.read(true); } // Default to read
+        "r" => {
+            opts.read(true);
+        }
+        "r+" | "rs+" => {
+            opts.read(true).write(true);
+        }
+        "w" => {
+            opts.write(true).create(true).truncate(true);
+        }
+        "w+" | "wx+" => {
+            opts.read(true).write(true).create(true).truncate(true);
+        }
+        "a" => {
+            opts.write(true).create(true).append(true);
+        }
+        "a+" | "ax+" => {
+            opts.read(true).write(true).create(true).append(true);
+        }
+        _ => {
+            opts.read(true);
+        } // Default to read
     }
 
     #[cfg(unix)]
@@ -715,8 +743,12 @@ fn op_howth_fs_open_fd(
 /// Read bytes from a file handle
 #[op2]
 #[serde]
-fn op_howth_fs_read_fd(fd: u32, length: u32) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
-    let mut handles = FILE_HANDLES.lock()
+fn op_howth_fs_read_fd(
+    fd: u32,
+    length: u32,
+) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
+    let mut handles = FILE_HANDLES
+        .lock()
         .map_err(|_| deno_core::error::AnyError::msg("lock error"))?;
 
     if let Some(file) = handles.get_mut(&fd) {
@@ -727,17 +759,26 @@ fn op_howth_fs_read_fd(fd: u32, length: u32) -> Result<Option<Vec<u8>>, deno_cor
                 buf.truncate(n);
                 Ok(Some(buf))
             }
-            Err(e) => Err(deno_core::error::AnyError::msg(format!("read error: {}", e))),
+            Err(e) => Err(deno_core::error::AnyError::msg(format!(
+                "read error: {}",
+                e
+            ))),
         }
     } else {
-        Err(deno_core::error::AnyError::msg("EBADF: bad file descriptor"))
+        Err(deno_core::error::AnyError::msg(
+            "EBADF: bad file descriptor",
+        ))
     }
 }
 
 /// Write bytes to a file handle (accepts serde Vec<u8>)
 #[op2]
-fn op_howth_fs_write_fd(fd: u32, #[serde] data: Vec<u8>) -> Result<u32, deno_core::error::AnyError> {
-    let mut handles = FILE_HANDLES.lock()
+fn op_howth_fs_write_fd(
+    fd: u32,
+    #[serde] data: Vec<u8>,
+) -> Result<u32, deno_core::error::AnyError> {
+    let mut handles = FILE_HANDLES
+        .lock()
         .map_err(|_| deno_core::error::AnyError::msg("lock error"))?;
 
     if let Some(file) = handles.get_mut(&fd) {
@@ -747,10 +788,15 @@ fn op_howth_fs_write_fd(fd: u32, #[serde] data: Vec<u8>) -> Result<u32, deno_cor
                 let _ = file.flush();
                 Ok(n as u32)
             }
-            Err(e) => Err(deno_core::error::AnyError::msg(format!("write error: {}", e))),
+            Err(e) => Err(deno_core::error::AnyError::msg(format!(
+                "write error: {}",
+                e
+            ))),
         }
     } else {
-        Err(deno_core::error::AnyError::msg("EBADF: bad file descriptor"))
+        Err(deno_core::error::AnyError::msg(
+            "EBADF: bad file descriptor",
+        ))
     }
 }
 
@@ -764,9 +810,9 @@ fn op_howth_fs_seek_fd(fd: u32, offset: f64, whence: u32) -> f64 {
 
     if let Some(file) = handles.get_mut(&fd) {
         let pos = match whence {
-            0 => SeekFrom::Start(offset as u64),       // SEEK_SET
-            1 => SeekFrom::Current(offset as i64),     // SEEK_CUR
-            2 => SeekFrom::End(offset as i64),         // SEEK_END
+            0 => SeekFrom::Start(offset as u64),   // SEEK_SET
+            1 => SeekFrom::Current(offset as i64), // SEEK_CUR
+            2 => SeekFrom::End(offset as i64),     // SEEK_END
             _ => return -1.0,
         };
         match file.seek(pos) {
@@ -781,13 +827,16 @@ fn op_howth_fs_seek_fd(fd: u32, offset: f64, whence: u32) -> f64 {
 /// Close a file handle
 #[op2(fast)]
 fn op_howth_fs_close_fd(fd: u32) -> Result<(), deno_core::error::AnyError> {
-    let mut handles = FILE_HANDLES.lock()
+    let mut handles = FILE_HANDLES
+        .lock()
         .map_err(|_| deno_core::error::AnyError::msg("lock error"))?;
 
     if handles.remove(&fd).is_some() {
         Ok(())
     } else {
-        Err(deno_core::error::AnyError::msg("EBADF: bad file descriptor"))
+        Err(deno_core::error::AnyError::msg(
+            "EBADF: bad file descriptor",
+        ))
     }
 }
 
@@ -823,10 +872,7 @@ pub struct WatchEvent {
 /// Start watching a file or directory
 #[op2]
 #[serde]
-fn op_howth_fs_watch_start(
-    #[string] path: &str,
-    recursive: bool,
-) -> WatchStartResult {
+fn op_howth_fs_watch_start(#[string] path: &str, recursive: bool) -> WatchStartResult {
     let (tx, rx) = mpsc::channel();
 
     let watcher = notify::recommended_watcher(move |res| {
@@ -836,7 +882,11 @@ fn op_howth_fs_watch_start(
     match watcher {
         Ok(mut w) => {
             let watch_path = std::path::Path::new(path);
-            let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+            let mode = if recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
 
             if let Err(e) = w.watch(watch_path, mode) {
                 return WatchStartResult {
@@ -848,11 +898,14 @@ fn op_howth_fs_watch_start(
             let id = NEXT_WATCHER_ID.fetch_add(1, Ordering::SeqCst);
 
             if let Ok(mut watchers) = WATCHERS.lock() {
-                watchers.insert(id, WatcherHandle {
-                    _watcher: w,
-                    receiver: rx,
-                    path: path.to_string(),
-                });
+                watchers.insert(
+                    id,
+                    WatcherHandle {
+                        _watcher: w,
+                        receiver: rx,
+                        path: path.to_string(),
+                    },
+                );
             }
 
             WatchStartResult { id, error: None }
@@ -895,10 +948,13 @@ fn op_howth_fs_watch_poll(id: u32) -> Option<WatchEvent> {
                         .or_else(|| p.file_name().map(|n| n.to_string_lossy().to_string()))
                 });
 
-                Some(WatchEvent { event_type: event_type.to_string(), filename })
+                Some(WatchEvent {
+                    event_type: event_type.to_string(),
+                    filename,
+                })
             }
-            Ok(Err(_)) => None, // Watcher error
-            Err(mpsc::TryRecvError::Empty) => None, // No events
+            Ok(Err(_)) => None,                            // Watcher error
+            Err(mpsc::TryRecvError::Empty) => None,        // No events
             Err(mpsc::TryRecvError::Disconnected) => None, // Channel closed
         }
     } else {
@@ -923,9 +979,12 @@ fn op_howth_fs_watch_close(id: u32) -> bool {
 /// Gzip compress data
 #[op2]
 #[serde]
-fn op_howth_zlib_gzip(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, deno_core::error::AnyError> {
-    use flate2::Compression;
+fn op_howth_zlib_gzip(
+    #[serde] data: Vec<u8>,
+    level: i32,
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     use std::io::Write;
 
     let compression = match level {
@@ -936,7 +995,9 @@ fn op_howth_zlib_gzip(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, den
 
     let mut encoder = GzEncoder::new(Vec::new(), compression);
     encoder.write_all(&data)?;
-    encoder.finish().map_err(|e| deno_core::error::AnyError::msg(format!("gzip error: {}", e)))
+    encoder
+        .finish()
+        .map_err(|e| deno_core::error::AnyError::msg(format!("gzip error: {}", e)))
 }
 
 /// Gzip decompress data
@@ -948,7 +1009,8 @@ fn op_howth_zlib_gunzip(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::er
 
     let mut decoder = GzDecoder::new(&data[..]);
     let mut result = Vec::new();
-    decoder.read_to_end(&mut result)
+    decoder
+        .read_to_end(&mut result)
         .map_err(|e| deno_core::error::AnyError::msg(format!("gunzip error: {}", e)))?;
     Ok(result)
 }
@@ -956,9 +1018,12 @@ fn op_howth_zlib_gunzip(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::er
 /// Deflate compress data
 #[op2]
 #[serde]
-fn op_howth_zlib_deflate(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, deno_core::error::AnyError> {
-    use flate2::Compression;
+fn op_howth_zlib_deflate(
+    #[serde] data: Vec<u8>,
+    level: i32,
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
     use flate2::write::DeflateEncoder;
+    use flate2::Compression;
     use std::io::Write;
 
     let compression = match level {
@@ -969,7 +1034,9 @@ fn op_howth_zlib_deflate(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, 
 
     let mut encoder = DeflateEncoder::new(Vec::new(), compression);
     encoder.write_all(&data)?;
-    encoder.finish().map_err(|e| deno_core::error::AnyError::msg(format!("deflate error: {}", e)))
+    encoder
+        .finish()
+        .map_err(|e| deno_core::error::AnyError::msg(format!("deflate error: {}", e)))
 }
 
 /// Inflate decompress data
@@ -981,7 +1048,8 @@ fn op_howth_zlib_inflate(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::e
 
     let mut decoder = DeflateDecoder::new(&data[..]);
     let mut result = Vec::new();
-    decoder.read_to_end(&mut result)
+    decoder
+        .read_to_end(&mut result)
         .map_err(|e| deno_core::error::AnyError::msg(format!("inflate error: {}", e)))?;
     Ok(result)
 }
@@ -989,9 +1057,12 @@ fn op_howth_zlib_inflate(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::e
 /// Deflate raw compress data (no zlib header)
 #[op2]
 #[serde]
-fn op_howth_zlib_deflate_raw(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u8>, deno_core::error::AnyError> {
-    use flate2::Compression;
+fn op_howth_zlib_deflate_raw(
+    #[serde] data: Vec<u8>,
+    level: i32,
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
     use flate2::write::DeflateEncoder;
+    use flate2::Compression;
     use std::io::Write;
 
     let compression = match level {
@@ -1002,19 +1073,24 @@ fn op_howth_zlib_deflate_raw(#[serde] data: Vec<u8>, level: i32) -> Result<Vec<u
 
     let mut encoder = DeflateEncoder::new(Vec::new(), compression);
     encoder.write_all(&data)?;
-    encoder.finish().map_err(|e| deno_core::error::AnyError::msg(format!("deflate error: {}", e)))
+    encoder
+        .finish()
+        .map_err(|e| deno_core::error::AnyError::msg(format!("deflate error: {}", e)))
 }
 
 /// Inflate raw decompress data (no zlib header)
 #[op2]
 #[serde]
-fn op_howth_zlib_inflate_raw(#[serde] data: Vec<u8>) -> Result<Vec<u8>, deno_core::error::AnyError> {
+fn op_howth_zlib_inflate_raw(
+    #[serde] data: Vec<u8>,
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
     use flate2::read::DeflateDecoder;
     use std::io::Read;
 
     let mut decoder = DeflateDecoder::new(&data[..]);
     let mut result = Vec::new();
-    decoder.read_to_end(&mut result)
+    decoder
+        .read_to_end(&mut result)
         .map_err(|e| deno_core::error::AnyError::msg(format!("inflate error: {}", e)))?;
     Ok(result)
 }
@@ -1075,9 +1151,7 @@ fn op_howth_worker_is_main_thread() -> bool {
 /// Get the current worker's thread ID (0 if main thread)
 #[op2(fast)]
 fn op_howth_worker_thread_id() -> u32 {
-    WORKER_CONTEXT.with(|ctx| {
-        ctx.borrow().as_ref().map(|c| c.worker_id).unwrap_or(0)
-    })
+    WORKER_CONTEXT.with(|ctx| ctx.borrow().as_ref().map(|c| c.worker_id).unwrap_or(0))
 }
 
 /// Create a new worker thread
@@ -1120,19 +1194,28 @@ fn op_howth_worker_create(
 
     // Store the worker handle
     if let Ok(mut workers) = WORKERS.lock() {
-        workers.insert(worker_id, WorkerHandle {
-            thread: Some(handle),
-            tx: main_tx,
-            rx: main_rx,
-            terminated: false,
-        });
+        workers.insert(
+            worker_id,
+            WorkerHandle {
+                thread: Some(handle),
+                tx: main_tx,
+                rx: main_rx,
+                terminated: false,
+            },
+        );
     }
 
-    WorkerCreateResult { id: worker_id, error: None }
+    WorkerCreateResult {
+        id: worker_id,
+        error: None,
+    }
 }
 
 /// Run a script in a worker context
-fn run_worker_script(filename: &str, _worker_data: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn run_worker_script(
+    filename: &str,
+    _worker_data: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::runtime::Runtime;
 
     // Create a new tokio runtime for this thread
@@ -1145,7 +1228,10 @@ fn run_worker_script(filename: &str, _worker_data: &str) -> Result<(), Box<dyn s
 
         // Create module loader
         let module_loader = Rc::new(HowthModuleLoader::new(
-            std::path::PathBuf::from(filename).parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
+            std::path::PathBuf::from(filename)
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf(),
         ));
 
         // Create runtime options
@@ -1432,9 +1518,9 @@ fn op_howth_exec_sync(
 // Async Child Process Operations (for proper spawn with streams)
 // ============================================================================
 
-use tokio::sync::Mutex;
-use tokio::process::{Child, ChildStdout, ChildStderr, ChildStdin, Command as TokioCommand};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command as TokioCommand};
+use tokio::sync::Mutex;
 
 /// Global child process ID counter
 static NEXT_CHILD_ID: AtomicU32 = AtomicU32::new(1);
@@ -1557,7 +1643,9 @@ async fn op_howth_spawn_async(
 /// Read from a child process's stdout
 #[op2(async)]
 #[serde]
-async fn op_howth_spawn_read_stdout(id: u32) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
+async fn op_howth_spawn_read_stdout(
+    id: u32,
+) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
     // Take the stdout temporarily
     let stdout_opt = CHILD_STDOUTS.lock().await.remove(&id);
 
@@ -1574,7 +1662,10 @@ async fn op_howth_spawn_read_stdout(id: u32) -> Result<Option<Vec<u8>>, deno_cor
                 buf.truncate(n);
                 Ok(Some(buf))
             }
-            Err(e) => Err(deno_core::error::AnyError::msg(format!("read error: {}", e))),
+            Err(e) => Err(deno_core::error::AnyError::msg(format!(
+                "read error: {}",
+                e
+            ))),
         }
     } else {
         Ok(None) // stdout not available or already consumed
@@ -1584,7 +1675,9 @@ async fn op_howth_spawn_read_stdout(id: u32) -> Result<Option<Vec<u8>>, deno_cor
 /// Read from a child process's stderr
 #[op2(async)]
 #[serde]
-async fn op_howth_spawn_read_stderr(id: u32) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
+async fn op_howth_spawn_read_stderr(
+    id: u32,
+) -> Result<Option<Vec<u8>>, deno_core::error::AnyError> {
     // Take the stderr temporarily
     let stderr_opt = CHILD_STDERRS.lock().await.remove(&id);
 
@@ -1601,7 +1694,10 @@ async fn op_howth_spawn_read_stderr(id: u32) -> Result<Option<Vec<u8>>, deno_cor
                 buf.truncate(n);
                 Ok(Some(buf))
             }
-            Err(e) => Err(deno_core::error::AnyError::msg(format!("read error: {}", e))),
+            Err(e) => Err(deno_core::error::AnyError::msg(format!(
+                "read error: {}",
+                e
+            ))),
         }
     } else {
         Ok(None) // stderr not available or already consumed
@@ -1610,7 +1706,10 @@ async fn op_howth_spawn_read_stderr(id: u32) -> Result<Option<Vec<u8>>, deno_cor
 
 /// Write to a child process's stdin
 #[op2(async)]
-async fn op_howth_spawn_write_stdin(id: u32, #[buffer(copy)] data: Vec<u8>) -> Result<u32, deno_core::error::AnyError> {
+async fn op_howth_spawn_write_stdin(
+    id: u32,
+    #[buffer(copy)] data: Vec<u8>,
+) -> Result<u32, deno_core::error::AnyError> {
     // Take the stdin temporarily
     let stdin_opt = CHILD_STDINS.lock().await.remove(&id);
 
@@ -1622,7 +1721,10 @@ async fn op_howth_spawn_write_stdin(id: u32, #[buffer(copy)] data: Vec<u8>) -> R
 
         match result {
             Ok(n) => Ok(n as u32),
-            Err(e) => Err(deno_core::error::AnyError::msg(format!("write error: {}", e))),
+            Err(e) => Err(deno_core::error::AnyError::msg(format!(
+                "write error: {}",
+                e
+            ))),
         }
     } else {
         Err(deno_core::error::AnyError::msg("stdin not available"))
@@ -1670,7 +1772,10 @@ async fn op_howth_spawn_wait(id: u32) -> Result<SpawnWaitResult, deno_core::erro
 
                 Ok(SpawnWaitResult { code, signal })
             }
-            Err(e) => Err(deno_core::error::AnyError::msg(format!("wait error: {}", e))),
+            Err(e) => Err(deno_core::error::AnyError::msg(format!(
+                "wait error: {}",
+                e
+            ))),
         }
     } else {
         Err(deno_core::error::AnyError::msg("child process not found"))
@@ -1679,9 +1784,15 @@ async fn op_howth_spawn_wait(id: u32) -> Result<SpawnWaitResult, deno_core::erro
 
 /// Kill a child process
 #[op2]
-fn op_howth_spawn_kill(id: u32, #[string] signal: Option<String>) -> Result<bool, deno_core::error::AnyError> {
+fn op_howth_spawn_kill(
+    id: u32,
+    #[string] signal: Option<String>,
+) -> Result<bool, deno_core::error::AnyError> {
     // Use the sync PID storage to avoid async mutex issues
-    let pid_opt = CHILD_PIDS.lock().ok().and_then(|pids| pids.get(&id).copied());
+    let pid_opt = CHILD_PIDS
+        .lock()
+        .ok()
+        .and_then(|pids| pids.get(&id).copied());
 
     let result = if let Some(pid) = pid_opt {
         if pid == 0 {
@@ -1755,9 +1866,12 @@ lazy_static::lazy_static! {
 }
 
 /// Map of pending response channels (request_id -> oneshot sender)
-static RESPONSE_CHANNELS: std::sync::OnceLock<Mutex<HashMap<u32, tokio::sync::oneshot::Sender<HttpResponse>>>> = std::sync::OnceLock::new();
+static RESPONSE_CHANNELS: std::sync::OnceLock<
+    Mutex<HashMap<u32, tokio::sync::oneshot::Sender<HttpResponse>>>,
+> = std::sync::OnceLock::new();
 
-fn get_response_channels() -> &'static Mutex<HashMap<u32, tokio::sync::oneshot::Sender<HttpResponse>>> {
+fn get_response_channels(
+) -> &'static Mutex<HashMap<u32, tokio::sync::oneshot::Sender<HttpResponse>>> {
     RESPONSE_CHANNELS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1769,24 +1883,27 @@ fn op_howth_http_listen(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
-    use hyper::server::conn::http1;
-    use hyper::service::service_fn;
-    use hyper_util::rt::TokioIo;
     use http_body_util::BodyExt;
     use http_body_util::Full;
     use hyper::body::Bytes;
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
 
     let addr = format!("{}:{}", hostname, port);
     let std_listener = std::net::TcpListener::bind(&addr)
         .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to bind: {}", e)))?;
-    std_listener.set_nonblocking(true)
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to set nonblocking: {}", e)))?;
+    std_listener.set_nonblocking(true).map_err(|e| {
+        deno_core::error::AnyError::msg(format!("Failed to set nonblocking: {}", e))
+    })?;
 
-    let local_addr = std_listener.local_addr()
+    let local_addr = std_listener
+        .local_addr()
         .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to get local addr: {}", e)))?;
 
-    let listener = tokio::net::TcpListener::from_std(std_listener)
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to convert to tokio listener: {}", e)))?;
+    let listener = tokio::net::TcpListener::from_std(std_listener).map_err(|e| {
+        deno_core::error::AnyError::msg(format!("Failed to convert to tokio listener: {}", e))
+    })?;
 
     let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
 
@@ -1803,10 +1920,9 @@ fn op_howth_http_listen(
             }
 
             // Accept connection
-            let accept_result = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                listener.accept()
-            ).await;
+            let accept_result =
+                tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                    .await;
 
             let (stream, _addr) = match accept_result {
                 Ok(Ok(conn)) => conn,
@@ -1864,7 +1980,8 @@ fn op_howth_http_listen(
                         };
 
                         // Create oneshot channel for response
-                        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<HttpResponse>();
+                        let (response_tx, response_rx) =
+                            tokio::sync::oneshot::channel::<HttpResponse>();
 
                         // Send request to JS layer
                         let _ = tx.send(PendingRequest {
@@ -1883,7 +2000,8 @@ fn op_howth_http_listen(
 
                                 #[cfg(debug_assertions)]
                                 {
-                                    static HYPER_STATS: std::sync::OnceLock<Mutex<HyperStats>> = std::sync::OnceLock::new();
+                                    static HYPER_STATS: std::sync::OnceLock<Mutex<HyperStats>> =
+                                        std::sync::OnceLock::new();
 
                                     #[derive(Default)]
                                     struct HyperStats {
@@ -1894,12 +2012,16 @@ fn op_howth_http_listen(
                                         total_js_ns: u64,
                                     }
 
-                                    let stats = HYPER_STATS.get_or_init(|| Mutex::new(HyperStats::default()));
+                                    let stats = HYPER_STATS
+                                        .get_or_init(|| Mutex::new(HyperStats::default()));
                                     if let Ok(mut s) = stats.try_lock() {
                                         s.count += 1;
-                                        s.total_headers_ns += (after_headers - start).as_nanos() as u64;
-                                        s.total_body_ns += (after_body - after_headers).as_nanos() as u64;
-                                        s.total_send_ns += (after_send - after_body).as_nanos() as u64;
+                                        s.total_headers_ns +=
+                                            (after_headers - start).as_nanos() as u64;
+                                        s.total_body_ns +=
+                                            (after_body - after_headers).as_nanos() as u64;
+                                        s.total_send_ns +=
+                                            (after_send - after_body).as_nanos() as u64;
                                         s.total_js_ns += (after_js - after_send).as_nanos() as u64;
 
                                         if s.count % 10000 == 0 {
@@ -1926,7 +2048,8 @@ fn op_howth_http_listen(
                                 }
 
                                 let body = response.body.unwrap_or_default();
-                                builder.body(Full::new(Bytes::from(body)))
+                                builder
+                                    .body(Full::new(Bytes::from(body)))
                                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                             }
                             Err(_) => {
@@ -1960,7 +2083,9 @@ fn op_howth_http_listen(
     // Store server state
     let servers = HTTP_SERVERS.try_lock();
     match servers {
-        Ok(mut guard) => { guard.insert(server_id, Arc::new(Mutex::new(state))); }
+        Ok(mut guard) => {
+            guard.insert(server_id, Arc::new(Mutex::new(state)));
+        }
         Err(_) => {
             return Err(deno_core::error::AnyError::msg("Server map lock contended"));
         }
@@ -1991,7 +2116,9 @@ struct AcceptStats {
 /// Receives requests from hyper service via channel
 #[op2(async)]
 #[serde]
-async fn op_howth_http_accept(server_id: u32) -> Result<Option<HttpRequest>, deno_core::error::AnyError> {
+async fn op_howth_http_accept(
+    server_id: u32,
+) -> Result<Option<HttpRequest>, deno_core::error::AnyError> {
     #[cfg(debug_assertions)]
     let start = std::time::Instant::now();
 
@@ -2014,8 +2141,10 @@ async fn op_howth_http_accept(server_id: u32) -> Result<Option<HttpRequest>, den
     // Try to receive a request from the channel with timeout
     match tokio::time::timeout(
         std::time::Duration::from_millis(100),
-        state.request_rx.recv()
-    ).await {
+        state.request_rx.recv(),
+    )
+    .await
+    {
         Ok(Some(pending)) => {
             #[cfg(debug_assertions)]
             let after_recv = std::time::Instant::now();
@@ -2033,7 +2162,8 @@ async fn op_howth_http_accept(server_id: u32) -> Result<Option<HttpRequest>, den
                 if let Ok(mut s) = stats.try_lock() {
                     s.count += 1;
                     s.total_server_lock_ns += (after_server_lock - start).as_nanos() as u64;
-                    s.total_state_lock_ns += (after_state_lock - after_server_lock).as_nanos() as u64;
+                    s.total_state_lock_ns +=
+                        (after_state_lock - after_server_lock).as_nanos() as u64;
                     s.total_recv_ns += (after_recv - after_state_lock).as_nanos() as u64;
                     s.total_channel_lock_ns += (after_channel_lock - after_recv).as_nanos() as u64;
 
@@ -2076,7 +2206,9 @@ async fn op_howth_http_respond(
         }
         None => {
             // Channel not found - request may have timed out
-            Err(deno_core::error::AnyError::msg("Response channel not found"))
+            Err(deno_core::error::AnyError::msg(
+                "Response channel not found",
+            ))
         }
     }
 }
@@ -2138,8 +2270,9 @@ struct FastServerState {
 }
 
 /// Map of fast HTTP servers - using DashMap for lock-free lookup
-static FAST_SERVERS: std::sync::OnceLock<dashmap::DashMap<u32, Arc<tokio::sync::Mutex<FastServerState>>>> =
-    std::sync::OnceLock::new();
+static FAST_SERVERS: std::sync::OnceLock<
+    dashmap::DashMap<u32, Arc<tokio::sync::Mutex<FastServerState>>>,
+> = std::sync::OnceLock::new();
 
 fn get_fast_servers() -> &'static dashmap::DashMap<u32, Arc<tokio::sync::Mutex<FastServerState>>> {
     FAST_SERVERS.get_or_init(dashmap::DashMap::new)
@@ -2154,11 +2287,11 @@ async fn op_howth_http_serve_rust_only(
     #[string] hostname: String,
     #[string] response_body: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use bytes::Bytes;
+    use http_body_util::Full;
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
-    use http_body_util::Full;
-    use bytes::Bytes;
 
     let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -2189,14 +2322,12 @@ async fn op_howth_http_serve_rust_only(
                                 .status(200)
                                 .header("content-type", "text/plain")
                                 .body(Full::new(response_bytes.clone()))
-                                .unwrap()
+                                .unwrap(),
                         )
                     }
                 });
 
-                let _ = http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
+                let _ = http1::Builder::new().serve_connection(io, service).await;
             });
         }
     });
@@ -2208,8 +2339,10 @@ async fn op_howth_http_serve_rust_only(
 }
 
 // Storage for direct-mode pending requests (ready to be polled by JS)
-static DIRECT_PENDING: std::sync::OnceLock<crossbeam_channel::Receiver<(u32, RawHttpRequest)>> = std::sync::OnceLock::new();
-static DIRECT_SENDER: std::sync::OnceLock<crossbeam_channel::Sender<(u32, RawHttpRequest)>> = std::sync::OnceLock::new();
+static DIRECT_PENDING: std::sync::OnceLock<crossbeam_channel::Receiver<(u32, RawHttpRequest)>> =
+    std::sync::OnceLock::new();
+static DIRECT_SENDER: std::sync::OnceLock<crossbeam_channel::Sender<(u32, RawHttpRequest)>> =
+    std::sync::OnceLock::new();
 
 /// Start a direct HTTP server - uses sync polling instead of async ops
 /// This keeps request handling on the V8 thread, avoiding async channel overhead
@@ -2219,11 +2352,11 @@ async fn op_howth_http_serve_direct_start(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
-    use http_body_util::{BodyExt, Full};
-    use bytes::Bytes;
 
     let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -2257,7 +2390,9 @@ async fn op_howth_http_serve_direct_start(
                         let headers: Vec<(String, String)> = req
                             .headers()
                             .iter()
-                            .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.to_string(), v.to_string())))
+                            .filter_map(|(k, v)| {
+                                v.to_str().ok().map(|v| (k.to_string(), v.to_string()))
+                            })
                             .collect();
 
                         let body = match req.collect().await {
@@ -2265,7 +2400,8 @@ async fn op_howth_http_serve_direct_start(
                             Err(_) => Bytes::new(),
                         };
 
-                        let (response_tx, response_rx) = tokio::sync::oneshot::channel::<RawHttpResponse>();
+                        let (response_tx, response_rx) =
+                            tokio::sync::oneshot::channel::<RawHttpResponse>();
 
                         let raw_request = RawHttpRequest {
                             method,
@@ -2282,29 +2418,26 @@ async fn op_howth_http_serve_direct_start(
                         // Wait for response
                         match response_rx.await {
                             Ok(response) => {
-                                let mut builder = hyper::Response::builder().status(response.status);
+                                let mut builder =
+                                    hyper::Response::builder().status(response.status);
                                 if let Some(headers) = response.headers {
                                     for (k, v) in headers {
                                         builder = builder.header(k, v);
                                     }
                                 }
                                 Ok::<_, std::convert::Infallible>(
-                                    builder.body(Full::new(response.body)).unwrap()
+                                    builder.body(Full::new(response.body)).unwrap(),
                                 )
                             }
-                            Err(_) => {
-                                Ok(hyper::Response::builder()
-                                    .status(500)
-                                    .body(Full::new(Bytes::from("Internal Server Error")))
-                                    .unwrap())
-                            }
+                            Err(_) => Ok(hyper::Response::builder()
+                                .status(500)
+                                .body(Full::new(Bytes::from("Internal Server Error")))
+                                .unwrap()),
                         }
                     }
                 });
 
-                let _ = http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
+                let _ = http1::Builder::new().serve_connection(io, service).await;
             });
         }
     });
@@ -2320,7 +2453,8 @@ async fn op_howth_http_serve_direct_start(
 #[op2]
 #[serde]
 fn op_howth_http_serve_direct_poll() -> Result<(i32, String, String), deno_core::error::AnyError> {
-    let rx = DIRECT_PENDING.get()
+    let rx = DIRECT_PENDING
+        .get()
         .ok_or_else(|| deno_core::error::AnyError::msg("Direct server not started"))?;
 
     match rx.try_recv() {
@@ -2341,11 +2475,11 @@ async fn op_howth_http_serve_fast(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
-    use bytes::Bytes;
-    use http_body_util::{BodyExt, Full};
 
     let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -2381,7 +2515,11 @@ async fn op_howth_http_serve_fast(
                     async move {
                         // Measure end-to-end request time (hyper's perspective)
                         let trace = is_trace_enabled();
-                        let start = if trace { Some(std::time::Instant::now()) } else { None };
+                        let start = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
 
@@ -2398,7 +2536,11 @@ async fn op_howth_http_serve_fast(
                             })
                             .collect();
 
-                        let after_parse = if trace { Some(std::time::Instant::now()) } else { None };
+                        let after_parse = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         // Read body
                         let body = match req.collect().await {
@@ -2406,7 +2548,11 @@ async fn op_howth_http_serve_fast(
                             Err(_) => Bytes::new(),
                         };
 
-                        let after_body = if trace { Some(std::time::Instant::now()) } else { None };
+                        let after_body = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         // Create oneshot channel for response
                         let (response_tx, response_rx) =
@@ -2424,7 +2570,11 @@ async fn op_howth_http_serve_fast(
 
                         // Send request ID and data to JS layer
                         let _ = tx.send((request_id, raw_request));
-                        let after_send = if trace { Some(std::time::Instant::now()) } else { None };
+                        let after_send = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         // Wait for JS to send response
                         match response_rx.await {
@@ -2434,22 +2584,41 @@ async fn op_howth_http_serve_fast(
                                     let after_js = std::time::Instant::now();
 
                                     // E2E stats from hyper's perspective
-                                    static E2E_STATS: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
-                                    static E2E_COUNT: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
-                                    static PARSE_TOTAL: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
-                                    static BODY_TOTAL: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
-                                    static JS_TOTAL: std::sync::OnceLock<std::sync::atomic::AtomicU64> = std::sync::OnceLock::new();
+                                    static E2E_STATS: std::sync::OnceLock<
+                                        std::sync::atomic::AtomicU64,
+                                    > = std::sync::OnceLock::new();
+                                    static E2E_COUNT: std::sync::OnceLock<
+                                        std::sync::atomic::AtomicU64,
+                                    > = std::sync::OnceLock::new();
+                                    static PARSE_TOTAL: std::sync::OnceLock<
+                                        std::sync::atomic::AtomicU64,
+                                    > = std::sync::OnceLock::new();
+                                    static BODY_TOTAL: std::sync::OnceLock<
+                                        std::sync::atomic::AtomicU64,
+                                    > = std::sync::OnceLock::new();
+                                    static JS_TOTAL: std::sync::OnceLock<
+                                        std::sync::atomic::AtomicU64,
+                                    > = std::sync::OnceLock::new();
 
-                                    let count = E2E_COUNT.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
-                                    let total = E2E_STATS.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
-                                    let parse_total = PARSE_TOTAL.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
-                                    let body_total = BODY_TOTAL.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
-                                    let js_total = JS_TOTAL.get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let count = E2E_COUNT
+                                        .get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let total = E2E_STATS
+                                        .get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let parse_total = PARSE_TOTAL
+                                        .get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let body_total = BODY_TOTAL
+                                        .get_or_init(|| std::sync::atomic::AtomicU64::new(0));
+                                    let js_total = JS_TOTAL
+                                        .get_or_init(|| std::sync::atomic::AtomicU64::new(0));
 
                                     let e2e = (after_js - start.unwrap()).as_nanos() as u64;
-                                    let parse_time = (after_parse.unwrap() - start.unwrap()).as_nanos() as u64;
-                                    let body_time = (after_body.unwrap() - after_parse.unwrap()).as_nanos() as u64;
-                                    let js_time = (after_js - after_send.unwrap()).as_nanos() as u64;
+                                    let parse_time =
+                                        (after_parse.unwrap() - start.unwrap()).as_nanos() as u64;
+                                    let body_time = (after_body.unwrap() - after_parse.unwrap())
+                                        .as_nanos()
+                                        as u64;
+                                    let js_time =
+                                        (after_js - after_send.unwrap()).as_nanos() as u64;
 
                                     let c = count.fetch_add(1, Ordering::Relaxed) + 1;
                                     total.fetch_add(e2e, Ordering::Relaxed);
@@ -2537,7 +2706,11 @@ fn is_trace_enabled() -> bool {
 #[op2(async)]
 async fn op_howth_http_wait(server_id: u32) -> Result<i32, deno_core::error::AnyError> {
     let trace = is_trace_enabled();
-    let start = if trace { Some(std::time::Instant::now()) } else { None };
+    let start = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     // DashMap - lock-free lookup
     let server = match get_fast_servers().get(&server_id) {
@@ -2545,16 +2718,28 @@ async fn op_howth_http_wait(server_id: u32) -> Result<i32, deno_core::error::Any
         None => return Ok(-1), // Server closed
     };
 
-    let after_server_lock = if trace { Some(std::time::Instant::now()) } else { None };
+    let after_server_lock = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     let mut state = server.lock().await;
 
-    let after_state_lock = if trace { Some(std::time::Instant::now()) } else { None };
+    let after_state_lock = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     // Wait for request (no timeout - blocks until request arrives)
     match state.request_rx.recv().await {
         Some((request_id, raw_request)) => {
-            let after_recv = if trace { Some(std::time::Instant::now()) } else { None };
+            let after_recv = if trace {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
             // Store the raw request for later access (DashMap - no lock needed)
             get_pending_requests().insert(request_id, raw_request);
@@ -2564,13 +2749,20 @@ async fn op_howth_http_wait(server_id: u32) -> Result<i32, deno_core::error::Any
                 let stats = FAST_STATS.get_or_init(|| Mutex::new(FastStats::default()));
                 if let Ok(mut s) = stats.try_lock() {
                     s.count += 1;
-                    s.total_server_lock_ns += (after_server_lock.unwrap() - start.unwrap()).as_nanos() as u64;
-                    s.total_state_lock_ns += (after_state_lock.unwrap() - after_server_lock.unwrap()).as_nanos() as u64;
-                    s.total_recv_ns += (after_recv.unwrap() - after_state_lock.unwrap()).as_nanos() as u64;
-                    s.total_pending_lock_ns += (after_pending_lock - after_recv.unwrap()).as_nanos() as u64;
+                    s.total_server_lock_ns +=
+                        (after_server_lock.unwrap() - start.unwrap()).as_nanos() as u64;
+                    s.total_state_lock_ns +=
+                        (after_state_lock.unwrap() - after_server_lock.unwrap()).as_nanos() as u64;
+                    s.total_recv_ns +=
+                        (after_recv.unwrap() - after_state_lock.unwrap()).as_nanos() as u64;
+                    s.total_pending_lock_ns +=
+                        (after_pending_lock - after_recv.unwrap()).as_nanos() as u64;
 
                     if s.count % 10000 == 0 {
-                        let total = s.total_server_lock_ns + s.total_state_lock_ns + s.total_recv_ns + s.total_pending_lock_ns;
+                        let total = s.total_server_lock_ns
+                            + s.total_state_lock_ns
+                            + s.total_recv_ns
+                            + s.total_pending_lock_ns;
                         eprintln!("[FAST WAIT] count={} total_avg={}ns | server_lock={}ns state_lock={}ns recv={}ns pending_lock={}ns",
                             s.count,
                             total / s.count,
@@ -2593,13 +2785,13 @@ async fn op_howth_http_wait(server_id: u32) -> Result<i32, deno_core::error::Any
 #[derive(Default)]
 struct WaitWithInfoStats {
     count: u64,
-    total_op_start_ns: u64,      // Time from op call to first instruction
-    total_dashmap_ns: u64,       // Time to get server from DashMap
-    total_mutex_ns: u64,         // Time to acquire mutex
-    total_recv_ns: u64,          // Time in recv() (blocking on channel)
+    total_op_start_ns: u64,        // Time from op call to first instruction
+    total_dashmap_ns: u64,         // Time to get server from DashMap
+    total_mutex_ns: u64,           // Time to acquire mutex
+    total_recv_ns: u64,            // Time in recv() (blocking on channel)
     total_channel_latency_ns: u64, // Time from hyper send to recv complete (critical!)
-    total_extract_ns: u64,       // Time to clone method/uri
-    total_insert_ns: u64,        // Time to insert into pending_requests
+    total_extract_ns: u64,         // Time to clone method/uri
+    total_insert_ns: u64,          // Time to insert into pending_requests
 }
 
 static WAIT_INFO_STATS: std::sync::OnceLock<Mutex<WaitWithInfoStats>> = std::sync::OnceLock::new();
@@ -2612,7 +2804,11 @@ async fn op_howth_http_wait_with_info(
     server_id: u32,
 ) -> Result<(i32, String, String), deno_core::error::AnyError> {
     let trace = is_trace_enabled();
-    let op_start = if trace { Some(std::time::Instant::now()) } else { None };
+    let op_start = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     // DashMap - lock-free lookup
     let server = match get_fast_servers().get(&server_id) {
@@ -2620,15 +2816,27 @@ async fn op_howth_http_wait_with_info(
         None => return Ok((-1, String::new(), String::new())), // Server closed
     };
 
-    let after_dashmap = if trace { Some(std::time::Instant::now()) } else { None };
+    let after_dashmap = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     let mut state = server.lock().await;
 
-    let after_mutex = if trace { Some(std::time::Instant::now()) } else { None };
+    let after_mutex = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     match state.request_rx.recv().await {
         Some((request_id, raw_request)) => {
-            let after_recv = if trace { Some(std::time::Instant::now()) } else { None };
+            let after_recv = if trace {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
             // CRITICAL: Channel latency = time from hyper's send() to our recv() completing
             let channel_latency = if trace {
@@ -2640,24 +2848,38 @@ async fn op_howth_http_wait_with_info(
             let method = raw_request.method.clone();
             let uri = raw_request.uri.clone();
 
-            let after_extract = if trace { Some(std::time::Instant::now()) } else { None };
+            let after_extract = if trace {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
             // Store the raw request for body/headers access later
             get_pending_requests().insert(request_id, raw_request);
 
-            let after_insert = if trace { Some(std::time::Instant::now()) } else { None };
+            let after_insert = if trace {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
             // Record detailed stats
             if trace {
-                let stats = WAIT_INFO_STATS.get_or_init(|| Mutex::new(WaitWithInfoStats::default()));
+                let stats =
+                    WAIT_INFO_STATS.get_or_init(|| Mutex::new(WaitWithInfoStats::default()));
                 if let Ok(mut s) = stats.try_lock() {
                     s.count += 1;
-                    s.total_dashmap_ns += (after_dashmap.unwrap() - op_start.unwrap()).as_nanos() as u64;
-                    s.total_mutex_ns += (after_mutex.unwrap() - after_dashmap.unwrap()).as_nanos() as u64;
-                    s.total_recv_ns += (after_recv.unwrap() - after_mutex.unwrap()).as_nanos() as u64;
+                    s.total_dashmap_ns +=
+                        (after_dashmap.unwrap() - op_start.unwrap()).as_nanos() as u64;
+                    s.total_mutex_ns +=
+                        (after_mutex.unwrap() - after_dashmap.unwrap()).as_nanos() as u64;
+                    s.total_recv_ns +=
+                        (after_recv.unwrap() - after_mutex.unwrap()).as_nanos() as u64;
                     s.total_channel_latency_ns += channel_latency.unwrap();
-                    s.total_extract_ns += (after_extract.unwrap() - after_recv.unwrap()).as_nanos() as u64;
-                    s.total_insert_ns += (after_insert.unwrap() - after_extract.unwrap()).as_nanos() as u64;
+                    s.total_extract_ns +=
+                        (after_extract.unwrap() - after_recv.unwrap()).as_nanos() as u64;
+                    s.total_insert_ns +=
+                        (after_insert.unwrap() - after_extract.unwrap()).as_nanos() as u64;
 
                     if s.count % 50000 == 0 {
                         eprintln!("[WAIT_INFO] count={} | dashmap={}ns mutex={}ns recv={}ns CHANNEL_LAT={}ns extract={}ns insert={}ns",
@@ -2846,7 +3068,9 @@ fn op_howth_http_get_url(request_id: u32) -> Result<String, deno_core::error::An
 /// Get method and URL in one call - reduces op overhead
 #[op2]
 #[serde]
-fn op_howth_http_get_method_url(request_id: u32) -> Result<(String, String), deno_core::error::AnyError> {
+fn op_howth_http_get_method_url(
+    request_id: u32,
+) -> Result<(String, String), deno_core::error::AnyError> {
     match get_pending_requests().get(&request_id) {
         Some(req) => Ok((req.method.clone(), req.uri.clone())),
         None => Err(deno_core::error::AnyError::msg("Request not found")),
@@ -2881,7 +3105,7 @@ static RESPOND_STATS: std::sync::OnceLock<Mutex<RespondStats>> = std::sync::Once
 #[derive(Default)]
 struct RespondStats {
     count: u64,
-    total_js_processing_ns: u64,  // Time from wait_info return to respond_fast call (CRITICAL!)
+    total_js_processing_ns: u64, // Time from wait_info return to respond_fast call (CRITICAL!)
     total_lock_ns: u64,
     total_send_ns: u64,
     total_full_roundtrip_ns: u64, // Time from hyper send to oneshot send (full Rust-side view)
@@ -2894,11 +3118,16 @@ fn respond_fast_impl(
     body: Option<String>,
 ) -> Result<(), deno_core::error::AnyError> {
     let trace = is_trace_enabled();
-    let start = if trace { Some(std::time::Instant::now()) } else { None };
+    let start = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     // Get JS processing time (time from wait_info return to now)
     let js_processing_time = if trace {
-        get_request_handoff_times().remove(&request_id)
+        get_request_handoff_times()
+            .remove(&request_id)
             .map(|(_, handoff_time)| (start.unwrap() - handoff_time).as_nanos() as u64)
     } else {
         None
@@ -2907,7 +3136,11 @@ fn respond_fast_impl(
     // Remove the request and get the response channel (DashMap - no lock needed)
     let raw_request = get_pending_requests().remove(&request_id);
 
-    let after_lock = if trace { Some(std::time::Instant::now()) } else { None };
+    let after_lock = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     match raw_request {
         Some((_, req)) => {
@@ -2943,7 +3176,8 @@ fn respond_fast_impl(
                     }
 
                     if s.count % 50000 == 0 {
-                        eprintln!("[RESPOND] count={} | JS_PROC={}ns lock={}ns send={}ns FULL_RT={}ns",
+                        eprintln!(
+                            "[RESPOND] count={} | JS_PROC={}ns lock={}ns send={}ns FULL_RT={}ns",
                             s.count,
                             s.total_js_processing_ns / s.count,
                             s.total_lock_ns / s.count,
@@ -3047,7 +3281,6 @@ impl Default for LocalServerState {
     }
 }
 
-
 thread_local! {
     static LOCAL_SERVER_STATE: RefCell<LocalServerState> = RefCell::new(LocalServerState::default());
 }
@@ -3084,7 +3317,7 @@ async fn op_howth_http_serve_local(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
-    use socket2::{Socket, Domain, Type, Protocol};
+    use socket2::{Domain, Protocol, Socket, Type};
     use std::net::SocketAddr;
 
     let addr: SocketAddr = format!("{}:{}", hostname, port).parse()?;
@@ -3168,11 +3401,11 @@ where
 ///
 /// Returns None if no local server was configured.
 pub fn create_local_server_future() -> Option<impl std::future::Future<Output = ()>> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
-    use bytes::Bytes;
-    use http_body_util::{BodyExt, Full};
 
     // Take the listener and request_tx from thread-local
     let (listener, request_tx, shutdown) = LOCAL_SERVER_STATE.with(|state| {
@@ -3278,11 +3511,11 @@ async fn http_serve_fast_impl(
     port: u16,
     hostname: &str,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
-    use bytes::Bytes;
-    use http_body_util::{BodyExt, Full};
 
     let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -3317,7 +3550,11 @@ async fn http_serve_fast_impl(
                     let tx = tx.clone();
                     async move {
                         let trace = is_trace_enabled();
-                        let start = if trace { Some(std::time::Instant::now()) } else { None };
+                        let start = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
 
@@ -3332,14 +3569,22 @@ async fn http_serve_fast_impl(
                             })
                             .collect();
 
-                        let after_parse = if trace { Some(std::time::Instant::now()) } else { None };
+                        let after_parse = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         let body = match req.collect().await {
                             Ok(collected) => collected.to_bytes(),
                             Err(_) => Bytes::new(),
                         };
 
-                        let after_body = if trace { Some(std::time::Instant::now()) } else { None };
+                        let after_body = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         let (response_tx, response_rx) =
                             tokio::sync::oneshot::channel::<RawHttpResponse>();
@@ -3355,7 +3600,11 @@ async fn http_serve_fast_impl(
                         };
 
                         let _ = tx.send((request_id, raw_request));
-                        let _after_send = if trace { Some(std::time::Instant::now()) } else { None };
+                        let _after_send = if trace {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
 
                         match response_rx.await {
                             Ok(response) => {
@@ -3428,7 +3677,7 @@ use crossbeam_queue::ArrayQueue;
 #[derive(Clone)]
 struct SpscRequestEntry {
     req_id: u32,
-    method: u8,  // 0=GET, 1=POST, 2=PUT, 3=DELETE, etc.
+    method: u8, // 0=GET, 1=POST, 2=PUT, 3=DELETE, etc.
     url_len: u16,
     url_bytes: [u8; 256],
     body_len: u32,
@@ -3536,18 +3785,19 @@ async fn op_howth_http_serve_spsc(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
-    use http_body_util::{BodyExt, Full};
-    use bytes::Bytes;
 
     let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
 
     // Create ring buffer for requests (capacity 1024 entries)
     let request_queue: Arc<ArrayQueue<SpscRequestEntry>> = Arc::new(ArrayQueue::new(1024));
     // Response channels using crossbeam (lower overhead than tokio)
-    let response_channels: Arc<dashmap::DashMap<u32, ResponseChannel>> = Arc::new(dashmap::DashMap::new());
+    let response_channels: Arc<dashmap::DashMap<u32, ResponseChannel>> =
+        Arc::new(dashmap::DashMap::new());
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Store V8 thread handle for unparking
@@ -3635,9 +3885,7 @@ async fn op_howth_http_serve_spsc(
                             v8_thread.unpark();
 
                             // Block on crossbeam channel (run in blocking task pool!)
-                            let resp = tokio::task::spawn_blocking(move || {
-                                rx.recv()
-                            }).await;
+                            let resp = tokio::task::spawn_blocking(move || rx.recv()).await;
 
                             // Clean up
                             resp_channels.remove(&req_id);
@@ -3651,14 +3899,14 @@ async fn op_howth_http_serve_spsc(
                                     hyper::Response::builder()
                                         .status(status)
                                         .body(Full::new(Bytes::copy_from_slice(body_bytes)))
-                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                        .map_err(|e| {
+                                            std::io::Error::new(std::io::ErrorKind::Other, e)
+                                        })
                                 }
-                                _ => {
-                                    hyper::Response::builder()
-                                        .status(500)
-                                        .body(Full::new(Bytes::from("Internal Server Error")))
-                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                                }
+                                _ => hyper::Response::builder()
+                                    .status(500)
+                                    .body(Full::new(Bytes::from("Internal Server Error")))
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
                             }
                         }
                     });
@@ -3732,11 +3980,7 @@ fn op_howth_http_wait_spsc() -> Option<(u32, String, String)> {
 
 /// Sync op to send response via crossbeam channel
 #[op2(fast)]
-fn op_howth_http_respond_spsc(
-    req_id: u32,
-    status: u16,
-    #[string] body: &str,
-) {
+fn op_howth_http_respond_spsc(req_id: u32, status: u16, #[string] body: &str) {
     if let Ok(server) = get_spsc_server().lock() {
         if let Some(state) = server.as_ref() {
             // Look up the response channel for this request
@@ -3788,9 +4032,9 @@ async fn op_howth_tcp_connect(
     port: u16,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
     let addr = format!("{}:{}", host, port);
-    let stream = tokio::net::TcpStream::connect(&addr)
-        .await
-        .map_err(|e| deno_core::error::AnyError::msg(format!("TCP connect failed ({}): {}", addr, e)))?;
+    let stream = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {
+        deno_core::error::AnyError::msg(format!("TCP connect failed ({}): {}", addr, e))
+    })?;
 
     let local = stream.local_addr().ok();
     let remote = stream.peer_addr().ok();
@@ -3832,8 +4076,8 @@ async fn op_howth_tcp_read(conn_id: u32) -> Result<serde_json::Value, deno_core:
     // Put the reader back (even on error, so close can clean up).
     get_tcp_readers().lock().await.insert(conn_id, reader);
 
-    let n = result
-        .map_err(|e| deno_core::error::AnyError::msg(format!("TCP read failed: {}", e)))?;
+    let n =
+        result.map_err(|e| deno_core::error::AnyError::msg(format!("TCP read failed: {}", e)))?;
 
     if n == 0 {
         Ok(serde_json::Value::Null)
@@ -4255,7 +4499,7 @@ fn op_howth_hash(
             // otherwise fall back to a non-cryptographic placeholder.
             // MD5 is handled in JavaScript via createHash polyfill.
             Err(deno_core::error::AnyError::msg(
-                "MD5 hashing should be handled in JavaScript"
+                "MD5 hashing should be handled in JavaScript",
             ))
         }
         _ => Err(deno_core::error::AnyError::msg(format!(
@@ -4388,27 +4632,39 @@ fn op_howth_cipher(
             if key.len() == 16 {
                 if encrypt {
                     let ct = cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv)
-                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .map_err(|e| {
+                            deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                        })?
                         .encrypt_padded_vec_mut::<Pkcs7>(data);
                     Ok(ct)
                 } else {
                     let pt = cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
-                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .map_err(|e| {
+                            deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                        })?
                         .decrypt_padded_vec_mut::<Pkcs7>(data)
-                        .map_err(|e| deno_core::error::AnyError::msg(format!("Decryption error: {}", e)))?;
+                        .map_err(|e| {
+                            deno_core::error::AnyError::msg(format!("Decryption error: {}", e))
+                        })?;
                     Ok(pt)
                 }
             } else {
                 if encrypt {
                     let ct = cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
-                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .map_err(|e| {
+                            deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                        })?
                         .encrypt_padded_vec_mut::<Pkcs7>(data);
                     Ok(ct)
                 } else {
                     let pt = cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
-                        .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?
+                        .map_err(|e| {
+                            deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                        })?
                         .decrypt_padded_vec_mut::<Pkcs7>(data)
-                        .map_err(|e| deno_core::error::AnyError::msg(format!("Decryption error: {}", e)))?;
+                        .map_err(|e| {
+                            deno_core::error::AnyError::msg(format!("Decryption error: {}", e))
+                        })?;
                     Ok(pt)
                 }
             }
@@ -4416,12 +4672,16 @@ fn op_howth_cipher(
         "aes-128-ctr" | "aes-256-ctr" => {
             let mut buf = data.to_vec();
             if key.len() == 16 {
-                let mut cipher = ctr::Ctr128BE::<aes::Aes128>::new_from_slices(key, iv)
-                    .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?;
+                let mut cipher =
+                    ctr::Ctr128BE::<aes::Aes128>::new_from_slices(key, iv).map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                    })?;
                 cipher.apply_keystream(&mut buf);
             } else {
-                let mut cipher = ctr::Ctr128BE::<aes::Aes256>::new_from_slices(key, iv)
-                    .map_err(|e| deno_core::error::AnyError::msg(format!("Cipher init error: {}", e)))?;
+                let mut cipher =
+                    ctr::Ctr128BE::<aes::Aes256>::new_from_slices(key, iv).map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("Cipher init error: {}", e))
+                    })?;
                 cipher.apply_keystream(&mut buf);
             }
             Ok(buf)
@@ -4447,7 +4707,7 @@ fn op_howth_cipher_gcm(
     #[buffer] tag: &[u8],
     encrypt: bool,
 ) -> Result<(Vec<u8>, Vec<u8>), deno_core::error::AnyError> {
-    use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit, AeadInPlace, Nonce, Tag};
+    use aes_gcm::{AeadInPlace, Aes128Gcm, Aes256Gcm, KeyInit, Nonce, Tag};
 
     match algorithm.to_lowercase().as_str() {
         "aes-128-gcm" => {
@@ -4456,14 +4716,20 @@ fn op_howth_cipher_gcm(
             let nonce = Nonce::from_slice(iv);
             if encrypt {
                 let mut buffer = data.to_vec();
-                let auth_tag = cipher.encrypt_in_place_detached(nonce, aad, &mut buffer)
-                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM encrypt error: {}", e)))?;
+                let auth_tag = cipher
+                    .encrypt_in_place_detached(nonce, aad, &mut buffer)
+                    .map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("GCM encrypt error: {}", e))
+                    })?;
                 Ok((buffer, auth_tag.to_vec()))
             } else {
                 let mut buffer = data.to_vec();
                 let tag_arr = Tag::from_slice(tag);
-                cipher.decrypt_in_place_detached(nonce, aad, &mut buffer, tag_arr)
-                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM decrypt error: {}", e)))?;
+                cipher
+                    .decrypt_in_place_detached(nonce, aad, &mut buffer, tag_arr)
+                    .map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("GCM decrypt error: {}", e))
+                    })?;
                 Ok((buffer, vec![]))
             }
         }
@@ -4473,14 +4739,20 @@ fn op_howth_cipher_gcm(
             let nonce = Nonce::from_slice(iv);
             if encrypt {
                 let mut buffer = data.to_vec();
-                let auth_tag = cipher.encrypt_in_place_detached(nonce, aad, &mut buffer)
-                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM encrypt error: {}", e)))?;
+                let auth_tag = cipher
+                    .encrypt_in_place_detached(nonce, aad, &mut buffer)
+                    .map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("GCM encrypt error: {}", e))
+                    })?;
                 Ok((buffer, auth_tag.to_vec()))
             } else {
                 let mut buffer = data.to_vec();
                 let tag_arr = Tag::from_slice(tag);
-                cipher.decrypt_in_place_detached(nonce, aad, &mut buffer, tag_arr)
-                    .map_err(|e| deno_core::error::AnyError::msg(format!("GCM decrypt error: {}", e)))?;
+                cipher
+                    .decrypt_in_place_detached(nonce, aad, &mut buffer, tag_arr)
+                    .map_err(|e| {
+                        deno_core::error::AnyError::msg(format!("GCM decrypt error: {}", e))
+                    })?;
                 Ok((buffer, vec![]))
             }
         }
@@ -4499,8 +4771,8 @@ fn op_howth_sign(
     #[string] key_pem: &str,
     #[buffer] data: &[u8],
 ) -> Result<Vec<u8>, deno_core::error::AnyError> {
-    use rsa::pkcs8::DecodePrivateKey;
     use rsa::pkcs1v15::SigningKey;
+    use rsa::pkcs8::DecodePrivateKey;
     use rsa::signature::SignerMut;
 
     let private_key = rsa::RsaPrivateKey::from_pkcs8_pem(key_pem)
@@ -4508,7 +4780,9 @@ fn op_howth_sign(
             use rsa::pkcs1::DecodeRsaPrivateKey;
             rsa::RsaPrivateKey::from_pkcs1_pem(key_pem)
         })
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse private key: {}", e)))?;
+        .map_err(|e| {
+            deno_core::error::AnyError::msg(format!("Failed to parse private key: {}", e))
+        })?;
 
     match algorithm.to_lowercase().as_str() {
         "sha256" | "sha-256" => {
@@ -4544,8 +4818,8 @@ fn op_howth_verify(
     #[buffer] signature: &[u8],
     #[buffer] data: &[u8],
 ) -> Result<bool, deno_core::error::AnyError> {
-    use rsa::pkcs8::DecodePublicKey;
     use rsa::pkcs1v15::{Signature, VerifyingKey};
+    use rsa::pkcs8::DecodePublicKey;
     use rsa::signature::Verifier;
 
     let public_key = rsa::RsaPublicKey::from_public_key_pem(key_pem)
@@ -4554,7 +4828,9 @@ fn op_howth_verify(
             use rsa::pkcs1::DecodeRsaPublicKey;
             rsa::RsaPublicKey::from_pkcs1_pem(key_pem)
         })
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse public key: {}", e)))?;
+        .map_err(|e| {
+            deno_core::error::AnyError::msg(format!("Failed to parse public key: {}", e))
+        })?;
 
     let sig = Signature::try_from(signature)
         .map_err(|e| deno_core::error::AnyError::msg(format!("Invalid signature: {}", e)))?;
@@ -4594,7 +4870,9 @@ fn op_howth_public_encrypt(
             use rsa::pkcs1::DecodeRsaPublicKey;
             rsa::RsaPublicKey::from_pkcs1_pem(key_pem)
         })
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse public key: {}", e)))?;
+        .map_err(|e| {
+            deno_core::error::AnyError::msg(format!("Failed to parse public key: {}", e))
+        })?;
 
     let mut rng = rand::thread_rng();
     let padding = Oaep::new::<sha1::Sha1>();
@@ -4619,7 +4897,9 @@ fn op_howth_private_decrypt(
             use rsa::pkcs1::DecodeRsaPrivateKey;
             rsa::RsaPrivateKey::from_pkcs1_pem(key_pem)
         })
-        .map_err(|e| deno_core::error::AnyError::msg(format!("Failed to parse private key: {}", e)))?;
+        .map_err(|e| {
+            deno_core::error::AnyError::msg(format!("Failed to parse private key: {}", e))
+        })?;
 
     let padding = Oaep::new::<sha1::Sha1>();
     let decrypted = private_key
@@ -4743,9 +5023,9 @@ impl Runtime {
             ));
         }
 
-        let s = local
-            .to_string(scope)
-            .ok_or_else(|| RuntimeError::JavaScript("eval_to_string: could not convert to string".to_string()))?;
+        let s = local.to_string(scope).ok_or_else(|| {
+            RuntimeError::JavaScript("eval_to_string: could not convert to string".to_string())
+        })?;
         Ok(s.to_rust_string_lossy(scope))
     }
 
@@ -4821,7 +5101,10 @@ impl Runtime {
     ///
     /// Unlike `execute_module`, this does not set the module as the "main" module,
     /// so it can be called repeatedly on the same runtime instance.
-    pub async fn execute_side_module(&mut self, path: &std::path::Path) -> Result<(), RuntimeError> {
+    pub async fn execute_side_module(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(), RuntimeError> {
         let specifier = ModuleSpecifier::from_file_path(path)
             .map_err(|_| RuntimeError::Io(format!("Invalid path: {}", path.display())))?;
 
@@ -6227,4 +6510,3 @@ mod tests {
     }
 }
 // Force rebuild Wed Jan 28 13:43:43 IST 2026
-

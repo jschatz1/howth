@@ -45,7 +45,10 @@ pub fn run(cwd: &Path, template: &str, name: Option<&str>, json: bool) -> Result
                 path: project_path.to_string_lossy().to_string(),
                 error: Some(error.clone()),
             };
-            println!("{}", serde_json::to_string_pretty(&result).into_diagnostic()?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).into_diagnostic()?
+            );
         } else {
             eprintln!("error: {}", error);
         }
@@ -74,7 +77,10 @@ pub fn run(cwd: &Path, template: &str, name: Option<&str>, json: bool) -> Result
                     path: project_path.to_string_lossy().to_string(),
                     error: None,
                 };
-                println!("{}", serde_json::to_string_pretty(&result).into_diagnostic()?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).into_diagnostic()?
+                );
             } else {
                 println!();
                 println!("Created project at: {}", project_path.display());
@@ -95,7 +101,10 @@ pub fn run(cwd: &Path, template: &str, name: Option<&str>, json: bool) -> Result
                     path: project_path.to_string_lossy().to_string(),
                     error: Some(e.to_string()),
                 };
-                println!("{}", serde_json::to_string_pretty(&result).into_diagnostic()?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).into_diagnostic()?
+                );
             } else {
                 eprintln!("error: {}", e);
             }

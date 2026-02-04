@@ -121,7 +121,11 @@ pub fn run_http_bench(params: HttpBenchParams) -> HttpBenchReport {
     }
 
     // Sort by RPS (highest first)
-    results.sort_by(|a, b| b.rps.partial_cmp(&a.rps).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.rps
+            .partial_cmp(&a.rps)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Compute comparisons
     let comparisons = compute_comparisons(&results);
@@ -270,7 +274,13 @@ fn start_server(tool: &str, script_dir: &Path, port: u16) -> Result<Child, Strin
 
     let child = match tool {
         "howth" => Command::new("howth")
-            .args(["run", "--native", script_dir.join("server-howth.ts").to_str().unwrap(), "--", &port_str])
+            .args([
+                "run",
+                "--native",
+                script_dir.join("server-howth.ts").to_str().unwrap(),
+                "--",
+                &port_str,
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn(),
@@ -280,7 +290,11 @@ fn start_server(tool: &str, script_dir: &Path, port: u16) -> Result<Child, Strin
             .stderr(Stdio::piped())
             .spawn(),
         "bun" => Command::new("bun")
-            .args(["run", script_dir.join("server-bun.ts").to_str().unwrap(), &port_str])
+            .args([
+                "run",
+                script_dir.join("server-bun.ts").to_str().unwrap(),
+                &port_str,
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn(),
@@ -389,7 +403,7 @@ fn run_load_test(port: u16, connections: u32, duration_secs: u32) -> LoadTestRes
                             errors.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
-                    }
+                    },
                 };
 
                 match make_request_keepalive(stream) {
@@ -466,7 +480,10 @@ fn make_request_keepalive(mut stream: TcpStream) -> Result<TcpStream, std::io::E
     loop {
         let n = stream.read(&mut buf[total_read..])?;
         if n == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed",
+            ));
         }
         total_read += n;
 
@@ -480,7 +497,10 @@ fn make_request_keepalive(mut stream: TcpStream) -> Result<TcpStream, std::io::E
 
         if total_read >= buf.len() {
             // Headers too large, bail
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "headers too large"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "headers too large",
+            ));
         }
     }
 

@@ -7,10 +7,10 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_precision_loss)]
 
-use crate::bench::stats::{compute_median, compute_stats};
-use crate::bench::BenchWarning;
 use crate::bench::build::MachineInfo;
 use crate::bench::rusage;
+use crate::bench::stats::{compute_median, compute_stats};
+use crate::bench::BenchWarning;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -159,13 +159,19 @@ const TEST_DEP_COUNT: u32 = 30;
 /// If `project_path` is `None`, creates a temporary test project with ~30 deps.
 /// Benchmarks howth, npm, and bun (skipping any that aren't installed).
 #[must_use]
-pub fn run_install_bench(params: InstallBenchParams, project_path: Option<&Path>) -> InstallBenchReport {
+pub fn run_install_bench(
+    params: InstallBenchParams,
+    project_path: Option<&Path>,
+) -> InstallBenchReport {
     let mut warnings = Vec::new();
 
     if params.iters < 3 {
         warnings.push(BenchWarning::warn(
             "LOW_ITERS",
-            format!("Low iteration count ({}); results may be noisy", params.iters),
+            format!(
+                "Low iteration count ({}); results may be noisy",
+                params.iters
+            ),
         ));
     }
 
@@ -176,7 +182,11 @@ pub fn run_install_bench(params: InstallBenchParams, project_path: Option<&Path>
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "project".to_string());
-        (None, path.to_path_buf(), InstallProjectInfo { name, dep_count })
+        (
+            None,
+            path.to_path_buf(),
+            InstallProjectInfo { name, dep_count },
+        )
     } else {
         let temp = create_install_test_project(&mut warnings);
         let path = temp.path().to_path_buf();
@@ -280,7 +290,11 @@ fn bench_tool(
         eprintln!("    run {}/{}", i + 1, params.iters);
         clean_before_install(tool_name, project_dir);
 
-        let ru_before = if capture_rusage { rusage::snapshot_children() } else { None };
+        let ru_before = if capture_rusage {
+            rusage::snapshot_children()
+        } else {
+            None
+        };
         let start = Instant::now();
         let output = Command::new(&cmd)
             .args(&args)
@@ -293,7 +307,11 @@ fn bench_tool(
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 warnings.push(BenchWarning::warn(
                     "INSTALL_FAILED",
-                    format!("{tool_name} install failed (exit {}): {}", out.status, stderr.chars().take(200).collect::<String>()),
+                    format!(
+                        "{tool_name} install failed (exit {}): {}",
+                        out.status,
+                        stderr.chars().take(200).collect::<String>()
+                    ),
                 ));
                 return None;
             }
@@ -365,8 +383,7 @@ fn create_install_test_project(warnings: &mut Vec<BenchWarning>) -> tempfile::Te
     eprintln!("Creating test project with {TEST_DEP_COUNT} dependencies...");
 
     // Write package.json and tsconfig.json
-    fs::write(path.join("package.json"), TEST_PACKAGE_JSON)
-        .expect("Failed to write package.json");
+    fs::write(path.join("package.json"), TEST_PACKAGE_JSON).expect("Failed to write package.json");
     fs::write(path.join("tsconfig.json"), TEST_TSCONFIG_JSON)
         .expect("Failed to write tsconfig.json");
 
@@ -462,11 +479,13 @@ fn count_deps_in_package_json(project_dir: &Path) -> u32 {
         return 0;
     };
 
-    let deps = value.get("dependencies")
+    let deps = value
+        .get("dependencies")
         .and_then(|v| v.as_object())
         .map(|o| o.len() as u32)
         .unwrap_or(0);
-    let dev_deps = value.get("devDependencies")
+    let dev_deps = value
+        .get("devDependencies")
         .and_then(|v| v.as_object())
         .map(|o| o.len() as u32)
         .unwrap_or(0);
@@ -550,19 +569,17 @@ mod tests {
 
     #[test]
     fn test_compute_comparisons_no_howth() {
-        let results = vec![
-            InstallToolResult {
-                tool: "npm".to_string(),
-                command: "npm install".to_string(),
-                median_ns: 5_000_000_000,
-                p95_ns: 6_000_000_000,
-                min_ns: 4_000_000_000,
-                max_ns: 7_000_000_000,
-                samples: 3,
-                median_cpu_us: None,
-                peak_rss_bytes: None,
-            },
-        ];
+        let results = vec![InstallToolResult {
+            tool: "npm".to_string(),
+            command: "npm install".to_string(),
+            median_ns: 5_000_000_000,
+            p95_ns: 6_000_000_000,
+            min_ns: 4_000_000_000,
+            max_ns: 7_000_000_000,
+            samples: 3,
+            median_cpu_us: None,
+            peak_rss_bytes: None,
+        }];
 
         let comparisons = compute_comparisons(&results);
         assert!(comparisons.is_empty());

@@ -142,11 +142,7 @@ window.$RefreshSig$ = () => (type) => type;
 window.__vite_plugin_react_preamble_installed__ = true;
 </script>"#;
 
-            let transformed = html.replacen(
-                "<script",
-                &format!("{}\n  <script", injection),
-                1,
-            );
+            let transformed = html.replacen("<script", &format!("{}\n  <script", injection), 1);
             return Ok(Some(transformed));
         }
         Ok(None)
@@ -324,7 +320,9 @@ mod tests {
     fn test_is_refresh_target() {
         assert!(ReactRefreshPlugin::is_refresh_target("App.tsx"));
         assert!(ReactRefreshPlugin::is_refresh_target("Button.jsx"));
-        assert!(ReactRefreshPlugin::is_refresh_target("/src/components/App.tsx"));
+        assert!(ReactRefreshPlugin::is_refresh_target(
+            "/src/components/App.tsx"
+        ));
         assert!(!ReactRefreshPlugin::is_refresh_target("utils.ts"));
         assert!(!ReactRefreshPlugin::is_refresh_target("index.js"));
         assert!(!ReactRefreshPlugin::is_refresh_target("style.css"));
@@ -385,9 +383,7 @@ export default App;
         let plugin = ReactRefreshPlugin::new();
         let ctx = PluginContext::default();
 
-        let result = plugin
-            .resolve_id("/@react-refresh", None, &ctx)
-            .unwrap();
+        let result = plugin.resolve_id("/@react-refresh", None, &ctx).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().id, "\0react-refresh");
     }

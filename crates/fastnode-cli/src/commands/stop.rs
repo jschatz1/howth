@@ -2,7 +2,7 @@ use fastnode_core::config::Channel;
 use fastnode_core::paths;
 use fastnode_core::VERSION;
 use fastnode_daemon::ipc::{IpcStream, MAX_FRAME_SIZE};
-use fastnode_proto::{encode_frame, Frame, Request, Response, FrameResponse};
+use fastnode_proto::{encode_frame, Frame, FrameResponse, Request, Response};
 use miette::{IntoDiagnostic, Result};
 use std::io;
 

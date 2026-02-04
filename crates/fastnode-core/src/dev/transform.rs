@@ -66,15 +66,13 @@ impl ModuleTransformer {
         let source = self.load_module(&file_path_str, plugins)?;
 
         // Determine content type and whether to transpile
-        let ext = file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let (code, content_type) = match ext {
             "ts" | "tsx" | "jsx" | "mts" | "cts" => {
                 let transpiled = self.transpile(&source, &file_path)?;
-                let transformed = self.apply_plugin_transforms(&transpiled, &file_path_str, plugins)?;
+                let transformed =
+                    self.apply_plugin_transforms(&transpiled, &file_path_str, plugins)?;
                 let rewritten = self.rewriter.rewrite(&transformed, &file_path, plugins);
                 (rewritten, "application/javascript")
             }
@@ -90,7 +88,8 @@ impl ModuleTransformer {
             }
             "json" => {
                 let json_module = json_to_esm(&source);
-                let transformed = self.apply_plugin_transforms(&json_module, &file_path_str, plugins)?;
+                let transformed =
+                    self.apply_plugin_transforms(&json_module, &file_path_str, plugins)?;
                 (transformed, "application/javascript")
             }
             _ => {
@@ -159,8 +158,10 @@ impl ModuleTransformer {
         plugins: &PluginContainer,
     ) -> Result<PathBuf, ModuleTransformError> {
         // Try plugin resolve first
-        if let Ok(Some(ResolveIdResult { id, external: false })) =
-            plugins.resolve_id(url_path, None)
+        if let Ok(Some(ResolveIdResult {
+            id,
+            external: false,
+        })) = plugins.resolve_id(url_path, None)
         {
             let path = PathBuf::from(&id);
             if path.exists() {
@@ -170,9 +171,7 @@ impl ModuleTransformer {
 
         // Handle /@style/ prefix for CSS modules
         // /@style/src/styles.css → /src/styles.css
-        let url_path = url_path
-            .strip_prefix("/@style")
-            .unwrap_or(url_path);
+        let url_path = url_path.strip_prefix("/@style").unwrap_or(url_path);
 
         // URL path is root-relative: /src/App.tsx → {root}/src/App.tsx
         let stripped = url_path.strip_prefix('/').unwrap_or(url_path);
@@ -224,11 +223,7 @@ impl ModuleTransformer {
     }
 
     /// Transpile TypeScript/JSX to JavaScript using SWC.
-    fn transpile(
-        &self,
-        source: &str,
-        file_path: &Path,
-    ) -> Result<String, ModuleTransformError> {
+    fn transpile(&self, source: &str, file_path: &Path) -> Result<String, ModuleTransformError> {
         use crate::compiler::{
             CompilerBackend, JsxRuntime, ModuleKind, SourceMapKind, SwcBackend, TranspileSpec,
         };
@@ -249,12 +244,12 @@ impl ModuleTransformer {
             spec.jsx_runtime = JsxRuntime::Automatic;
         }
 
-        let output = backend.transpile(&spec, source).map_err(|e| {
-            ModuleTransformError {
+        let output = backend
+            .transpile(&spec, source)
+            .map_err(|e| ModuleTransformError {
                 message: format!("Transpile error: {}", e),
                 file: Some(input_name),
-            }
-        })?;
+            })?;
 
         Ok(output.code)
     }
@@ -266,12 +261,12 @@ impl ModuleTransformer {
         id: &str,
         plugins: &PluginContainer,
     ) -> Result<String, ModuleTransformError> {
-        plugins.transform(code, id).map_err(|e| {
-            ModuleTransformError {
+        plugins
+            .transform(code, id)
+            .map_err(|e| ModuleTransformError {
                 message: format!("Plugin transform error: {}", e),
                 file: Some(id.to_string()),
-            }
-        })
+            })
     }
 }
 
@@ -315,8 +310,7 @@ fn json_to_esm(source: &str) -> String {
     let trimmed = source.trim();
 
     // Try to parse as a JSON object for named exports
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed)
-    {
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(trimmed) {
         let mut out = format!("const __json__ = {};\nexport default __json__;\n", trimmed);
         for (key, value) in &map {
             // Only export keys that are valid JS identifiers

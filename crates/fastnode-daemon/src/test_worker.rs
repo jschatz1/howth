@@ -87,9 +87,7 @@ impl NodeTestWorker {
         })
     }
 
-    fn spawn_node(
-        script_path: &Path,
-    ) -> io::Result<(Child, ChildStdin, BufReader<ChildStdout>)> {
+    fn spawn_node(script_path: &Path) -> io::Result<(Child, ChildStdin, BufReader<ChildStdout>)> {
         let mut child = Command::new("node")
             .arg(script_path)
             .stdin(std::process::Stdio::piped())

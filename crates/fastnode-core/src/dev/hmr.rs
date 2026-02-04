@@ -64,7 +64,10 @@ impl HmrModuleGraph {
     pub fn ensure_module(&self, url: &str, file: &str) {
         let mut modules = self.modules.write().unwrap();
         if !modules.contains_key(url) {
-            modules.insert(url.to_string(), HmrModuleNode::new(url.to_string(), file.to_string()));
+            modules.insert(
+                url.to_string(),
+                HmrModuleNode::new(url.to_string(), file.to_string()),
+            );
             self.file_to_url
                 .write()
                 .unwrap()

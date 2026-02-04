@@ -98,7 +98,10 @@ impl HowthModuleLoader {
                 // Try to extract the package name from the end of the path
                 // For scoped packages like @next/swc-wasm-nodejs
                 let filename = path.file_name().map(|f| f.to_string_lossy().to_string());
-                let parent_name = path.parent().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().to_string());
+                let parent_name = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|f| f.to_string_lossy().to_string());
 
                 let bare_specifier = if let Some(ref parent) = parent_name {
                     if parent.starts_with('@') {
@@ -121,7 +124,10 @@ impl HowthModuleLoader {
                     }
                 }
             }
-            return Err(AnyError::msg(format!("Cannot find module: '{}'", path.display())));
+            return Err(AnyError::msg(format!(
+                "Cannot find module: '{}'",
+                path.display()
+            )));
         }
 
         // Bare specifiers - resolve from node_modules
@@ -448,7 +454,11 @@ impl HowthModuleLoader {
             || (code.contains("require(") && !code.contains("import "));
 
         if std::env::var("DEBUG_MODULES").is_ok() {
-            eprintln!("[DEBUG] Loading module: {} (is_commonjs={})", path.display(), is_commonjs);
+            eprintln!(
+                "[DEBUG] Loading module: {} (is_commonjs={})",
+                path.display(),
+                is_commonjs
+            );
         }
 
         let wrapped_code = if is_commonjs {
@@ -457,8 +467,14 @@ impl HowthModuleLoader {
                 eprintln!("[DEBUG] CJS wrapper length: {}", result.len());
                 // Print line by line with line numbers
                 for (i, line) in result.lines().enumerate() {
-                    eprintln!("[DEBUG] {:4}: {}", i + 1, if line.len() > 100 { &line[..100] } else { line });
-                    if i > 35 { break; } // Stop after line 35
+                    eprintln!(
+                        "[DEBUG] {:4}: {}",
+                        i + 1,
+                        if line.len() > 100 { &line[..100] } else { line }
+                    );
+                    if i > 35 {
+                        break;
+                    } // Stop after line 35
                 }
             }
             result
@@ -528,7 +544,9 @@ export default __howth_result__;
         let mut exports = HashSet::new();
 
         // Pattern 1: Object.defineProperty(exports, "name", ...)
-        let define_prop_re = regex::Regex::new(r#"Object\.defineProperty\s*\(\s*exports\s*,\s*["'](\w+)["']"#).unwrap();
+        let define_prop_re =
+            regex::Regex::new(r#"Object\.defineProperty\s*\(\s*exports\s*,\s*["'](\w+)["']"#)
+                .unwrap();
         for cap in define_prop_re.captures_iter(source) {
             if let Some(name) = cap.get(1) {
                 exports.insert(name.as_str().to_string());
@@ -569,13 +587,54 @@ export default __howth_result__;
 
         // JavaScript reserved keywords that cannot be used as export names
         const RESERVED_KEYWORDS: &[&str] = &[
-            "break", "case", "catch", "continue", "debugger", "default", "delete",
-            "do", "else", "export", "extends", "finally", "for", "function", "if",
-            "import", "in", "instanceof", "new", "return", "super", "switch", "this",
-            "throw", "try", "typeof", "var", "void", "while", "with", "yield",
-            "class", "const", "enum", "let", "static", "implements", "interface",
-            "package", "private", "protected", "public", "await", "null", "true",
-            "false", "undefined", "__esModule",
+            "break",
+            "case",
+            "catch",
+            "continue",
+            "debugger",
+            "default",
+            "delete",
+            "do",
+            "else",
+            "export",
+            "extends",
+            "finally",
+            "for",
+            "function",
+            "if",
+            "import",
+            "in",
+            "instanceof",
+            "new",
+            "return",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "try",
+            "typeof",
+            "var",
+            "void",
+            "while",
+            "with",
+            "yield",
+            "class",
+            "const",
+            "enum",
+            "let",
+            "static",
+            "implements",
+            "interface",
+            "package",
+            "private",
+            "protected",
+            "public",
+            "await",
+            "null",
+            "true",
+            "false",
+            "undefined",
+            "__esModule",
         ];
 
         let mut declarations = String::new();

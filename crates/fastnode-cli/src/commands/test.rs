@@ -208,7 +208,11 @@ fn handle_test_response(response: Response) -> i32 {
                 eprintln!("{}", result.diagnostics.trim_end());
             }
 
-            if result.ok { 0 } else { 1 }
+            if result.ok {
+                0
+            } else {
+                1
+            }
         }
         Response::Error { code, message } => {
             eprintln!("error: {code}: {message}");
@@ -379,10 +383,7 @@ fn get_test_script(cwd: &Path) -> Option<String> {
     let content = std::fs::read_to_string(&package_json_path).ok()?;
     let package: Value = serde_json::from_str(&content).ok()?;
 
-    let script = package
-        .get("scripts")?
-        .get("test")?
-        .as_str()?;
+    let script = package.get("scripts")?.get("test")?.as_str()?;
 
     // Avoid infinite recursion if the test script invokes howth test
     let trimmed = script.trim();

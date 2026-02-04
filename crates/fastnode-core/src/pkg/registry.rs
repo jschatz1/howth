@@ -266,16 +266,16 @@ impl RegistryClient {
 
         // Check for a scoped registry override
         let scoped = self.find_scoped_registry(name);
-        let base = scoped
-            .map(|r| &r.registry_url)
-            .unwrap_or(&self.base_url);
+        let base = scoped.map(|r| &r.registry_url).unwrap_or(&self.base_url);
 
         let url = base
             .join(&encoded_name)
             .map_err(|e| PkgError::registry(format!("Failed to build URL for '{name}': {e}")))?;
 
         // Build request with abbreviated packument header and conditional ETag
-        let mut request = self.http.get(url.as_str())
+        let mut request = self
+            .http
+            .get(url.as_str())
             .header("Accept", ABBREVIATED_ACCEPT);
 
         // Attach Bearer auth for scoped registries
@@ -365,7 +365,10 @@ impl RegistryClient {
     /// Get stats about the cache.
     pub async fn cache_stats(&self) -> (usize, usize) {
         let memory_count = self.shared.memory_cache.read().await.len();
-        let disk_count = self.shared.disk_cache.as_ref()
+        let disk_count = self
+            .shared
+            .disk_cache
+            .as_ref()
             .and_then(|c| {
                 let path = c.root().join("packuments");
                 std::fs::read_dir(path).ok()

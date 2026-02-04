@@ -7,10 +7,10 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_precision_loss)]
 
-use crate::bench::stats::{compute_median, compute_stats};
-use crate::bench::BenchWarning;
 use crate::bench::build::MachineInfo;
 use crate::bench::rusage;
+use crate::bench::stats::{compute_median, compute_stats};
+use crate::bench::BenchWarning;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -117,7 +117,10 @@ pub fn run_test_bench(params: TestBenchParams) -> TestBenchReport {
     if params.iters < 3 {
         warnings.push(BenchWarning::warn(
             "LOW_ITERS",
-            format!("Low iteration count ({}); results may be noisy", params.iters),
+            format!(
+                "Low iteration count ({}); results may be noisy",
+                params.iters
+            ),
         ));
     }
 
@@ -198,10 +201,7 @@ fn start_bench_daemon(warnings: &mut Vec<BenchWarning>) -> Option<BenchDaemonCtx
     }
 
     // Create a unique socket path for the bench daemon
-    let endpoint = format!(
-        "/tmp/howth-bench-test-{}.sock",
-        std::process::id()
-    );
+    let endpoint = format!("/tmp/howth-bench-test-{}.sock", std::process::id());
 
     // Clean up any stale socket
     let _ = fs::remove_file(&endpoint);
@@ -337,7 +337,15 @@ fn bench_node(
     let file_refs: Vec<&str> = test_files.iter().map(|s| s.as_str()).collect();
     args.extend(file_refs);
 
-    run_bench_iterations("node", "node --test", &args, project_dir, params, warnings, true)
+    run_bench_iterations(
+        "node",
+        "node --test",
+        &args,
+        project_dir,
+        params,
+        warnings,
+        true,
+    )
 }
 
 /// Benchmark bun test.
@@ -356,7 +364,15 @@ fn bench_bun(
 
     eprintln!("  Benchmarking bun test...");
     // bun test runs .ts files natively and supports node:test
-    run_bench_iterations("bun", "bun test", &["test"], project_dir, params, warnings, true)
+    run_bench_iterations(
+        "bun",
+        "bun test",
+        &["test"],
+        project_dir,
+        params,
+        warnings,
+        true,
+    )
 }
 
 /// Run benchmark iterations for a tool.
@@ -413,7 +429,11 @@ fn run_bench_iterations_with_env(
     for i in 0..params.iters {
         eprintln!("    run {}/{}", i + 1, params.iters);
 
-        let ru_before = if capture_rusage { rusage::snapshot_children() } else { None };
+        let ru_before = if capture_rusage {
+            rusage::snapshot_children()
+        } else {
+            None
+        };
         let start = Instant::now();
         let mut c = Command::new(cmd);
         c.args(args).current_dir(project_dir);
@@ -476,8 +496,10 @@ fn create_test_project() -> tempfile::TempDir {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp directory");
     let path = temp_dir.path();
 
-    eprintln!("Creating test project with {NUM_TEST_FILES} test files ({} test cases)...",
-        NUM_TEST_FILES * TESTS_PER_FILE);
+    eprintln!(
+        "Creating test project with {NUM_TEST_FILES} test files ({} test cases)...",
+        NUM_TEST_FILES * TESTS_PER_FILE
+    );
 
     // Write package.json
     let package_json = r#"{
@@ -487,15 +509,13 @@ fn create_test_project() -> tempfile::TempDir {
   "type": "module"
 }
 "#;
-    fs::write(path.join("package.json"), package_json)
-        .expect("Failed to write package.json");
+    fs::write(path.join("package.json"), package_json).expect("Failed to write package.json");
 
     // Generate .test.ts files
     for i in 0..NUM_TEST_FILES {
         let content = generate_test_file_ts(i);
         let filename = format!("{}.test.ts", test_module_name(i));
-        fs::write(path.join(&filename), content)
-            .expect("Failed to write test file");
+        fs::write(path.join(&filename), content).expect("Failed to write test file");
     }
 
     temp_dir
@@ -506,8 +526,7 @@ fn generate_js_test_files(project_dir: &Path) {
     for i in 0..NUM_TEST_FILES {
         let content = generate_test_file_js(i);
         let filename = format!("{}.test.mjs", test_module_name(i));
-        fs::write(project_dir.join(&filename), content)
-            .expect("Failed to write .test.mjs file");
+        fs::write(project_dir.join(&filename), content).expect("Failed to write .test.mjs file");
     }
 }
 
@@ -522,18 +541,28 @@ fn generate_bun_test_files(project_dir: &Path) {
     for i in 0..NUM_TEST_FILES {
         let content = generate_test_file_bun(i);
         let filename = format!("{}.test.ts", test_module_name(i));
-        fs::write(project_dir.join(&filename), content)
-            .expect("Failed to write bun test file");
+        fs::write(project_dir.join(&filename), content).expect("Failed to write bun test file");
     }
 }
 
 /// Module name for test file index.
 fn test_module_name(index: u32) -> String {
     let names = [
-        "math-utils", "string-helpers", "array-ops", "date-format",
-        "validator", "parser", "encoder", "converter",
-        "sorter", "filter", "mapper", "reducer",
-        "cache", "queue", "stack",
+        "math-utils",
+        "string-helpers",
+        "array-ops",
+        "date-format",
+        "validator",
+        "parser",
+        "encoder",
+        "converter",
+        "sorter",
+        "filter",
+        "mapper",
+        "reducer",
+        "cache",
+        "queue",
+        "stack",
     ];
     if (index as usize) < names.len() {
         names[index as usize].to_string()
@@ -571,9 +600,7 @@ fn generate_test_file_js(index: u32) -> String {
 /// Generate a TypeScript test file using bun:test (describe/test/expect).
 fn generate_test_file_bun(index: u32) -> String {
     let module_name = test_module_name(index);
-    let mut content = String::from(
-        "import { test, describe, expect } from 'bun:test';\n\n",
-    );
+    let mut content = String::from("import { test, describe, expect } from 'bun:test';\n\n");
 
     content.push_str(&format!("describe(\"{module_name}\", () => {{\n"));
 
@@ -600,7 +627,9 @@ fn generate_test_case_bun(file_index: u32, test_index: u32) -> (String, String) 
                 format!("adds {} + {} correctly", a, b),
                 format!(
                     "    const result = {} + {};\n    expect(result).toBe({});\n",
-                    a, b, a + b
+                    a,
+                    b,
+                    a + b
                 ),
             )
         }
@@ -681,7 +710,9 @@ fn generate_test_case(file_index: u32, test_index: u32) -> (String, String) {
                 format!("adds {} + {} correctly", a, b),
                 format!(
                     "    const result = {} + {};\n    assert.strictEqual(result, {});\n",
-                    a, b, a + b
+                    a,
+                    b,
+                    a + b
                 ),
             )
         }
@@ -885,19 +916,17 @@ mod tests {
 
     #[test]
     fn test_compute_comparisons_no_howth() {
-        let results = vec![
-            TestToolResult {
-                tool: "node".to_string(),
-                command: "node --test".to_string(),
-                median_ns: 1_000_000_000,
-                p95_ns: 1_200_000_000,
-                min_ns: 800_000_000,
-                max_ns: 1_500_000_000,
-                samples: 5,
-                median_cpu_us: None,
-                peak_rss_bytes: None,
-            },
-        ];
+        let results = vec![TestToolResult {
+            tool: "node".to_string(),
+            command: "node --test".to_string(),
+            median_ns: 1_000_000_000,
+            p95_ns: 1_200_000_000,
+            min_ns: 800_000_000,
+            max_ns: 1_500_000_000,
+            samples: 5,
+            median_cpu_us: None,
+            peak_rss_bytes: None,
+        }];
 
         let comparisons = compute_comparisons(&results);
         assert!(comparisons.is_empty());
