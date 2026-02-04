@@ -729,7 +729,13 @@ mod tests {
             link_package_binaries(project.path(), "prettier", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 1);
+        #[cfg(unix)]
         assert!(project.path().join("node_modules/.bin/prettier").exists());
+        #[cfg(windows)]
+        assert!(project
+            .path()
+            .join("node_modules/.bin/prettier.cmd")
+            .exists());
     }
 
     #[test]
@@ -769,8 +775,19 @@ mod tests {
             link_package_binaries(project.path(), "typescript", &cached_pkg, None).unwrap();
 
         assert_eq!(binaries.len(), 2);
-        assert!(project.path().join("node_modules/.bin/tsc").exists());
-        assert!(project.path().join("node_modules/.bin/tsserver").exists());
+        #[cfg(unix)]
+        {
+            assert!(project.path().join("node_modules/.bin/tsc").exists());
+            assert!(project.path().join("node_modules/.bin/tsserver").exists());
+        }
+        #[cfg(windows)]
+        {
+            assert!(project.path().join("node_modules/.bin/tsc.cmd").exists());
+            assert!(project
+                .path()
+                .join("node_modules/.bin/tsserver.cmd")
+                .exists());
+        }
     }
 
     #[test]
