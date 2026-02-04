@@ -17,7 +17,7 @@ mod ops;
 mod runtime;
 
 pub use module_loader::{HowthModuleLoader, VirtualModuleMap};
-pub use runtime::{Runtime, RuntimeError, RuntimeOptions};
+pub use runtime::{create_local_server_future, Runtime, RuntimeError, RuntimeOptions};
 
 /// Run a JavaScript file and return the exit code.
 pub async fn run_file(path: &std::path::Path) -> Result<i32, RuntimeError> {

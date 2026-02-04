@@ -1,0 +1,10 @@
+
+# 2026-02-04 06:49:11.637473
++N
+
+# 2026-02-04 06:51:35.695200
++Rewrite the README.md to focus on being fast in general but less about bun. It seems like I'm stalking Bun. If we are going to talk about tools talk about alll of them like: SWC – Rust-based compiler + bundler that’s ultra fast and focused on TS/JS transpilation; used internally by tools like Next.js for minification and transformation.
++
++Rome – An ambitious all-in-one toolchain (formatter, linter, bundler, etc.); still maturing but interesting for unified workflows.
++
++Deno – Not a bundler per se, but offers a built-in TypeScript runtime that can bundle modules via CLI commands (good for simpler scripts). Esbuild in there too

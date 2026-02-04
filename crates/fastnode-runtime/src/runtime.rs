@@ -231,6 +231,12 @@ extension!(
         op_howth_http_respond_fast,
         op_howth_http_respond_fast_sync,
         op_howth_http_respond_with_headers,
+        // HTTP server ops (LocalSet - same thread via join!)
+        op_howth_http_serve_local,
+        // HTTP server ops (SPSC - lock-free ring buffers)
+        op_howth_http_serve_spsc,
+        op_howth_http_wait_spsc,
+        op_howth_http_respond_spsc,
         // TCP client ops
         op_howth_tcp_connect,
         op_howth_tcp_read,
@@ -2998,6 +3004,760 @@ async fn op_howth_http_respond_with_headers(
             Ok(())
         }
         None => Err(deno_core::error::AnyError::msg("Request not found")),
+    }
+}
+
+// ── LocalSet HTTP Server (same-thread, no cross-thread channels) ───────────
+//
+// This implementation keeps HTTP handling on the same thread as JS execution,
+// eliminating cross-thread channel overhead. It uses:
+// - spawn_local instead of spawn (keeps tasks on current thread)
+// - thread-local storage instead of Arc<Mutex> (no synchronization needed)
+// - Local oneshot channels for response notification (fast wake-up)
+//
+// Requirements: Must run within a tokio::task::LocalSet context.
+
+use std::collections::VecDeque;
+
+/// Thread-local state for the local HTTP server
+struct LocalServerState {
+    /// TCP listener (stored here so CLI can retrieve and run with join!)
+    listener: Option<tokio::net::TcpListener>,
+    /// Channel sender for passing requests to JS
+    request_tx: Option<tokio::sync::mpsc::UnboundedSender<(u32, RawHttpRequest)>>,
+    /// Shutdown flag (shared with server state)
+    shutdown: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Server ID
+    server_id: u32,
+    /// Server info for JS
+    port: u16,
+    hostname: String,
+}
+
+impl Default for LocalServerState {
+    fn default() -> Self {
+        Self {
+            listener: None,
+            request_tx: None,
+            shutdown: None,
+            server_id: 0,
+            port: 0,
+            hostname: String::new(),
+        }
+    }
+}
+
+
+thread_local! {
+    static LOCAL_SERVER_STATE: RefCell<LocalServerState> = RefCell::new(LocalServerState::default());
+}
+
+/// Pending local server configuration (stored when op is called, started later by CLI)
+static PENDING_LOCAL_SERVER: std::sync::OnceLock<std::sync::Mutex<Option<LocalServerConfig>>> =
+    std::sync::OnceLock::new();
+
+/// Configuration for a pending local server
+#[derive(Clone)]
+pub struct LocalServerConfig {
+    pub port: u16,
+    pub hostname: String,
+    pub server_id: u32,
+}
+
+fn get_pending_local_server() -> &'static std::sync::Mutex<Option<LocalServerConfig>> {
+    PENDING_LOCAL_SERVER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Check if there's a pending local server to start
+pub fn take_pending_local_server() -> Option<LocalServerConfig> {
+    get_pending_local_server().lock().ok()?.take()
+}
+
+/// Start a "local" HTTP server - registers config for later execution
+///
+/// This op registers the server configuration but does NOT spawn the accept loop.
+/// The CLI will retrieve this config and run the Hyper loop alongside the deno
+/// event loop using tokio::join!, allowing proper LocalSet integration.
+#[op2(async)]
+#[serde]
+async fn op_howth_http_serve_local(
+    port: u16,
+    #[string] hostname: String,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use socket2::{Socket, Domain, Type, Protocol};
+    use std::net::SocketAddr;
+
+    let addr: SocketAddr = format!("{}:{}", hostname, port).parse()?;
+
+    // Create socket with SO_REUSEPORT for multi-worker support
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
+    let local_addr = listener.local_addr()?;
+
+    let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+    // Create channel for request passing (same as serve_fast)
+    let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, RawHttpRequest)>();
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Store server state (for JS to poll requests)
+    get_fast_servers().insert(
+        server_id,
+        Arc::new(tokio::sync::Mutex::new(FastServerState {
+            request_rx,
+            shutdown: shutdown.clone(),
+        })),
+    );
+
+    // Store the listener in thread-local for the Hyper loop
+    // The CLI will retrieve this and run it with join!
+    LOCAL_SERVER_STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        s.listener = Some(listener);
+        s.request_tx = Some(request_tx);
+        s.shutdown = Some(shutdown);
+        s.server_id = server_id;
+        s.port = local_addr.port();
+        s.hostname = local_addr.ip().to_string();
+    });
+
+    // Also store in global for CLI access
+    if let Ok(mut pending) = get_pending_local_server().lock() {
+        *pending = Some(LocalServerConfig {
+            port: local_addr.port(),
+            hostname: local_addr.ip().to_string(),
+            server_id,
+        });
+    }
+
+    Ok(serde_json::json!({
+        "serverId": server_id,
+        "hostname": local_addr.ip().to_string(),
+        "port": local_addr.port(),
+    }))
+}
+
+/// Custom executor that uses spawn_local for Hyper connection handlers
+#[derive(Clone, Copy)]
+pub struct LocalExecutor;
+
+impl<F> hyper::rt::Executor<F> for LocalExecutor
+where
+    F: std::future::Future + 'static,
+{
+    fn execute(&self, fut: F) {
+        tokio::task::spawn_local(async move {
+            let _ = fut.await;
+        });
+    }
+}
+
+/// Create the local HTTP server accept loop future.
+///
+/// This function retrieves the listener from thread-local storage (set by op_howth_http_serve_local)
+/// and returns a future that runs the accept loop. The caller should join this with the deno
+/// event loop using tokio::join! inside a LocalSet::run_until context.
+///
+/// Returns None if no local server was configured.
+pub fn create_local_server_future() -> Option<impl std::future::Future<Output = ()>> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+
+    // Take the listener and request_tx from thread-local
+    let (listener, request_tx, shutdown) = LOCAL_SERVER_STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        (s.listener.take(), s.request_tx.take(), s.shutdown.take())
+    });
+
+    let listener = listener?;
+    let request_tx = request_tx?;
+    let shutdown = shutdown?;
+
+    Some(async move {
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            // Enable TCP_NODELAY for lower latency
+            let _ = stream.set_nodelay(true);
+            let io = TokioIo::new(stream);
+            let tx = request_tx.clone();
+
+            // Spawn connection handler using spawn_local (stays on this thread!)
+            tokio::task::spawn_local(async move {
+                let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let tx = tx.clone();
+                    async move {
+                        let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                        let method = req.method().to_string();
+                        let uri = req.uri().to_string();
+
+                        let headers: Vec<(String, String)> = req
+                            .headers()
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                v.to_str().ok().map(|v| (k.to_string(), v.to_string()))
+                            })
+                            .collect();
+
+                        let body = match req.collect().await {
+                            Ok(collected) => collected.to_bytes(),
+                            Err(_) => Bytes::new(),
+                        };
+
+                        let (response_tx, response_rx) =
+                            tokio::sync::oneshot::channel::<RawHttpResponse>();
+
+                        let sent_at = std::time::Instant::now();
+                        let raw_request = RawHttpRequest {
+                            method,
+                            uri,
+                            headers,
+                            body,
+                            response_tx,
+                            sent_at,
+                        };
+
+                        let _ = tx.send((request_id, raw_request));
+
+                        match response_rx.await {
+                            Ok(response) => {
+                                let status = hyper::StatusCode::from_u16(response.status)
+                                    .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+
+                                let mut builder = hyper::Response::builder().status(status);
+
+                                if let Some(headers) = response.headers {
+                                    for (key, value) in headers {
+                                        builder = builder.header(key, value);
+                                    }
+                                }
+
+                                builder
+                                    .body(Full::new(response.body))
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            }
+                            Err(_) => hyper::Response::builder()
+                                .status(500)
+                                .body(Full::new(Bytes::from("Internal Server Error")))
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                        }
+                    }
+                });
+
+                // Use custom executor that uses spawn_local
+                let _ = http1::Builder::new()
+                    .keep_alive(true)
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    })
+}
+
+/// Shared implementation for fast HTTP server (used by both serve_fast and serve_local)
+async fn http_serve_fast_impl(
+    port: u16,
+    hostname: &str,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+
+    let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let local_addr = listener.local_addr()?;
+
+    let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+    // Create channel for passing requests from hyper to JS
+    let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel::<(u32, RawHttpRequest)>();
+
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+
+    // Spawn the accept loop
+    tokio::spawn(async move {
+        loop {
+            if shutdown_clone.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let (stream, _) = match listener.accept().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let io = TokioIo::new(stream);
+            let tx = request_tx.clone();
+            let _shutdown_conn = shutdown_clone.clone();
+
+            tokio::spawn(async move {
+                let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let tx = tx.clone();
+                    async move {
+                        let trace = is_trace_enabled();
+                        let start = if trace { Some(std::time::Instant::now()) } else { None };
+
+                        let request_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                        let method = req.method().to_string();
+                        let uri = req.uri().to_string();
+
+                        let headers: Vec<(String, String)> = req
+                            .headers()
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                v.to_str().ok().map(|v| (k.to_string(), v.to_string()))
+                            })
+                            .collect();
+
+                        let after_parse = if trace { Some(std::time::Instant::now()) } else { None };
+
+                        let body = match req.collect().await {
+                            Ok(collected) => collected.to_bytes(),
+                            Err(_) => Bytes::new(),
+                        };
+
+                        let after_body = if trace { Some(std::time::Instant::now()) } else { None };
+
+                        let (response_tx, response_rx) =
+                            tokio::sync::oneshot::channel::<RawHttpResponse>();
+
+                        let sent_at = std::time::Instant::now();
+                        let raw_request = RawHttpRequest {
+                            method,
+                            uri,
+                            headers,
+                            body,
+                            response_tx,
+                            sent_at,
+                        };
+
+                        let _ = tx.send((request_id, raw_request));
+                        let _after_send = if trace { Some(std::time::Instant::now()) } else { None };
+
+                        match response_rx.await {
+                            Ok(response) => {
+                                if trace {
+                                    let _after_js = std::time::Instant::now();
+                                    // Tracing stats omitted for brevity
+                                }
+
+                                let status = hyper::StatusCode::from_u16(response.status)
+                                    .unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+
+                                let mut builder = hyper::Response::builder().status(status);
+
+                                if let Some(headers) = response.headers {
+                                    for (key, value) in headers {
+                                        builder = builder.header(key, value);
+                                    }
+                                }
+
+                                builder
+                                    .body(Full::new(response.body))
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            }
+                            Err(_) => hyper::Response::builder()
+                                .status(500)
+                                .body(Full::new(Bytes::from("Internal Server Error")))
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
+                        }
+                    }
+                });
+
+                let conn = http1::Builder::new()
+                    .keep_alive(true)
+                    .serve_connection(io, service);
+
+                let _ = conn.await;
+            });
+        }
+    });
+
+    // Store server state
+    get_fast_servers().insert(
+        server_id,
+        Arc::new(tokio::sync::Mutex::new(FastServerState {
+            request_rx,
+            shutdown,
+        })),
+    );
+
+    Ok(serde_json::json!({
+        "serverId": server_id,
+        "hostname": local_addr.ip().to_string(),
+        "port": local_addr.port(),
+    }))
+}
+
+// Note: Local server now uses the same ops as serveBatch (op_howth_http_wait_batch_with_info, etc.)
+// The difference is that with --local flag, the Hyper loop runs on the same thread via join!
+
+// ── SPSC Ring Buffer HTTP Server ───────────────────────────────────────────
+//
+// This implementation uses lock-free SPSC ring buffers to eliminate async channel overhead:
+// - Thread 1 (Hyper): Accepts connections, pushes to request queue, drains response queue
+// - Thread 2 (V8): Blocking sync op pops from request queue, pushes to response queue
+// - Signaling via std::thread::park/unpark (much cheaper than Tokio wakers)
+
+use crossbeam_queue::ArrayQueue;
+
+/// Fixed-size request entry for the ring buffer (avoids allocation)
+#[derive(Clone)]
+struct SpscRequestEntry {
+    req_id: u32,
+    method: u8,  // 0=GET, 1=POST, 2=PUT, 3=DELETE, etc.
+    url_len: u16,
+    url_bytes: [u8; 256],
+    body_len: u32,
+    body_bytes: [u8; 4096],
+}
+
+impl Default for SpscRequestEntry {
+    fn default() -> Self {
+        Self {
+            req_id: 0,
+            method: 0,
+            url_len: 0,
+            url_bytes: [0; 256],
+            body_len: 0,
+            body_bytes: [0; 4096],
+        }
+    }
+}
+
+impl SpscRequestEntry {
+    fn method_str(&self) -> &'static str {
+        match self.method {
+            0 => "GET",
+            1 => "POST",
+            2 => "PUT",
+            3 => "DELETE",
+            4 => "PATCH",
+            5 => "HEAD",
+            6 => "OPTIONS",
+            _ => "GET",
+        }
+    }
+
+    fn method_from_str(s: &str) -> u8 {
+        match s {
+            "GET" => 0,
+            "POST" => 1,
+            "PUT" => 2,
+            "DELETE" => 3,
+            "PATCH" => 4,
+            "HEAD" => 5,
+            "OPTIONS" => 6,
+            _ => 0,
+        }
+    }
+
+    fn url(&self) -> &str {
+        std::str::from_utf8(&self.url_bytes[..self.url_len as usize]).unwrap_or("/")
+    }
+
+    fn body(&self) -> &[u8] {
+        &self.body_bytes[..self.body_len as usize]
+    }
+}
+
+/// Fixed-size response entry for the ring buffer
+#[derive(Clone)]
+struct SpscResponseEntry {
+    req_id: u32,
+    status: u16,
+    body_len: u32,
+    body_bytes: [u8; 4096],
+}
+
+impl Default for SpscResponseEntry {
+    fn default() -> Self {
+        Self {
+            req_id: 0,
+            status: 200,
+            body_len: 0,
+            body_bytes: [0; 4096],
+        }
+    }
+}
+
+/// Response channel using crossbeam (lower overhead than tokio channels)
+type ResponseChannel = crossbeam_channel::Sender<SpscResponseEntry>;
+
+/// Global SPSC server state
+struct SpscServerState {
+    /// Request queue: Hyper pushes, V8 pops
+    request_queue: Arc<ArrayQueue<SpscRequestEntry>>,
+    /// Response channels: keyed by request ID, crossbeam for low overhead
+    response_channels: Arc<dashmap::DashMap<u32, ResponseChannel>>,
+    /// V8 thread handle for unparking
+    v8_thread: Option<std::thread::Thread>,
+    /// Server info
+    port: u16,
+    hostname: String,
+    /// Shutdown flag
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+static SPSC_SERVER: std::sync::OnceLock<std::sync::Mutex<Option<SpscServerState>>> =
+    std::sync::OnceLock::new();
+
+fn get_spsc_server() -> &'static std::sync::Mutex<Option<SpscServerState>> {
+    SPSC_SERVER.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Start SPSC HTTP server - uses lock-free ring buffers instead of async channels
+#[op2(async)]
+#[serde]
+async fn op_howth_http_serve_spsc(
+    port: u16,
+    #[string] hostname: String,
+) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioIo;
+    use http_body_util::{BodyExt, Full};
+    use bytes::Bytes;
+
+    let addr: std::net::SocketAddr = format!("{}:{}", hostname, port).parse()?;
+
+    // Create ring buffer for requests (capacity 1024 entries)
+    let request_queue: Arc<ArrayQueue<SpscRequestEntry>> = Arc::new(ArrayQueue::new(1024));
+    // Response channels using crossbeam (lower overhead than tokio)
+    let response_channels: Arc<dashmap::DashMap<u32, ResponseChannel>> = Arc::new(dashmap::DashMap::new());
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Store V8 thread handle for unparking
+    let v8_thread = std::thread::current();
+
+    // Bind listener synchronously so we can get the port before spawning the thread
+    let std_listener = std::net::TcpListener::bind(addr)?;
+    std_listener.set_nonblocking(true)?;
+    let local_addr = std_listener.local_addr()?;
+
+    // Clone for the Hyper thread
+    let req_queue = request_queue.clone();
+    let resp_channels = response_channels.clone();
+    let shutdown_clone = shutdown.clone();
+
+    // Spawn Hyper on a separate OS thread with its own Tokio runtime
+    let hyper_handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async move {
+            // Convert std listener to tokio listener (inside this thread's runtime!)
+            let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+
+            // Accept loop
+            loop {
+                if shutdown_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let (stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                let _ = stream.set_nodelay(true);
+                let io = TokioIo::new(stream);
+
+                let req_queue = req_queue.clone();
+                let resp_channels = resp_channels.clone();
+                let v8_thread = v8_thread.clone();
+
+                tokio::spawn(async move {
+                    let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let req_queue = req_queue.clone();
+                        let resp_channels = resp_channels.clone();
+                        let v8_thread = v8_thread.clone();
+
+                        async move {
+                            let req_id = NEXT_SERVER_ID.fetch_add(1, Ordering::SeqCst);
+
+                            // Build request entry
+                            let mut entry = SpscRequestEntry::default();
+                            entry.req_id = req_id;
+                            entry.method = SpscRequestEntry::method_from_str(req.method().as_str());
+
+                            let uri = req.uri().to_string();
+                            let uri_bytes = uri.as_bytes();
+                            entry.url_len = std::cmp::min(uri_bytes.len(), 256) as u16;
+                            entry.url_bytes[..entry.url_len as usize]
+                                .copy_from_slice(&uri_bytes[..entry.url_len as usize]);
+
+                            // Read body
+                            let body = match req.collect().await {
+                                Ok(collected) => collected.to_bytes(),
+                                Err(_) => Bytes::new(),
+                            };
+                            entry.body_len = std::cmp::min(body.len(), 4096) as u32;
+                            entry.body_bytes[..entry.body_len as usize]
+                                .copy_from_slice(&body[..entry.body_len as usize]);
+
+                            // Create crossbeam channel for response (bounded, capacity 1)
+                            let (tx, rx) = crossbeam_channel::bounded::<SpscResponseEntry>(1);
+                            resp_channels.insert(req_id, tx);
+
+                            // Push to request queue
+                            while req_queue.push(entry.clone()).is_err() {
+                                // Queue full, yield and retry
+                                tokio::task::yield_now().await;
+                            }
+
+                            // Unpark V8 thread to process request
+                            v8_thread.unpark();
+
+                            // Block on crossbeam channel (run in blocking task pool!)
+                            let resp = tokio::task::spawn_blocking(move || {
+                                rx.recv()
+                            }).await;
+
+                            // Clean up
+                            resp_channels.remove(&req_id);
+
+                            match resp {
+                                Ok(Ok(resp)) => {
+                                    let status = hyper::StatusCode::from_u16(resp.status)
+                                        .unwrap_or(hyper::StatusCode::OK);
+                                    let body_bytes = &resp.body_bytes[..resp.body_len as usize];
+
+                                    hyper::Response::builder()
+                                        .status(status)
+                                        .body(Full::new(Bytes::copy_from_slice(body_bytes)))
+                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                }
+                                _ => {
+                                    hyper::Response::builder()
+                                        .status(500)
+                                        .body(Full::new(Bytes::from("Internal Server Error")))
+                                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                }
+                            }
+                        }
+                    });
+
+                    let _ = http1::Builder::new()
+                        .keep_alive(true)
+                        .serve_connection(io, service)
+                        .await;
+                });
+            }
+        });
+    });
+
+    // Store server state
+    let _ = hyper_handle; // Keep thread alive
+    if let Ok(mut server) = get_spsc_server().lock() {
+        *server = Some(SpscServerState {
+            request_queue,
+            response_channels,
+            v8_thread: Some(std::thread::current()),
+            port: local_addr.port(),
+            hostname: local_addr.ip().to_string(),
+            shutdown,
+        });
+    }
+
+    Ok(serde_json::json!({
+        "port": local_addr.port(),
+        "hostname": local_addr.ip().to_string(),
+    }))
+}
+
+/// Blocking sync op to wait for next request from SPSC queue
+/// This spins briefly then parks the thread if no request is available
+#[op2]
+#[serde]
+fn op_howth_http_wait_spsc() -> Option<(u32, String, String)> {
+    let server = get_spsc_server().lock().ok()?;
+    let state = server.as_ref()?;
+
+    // Spin for a bit before parking
+    for _ in 0..100 {
+        if let Some(entry) = state.request_queue.pop() {
+            return Some((
+                entry.req_id,
+                entry.method_str().to_string(),
+                entry.url().to_string(),
+            ));
+        }
+        std::hint::spin_loop();
+    }
+
+    // Park and wait for unpark from Hyper
+    drop(server); // Release lock before parking!
+    std::thread::park_timeout(std::time::Duration::from_millis(10));
+
+    // Try again after wake
+    let server = get_spsc_server().lock().ok()?;
+    let state = server.as_ref()?;
+
+    if let Some(entry) = state.request_queue.pop() {
+        Some((
+            entry.req_id,
+            entry.method_str().to_string(),
+            entry.url().to_string(),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Sync op to send response via crossbeam channel
+#[op2(fast)]
+fn op_howth_http_respond_spsc(
+    req_id: u32,
+    status: u16,
+    #[string] body: &str,
+) {
+    if let Ok(server) = get_spsc_server().lock() {
+        if let Some(state) = server.as_ref() {
+            // Look up the response channel for this request
+            if let Some(channel_entry) = state.response_channels.get(&req_id) {
+                let tx = channel_entry.value().clone();
+                drop(channel_entry); // Release DashMap lock early
+
+                // Build response entry
+                let mut entry = SpscResponseEntry::default();
+                entry.req_id = req_id;
+                entry.status = status;
+
+                let body_bytes = body.as_bytes();
+                entry.body_len = std::cmp::min(body_bytes.len(), 4096) as u32;
+                entry.body_bytes[..entry.body_len as usize]
+                    .copy_from_slice(&body_bytes[..entry.body_len as usize]);
+
+                // Send response via crossbeam channel
+                let _ = tx.send(entry);
+            }
+        }
     }
 }
 

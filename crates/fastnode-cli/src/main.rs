@@ -126,6 +126,10 @@ enum Commands {
         #[arg(long)]
         node: bool,
 
+        /// Run in LocalSet mode (HTTP + JS on same thread for max performance)
+        #[arg(long)]
+        local: bool,
+
         /// Arguments to pass to the script (after --)
         #[arg(last = true)]
         args: Vec<String>,
@@ -646,6 +650,7 @@ fn main() -> Result<()> {
                 false, // dry_run
                 false, // native
                 false, // node
+                false, // local
                 Channel::Stable,
                 cli.json,
             );
@@ -704,6 +709,7 @@ fn main() -> Result<()> {
         dry_run,
         native,
         node,
+        local,
         args,
     }) = &cli.command
     {
@@ -715,6 +721,7 @@ fn main() -> Result<()> {
             *dry_run,
             *native,
             *node,
+            *local,
             Channel::Stable,
             cli.json,
         );
@@ -968,6 +975,7 @@ fn main() -> Result<()> {
                     false, // dry_run
                     false, // native
                     false, // node
+                    false, // local
                     Channel::Stable,
                     cli.json,
                 );

@@ -39,40 +39,29 @@ The speed comes from architecture, not just using Rust:
 
 6. **IPC, not subprocesses** — The CLI talks to the daemon over a Unix domain socket (or named pipe on Windows). A test run is a single IPC round-trip: send file paths, receive results. No process spawning, no pipe setup, no environment inheritance.
 
-## Why this beats native implementations
+## How does howth compare to other tools?
 
-Bun is written in Zig with JavaScriptCore. Deno is Rust with V8. Both have native code for hot paths. howth has a ~13k line `bootstrap.js` that implements Node.js APIs in pure JavaScript. So why is howth faster?
+JavaScript tooling has never been more vibrant—several projects push the limits of performance and
+developer-experience:
 
-**1. Warm daemon vs cold start**
+| Tool | What it does well | howth’s angle |
+|------|------------------|---------------|
+| **SWC** | Rust-based compiler/minifier powering Next.js and Parcel. Ultra-fast TS/JS transforms. | Embedded for sub-millisecond transpilation. |
+| **esbuild** | Go bundler that proved “instant” builds are possible. | Same philosophy—keep workers warm instead of spawning processes. |
+| **Rome** | Ambitious all-in-one formatter + linter + bundler (Rust). | Inspires our single-binary, unified workflow. |
+| **Deno** | V8 runtime with built-in TypeScript and a standard library. | Shares V8 roots; howth focuses on Node.js compatibility and project-level pipelines. |
+| **Bun** | Zig runtime that bundles, tests, and installs packages fast. | Similar goal of end-to-end speed; howth trades native Zig for a warm daemon architecture. |
 
-When you run `bun test` or `node --test`, each invocation pays:
-- Process spawn (~5-20ms)
-- Runtime initialization (~20-50ms)
-- Module loading and parsing
-- JIT warmup
+### Why howth stays fast
 
-howth's daemon is already running. The CLI sends an IPC message to a warm worker pool where V8 is hot, modules are cached, and the JIT has already optimized the test framework. The benchmark measures what developers actually experience: running tests repeatedly during development.
+1. **Persistent daemon** – One background process keeps V8, SWC, and caches hot across commands.
+2. **In-process pipelines** – Transpiled modules stream straight from SWC into V8; no temp files or
+   subprocess orchestration.
+3. **Rust ✕ V8 split** – Hot system paths (I/O, hashing, HTTP) live in native Rust while high-level
+   Node APIs stay in optimized JavaScript to avoid expensive FFI chatter.
 
-**2. No FFI boundary crossing**
-
-Every JS→Native→JS transition has overhead: argument marshalling, context switching, type checking at boundaries. If Bun calls into Zig 100 times for an operation, that overhead adds up. howth's pure JS implementation stays in V8's optimized world — once TurboFan compiles it, the code runs at near-native speed without crossing boundaries.
-
-**3. V8's JIT is exceptional**
-
-V8's TurboFan JIT compiles hot JavaScript to machine code that rivals hand-written C. After warmup, there's often no measurable difference between "native" and "JS" for compute-bound work. JavaScriptCore (used by Bun) optimizes for fast startup; V8 optimizes for peak throughput. For benchmarks that run long enough to warm up, V8 often wins.
-
-**4. Complexity tax**
-
-Bun is a bundler + runtime + package manager + test runner. That architectural complexity has overhead. howth's focused design means fewer layers, fewer cache misses, and more predictable performance.
-
-**When would native code help?**
-
-- Cold start time (parsing/compiling JS has cost)
-- Memory-intensive operations (large Buffer manipulation)
-- CPU-bound crypto/hashing
-- Reducing GC pressure
-
-For test running, the daemon architecture matters more than the implementation language.
+These choices keep the edit → save → test loop in *double-digit milliseconds* even on large
+code-bases.
 
 ## Why "howth"?
 

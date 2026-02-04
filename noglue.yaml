@@ -1,0 +1,25 @@
+envs:
+    dev:
+        bindings:
+            - key: DATABASE_URL
+              value: postgres://localhost:5432/myapp
+            - key: DATABASE_POOL_SIZE
+              value: "10"
+            - key: ENABLE_CACHE
+              value: "true"
+            - key: DEBUG_MODE
+              value: "false"
+            - key: API_KEY
+              ref: secret://op/Aider/API_KEY
+            - key: SECRET_TOKEN
+              ref: secret://op/Aider/SECRET_TOKEN
+            - key: OPENAI_API_KEY
+              ref: secret://op/Aider/OPENAI_API_KEY/password
+        checks: []
+        runtime:
+            command:
+                - echo
+                - Configure your command here
+            kind: local-process
+project: howth
+version: 1

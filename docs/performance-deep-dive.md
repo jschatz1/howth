@@ -186,6 +186,145 @@ for (const [requestId, method, url] of batch) {
 
 ---
 
+## LocalSet Experiment (2026-02-03)
+
+### Attempt 1: spawn_local in async op (FAILED)
+
+**Hypothesis:** Use `spawn_local` inside async op to keep tasks on same thread.
+
+**Problem:** deno_core's event loop doesn't poll LocalSet tasks. The spawned task
+never executed because deno's `run_event_loop()` doesn't drive the LocalSet.
+
+### Attempt 2: tokio::join! with LocalSet (PARTIAL SUCCESS)
+
+**Fix per second opinion:** Don't spawn separately - use `tokio::join!` to run both
+the deno event loop and Hyper accept loop together inside `LocalSet::run_until`.
+
+```rust
+local_set.block_on(&rt, async {
+    // Execute module first (registers server config)
+    runtime.execute_module(&entry_path).await?;
+
+    // Join V8 event loop with Hyper accept loop
+    if let Some(hyper_server) = create_local_server_future() {
+        tokio::join!(
+            runtime.run_event_loop(),
+            hyper_server
+        );
+    }
+});
+```
+
+**Result:** Server works, but performance is only marginally better:
+- **serveLocal:** 168K RPS
+- **serveBatch:** 166K RPS
+- **Improvement:** ~1% (within margin of error)
+
+### Why Minimal Improvement?
+
+Even though Hyper and V8 now run on the same thread via `join!`, we're still using
+async channels (mpsc + oneshot) which have overhead:
+1. Tokio wakers and state machine polling
+2. Memory barriers for atomics
+3. Context switching between futures
+
+The **channel operations** are the bottleneck, not the thread crossing.
+
+### What Would Actually Help
+
+1. **Replace async channels with lock-free SPSC** - No async machinery
+2. **Use AtomicBool + spin-wait instead of oneshot** - Direct signaling
+3. **Shared ring buffer** - VecDeque with atomic head/tail pointers
+4. **Thread parking instead of async wake** - `std::thread::park/unpark`
+
+### Current Status
+
+`Howth.serveLocal()` with `--local` flag now works correctly:
+- Uses `tokio::join!` to interleave Hyper and V8
+- Uses `spawn_local` for connection handlers
+- Still uses mpsc/oneshot channels (same as serveBatch)
+- Performance is equivalent to serveBatch (~166-168K RPS)
+
+---
+
+## SPSC Ring Buffer Experiments (2026-02-04)
+
+Following the "second opinion" suggestion to try lock-free SPSC ring buffers, we implemented and tested several approaches to eliminate async channel overhead.
+
+### Approach 1: ArrayQueue + Oneshot Channels (WORSE)
+
+**Hypothesis:** Use crossbeam's ArrayQueue for requests, keep oneshot for responses.
+
+**Implementation:**
+- Hyper on separate OS thread with dedicated Tokio runtime
+- ArrayQueue<SpscRequestEntry> for request passing
+- tokio::sync::oneshot for response signaling
+- Response drainer task polls response queue
+
+**Result:** 162K RPS (vs 172K serveBatch) - **6% slower**
+
+**Why:** The response drainer task using `tokio::task::yield_now()` adds overhead. The oneshot channel machinery is still significant.
+
+### Approach 2: Response Slots with Spin-Poll (MUCH WORSE)
+
+**Hypothesis:** Eliminate channels entirely with atomic pointers and spin-waiting.
+
+**Implementation:**
+- ResponseSlot with AtomicPtr<SpscResponseEntry> and AtomicBool ready flag
+- Hyper tasks spin-poll the ready flag
+- Fallback to tokio::task::yield_now() after 100 spins
+- Further fallback to tokio::time::sleep after 1000 spins
+
+**Result:** 146K RPS - **15% slower than serveBatch**
+
+**Why:** Spin-polling wastes CPU cycles. The yield_now() fallback is expensive. tokio::time::sleep is even worse.
+
+### Approach 3: Crossbeam Channels + spawn_blocking (CATASTROPHIC)
+
+**Hypothesis:** Use crossbeam's bounded channels (known for low overhead) with blocking receives.
+
+**Implementation:**
+- crossbeam_channel::bounded<SpscResponseEntry>(1) per request
+- Hyper tasks call `tokio::task::spawn_blocking(|| rx.recv())`
+- V8 sends via crossbeam sync channel
+
+**Result:** 87K RPS - **49% slower than serveBatch**
+
+**Why:** `spawn_blocking` creates new thread pool tasks for each request. The overhead of task creation and context switching is massive.
+
+### Key Learnings
+
+1. **Batching beats optimization** - serveBatch's approach of batching multiple requests per async wake is more effective than trying to eliminate async machinery per-request.
+
+2. **Hyper requires async** - Hyper's connection handling is fundamentally async. We can't escape async machinery without replacing Hyper.
+
+3. **Spin-polling is wasteful** - CPU cycles spent spinning could be used processing other requests.
+
+4. **spawn_blocking is expensive** - Never use it for per-request work in high-throughput scenarios.
+
+5. **The channel isn't the bottleneck** - The async wake/poll cycle is the bottleneck, not the channel data structure itself.
+
+### Final Benchmark Comparison (50 connections, 5 seconds)
+
+| Approach | RPS | vs serveBatch |
+|----------|-----|---------------|
+| **serveBatch** | 172K | baseline |
+| SPSC + oneshot | 162K | -6% |
+| SPSC + response slots | 146K | -15% |
+| SPSC + crossbeam + spawn_blocking | 87K | -49% |
+| **Bun (reference)** | 211K | +23% |
+
+### Conclusion
+
+The SPSC ring buffer experiments confirmed that the async coordination overhead is fundamental to Howth's architecture with Hyper. The serveBatch approach remains our best performing implementation at **82% of Bun's throughput**.
+
+To close the remaining gap would require either:
+1. Single-threaded mode with custom event loop (like Bun)
+2. io_uring for reduced syscall overhead (Linux only)
+3. Complete replacement of Hyper with custom HTTP handling
+
+---
+
 ## Remaining Optimization Paths
 
 ### Tier 1: Cross-Platform, High Impact
