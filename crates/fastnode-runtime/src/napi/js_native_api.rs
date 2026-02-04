@@ -7,7 +7,8 @@
 const NAPI_VERSION: u32 = 9;
 
 use ::deno_napi::*;
-use libc::INT_MAX;
+
+const INT_MAX: i32 = i32::MAX;
 
 use super::util::check_new_from_utf8;
 use super::util::check_new_from_utf8_len;

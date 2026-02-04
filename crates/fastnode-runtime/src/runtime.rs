@@ -563,10 +563,11 @@ fn op_howth_fs_readlink(#[string] path: &str) -> Result<String, deno_core::error
 fn op_howth_fs_symlink(
     #[string] target: &str,
     #[string] path: &str,
-    #[string] _link_type: &str,
+    #[string] link_type: &str,
 ) -> Result<(), deno_core::error::AnyError> {
     #[cfg(unix)]
     {
+        let _ = link_type; // Suppress unused variable warning on Unix
         std::os::unix::fs::symlink(target, path).map_err(|e| format_fs_error(e, "symlink", path))
     }
     #[cfg(windows)]
@@ -717,6 +718,10 @@ fn op_howth_fs_open_fd(#[string] path: &str, #[string] flags: &str, mode: u32) -
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(mode);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode; // Suppress unused variable warning on Windows
     }
 
     match opts.open(path) {

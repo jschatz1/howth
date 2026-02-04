@@ -2,7 +2,8 @@
 // Vendored from Deno v2.0.0 cli/napi/util.rs and adapted for howth.
 
 use ::deno_napi::*;
-use libc::INT_MAX;
+
+const INT_MAX: i32 = i32::MAX;
 
 #[repr(transparent)]
 pub struct SendPtr<T>(pub *const T);
