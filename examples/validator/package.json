@@ -1,0 +1,7 @@
+{
+  "name": "validator-example",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node validator.js"
+  }
+}

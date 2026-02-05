@@ -1,0 +1,7 @@
+{
+  "name": "file-processor-example",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node processor.js"
+  }
+}

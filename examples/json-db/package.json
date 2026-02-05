@@ -1,0 +1,7 @@
+{
+  "name": "json-db-example",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node db.js"
+  }
+}
