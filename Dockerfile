@@ -40,16 +40,8 @@ RUN apt-get update && \
 COPY --from=builder /build/target/release/howth /usr/local/bin/
 COPY --from=builder /build/target/release/fastnode /usr/local/bin/
 
-# Install Node.js for playground server
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends nodejs npm && \
-    rm -rf /var/lib/apt/lists/*
-
 # Set up working directory
 WORKDIR /app
-
-# Copy examples for playground
-COPY examples/playground ./examples/playground
 
 # Set howth as the entrypoint
 ENTRYPOINT ["howth"]

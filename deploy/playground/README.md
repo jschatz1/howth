@@ -8,6 +8,14 @@ Kubernetes manifests for deploying the Howth playground to `run.howth.run`.
 - nginx ingress controller
 - cert-manager with `letsencrypt-prod` ClusterIssuer
 
+## Build the image
+
+```bash
+# From repo root
+docker build -f deploy/playground/Dockerfile -t ghcr.io/jschatz1/howth-playground:latest .
+docker push ghcr.io/jschatz1/howth-playground:latest
+```
+
 ## Deploy
 
 ```bash

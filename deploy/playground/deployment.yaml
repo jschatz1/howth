@@ -17,11 +17,8 @@ spec:
     spec:
       containers:
         - name: playground
-          image: ghcr.io/jschatz1/howth:latest
-          command: ["node", "/app/examples/playground/server.js"]
+          image: ghcr.io/jschatz1/howth-playground:latest
           env:
-            - name: HOWTH_BIN
-              value: "/usr/local/bin/howth"
             - name: PORT
               value: "3001"
           ports:
