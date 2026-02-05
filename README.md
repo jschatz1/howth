@@ -8,6 +8,12 @@
 
 <p align="center"><strong><a href="https://run.howth.run">Try it in your browser →</a></strong></p>
 
+The playground includes examples for:
+- **Hello World** — Basic console output
+- **Fetch API** — HTTP requests (allowlisted domains only)
+- **Crypto** — Random bytes, UUIDs, hashing, HMAC
+- **File System** — Read/write files, stats, cleanup
+
 A complete JavaScript/TypeScript toolchain — runtime, build system, bundler, test runner, package manager, and dev server — written in Rust.
 
 > `howth` is the new name of the project formerly known as `fastnode`.
