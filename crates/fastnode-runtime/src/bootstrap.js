@@ -478,6 +478,23 @@
       const bytes = ops.op_howth_encode_utf8(String(text));
       return new Uint8Array(bytes);
     }
+    encodeInto(source, destination) {
+      // Encode the source string to UTF-8 bytes
+      const encoded = this.encode(source);
+      // Copy as many bytes as fit into destination
+      const written = Math.min(encoded.length, destination.length);
+      destination.set(encoded.subarray(0, written));
+      // Count how many complete UTF-8 characters were written
+      let read = 0;
+      let byteCount = 0;
+      for (const char of source) {
+        const charBytes = this.encode(char).length;
+        if (byteCount + charBytes > written) break;
+        byteCount += charBytes;
+        read++;
+      }
+      return { read, written };
+    }
   };
 
   // TextDecoder implementation
@@ -571,7 +588,17 @@
 
       // Parse URL with optional auth (user:pass@)
       // Also handle file:// URLs which may have empty hostname (file:///path)
-      const match = fullUrl.match(/^([a-z]+):\/\/(?:([^:@\/]+)(?::([^@\/]*))?@)?([^\/:?#]*)(?::(\d+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+      // And custom protocols like sveltekit-internal://
+      let match = fullUrl.match(/^([a-z][a-z0-9+.-]*):\/\/(?:([^:@\/]+)(?::([^@\/]*))?@)?([^\/:?#]*)(?::(\d+))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+
+      // If standard parsing fails, try minimal custom protocol parsing (e.g., sveltekit-internal://)
+      if (!match) {
+        const customMatch = fullUrl.match(/^([a-z][a-z0-9+.-]*):\/\/(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+        if (customMatch) {
+          match = [fullUrl, customMatch[1], "", "", "", "", customMatch[2] || "/", customMatch[3] || "", customMatch[4] || ""];
+        }
+      }
+
       if (!match) {
         throw new TypeError("Invalid URL: " + url);
       }
@@ -579,13 +606,13 @@
       this.protocol = match[1].toLowerCase() + ":";
       this.username = match[2] || "";
       this.password = match[3] || "";
-      this.hostname = match[4];
+      this.hostname = match[4] || "";
       this.port = match[5] || "";
       this.pathname = match[6] || "/";
       this.search = match[7] || "";
       this.hash = match[8] || "";
       this.host = this.port ? this.hostname + ":" + this.port : this.hostname;
-      this.origin = this.protocol + "//" + this.host;
+      this.origin = this.hostname ? this.protocol + "//" + this.host : this.protocol + "//";
       // Build href with auth if present
       let authPart = "";
       if (this.username) {
