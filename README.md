@@ -327,6 +327,24 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | `test-fs-access.js` | Requires `internal/test/binding` |
 | `test-fs-copyfile.js` | Requires `internal/test/binding` |
 
+### Framework Compatibility
+
+howth can run modern JavaScript frameworks directly in its native V8 runtime.
+
+| Framework | Status | Notes |
+|-----------|--------|-------|
+| **Next.js** | ✅ Working | Static pages, API routes, SSR |
+| **SvelteKit** | ✅ Working | Full SSR support, custom URL protocols supported |
+| **Remix** | ✅ Working | Full SSR, loaders, actions, routing |
+| **Express** | ✅ Working | Full support via node:http |
+| **Fastify** | ✅ Working | Full support via node:http |
+
+**Next.js**: Run with `howth run node_modules/next/dist/bin/next -- start`.
+
+**SvelteKit**: Requires `adapter-node`. Run with `howth run build/index.js`.
+
+**Remix**: Requires `@remix-run/node` and `@remix-run/express`. Full server-side rendering with loaders, actions, and form handling.
+
 ### ES Module Support
 
 - ✅ ES module imports (`import`/`export`)
