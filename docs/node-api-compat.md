@@ -34,7 +34,7 @@ Status of Node.js built-in module support in howth.
 | `process` | Full | Global. env, argv, cwd, exit, stdin/stdout/stderr, nextTick, hrtime |
 | `punycode` | Full | Deprecated module, implemented for compat |
 | `querystring` | Full | parse, stringify, escape, unescape |
-| `readline` | Missing | |
+| `readline` | Partial | `createInterface`, `question`, cursor manipulation (cursorTo, moveCursor, clearLine), async iterator, `readline/promises`. Missing: tab completion, history |
 | `repl` | Missing | |
 | `stream` | Full | Readable, Writable, Duplex, Transform, PassThrough, pipeline, finished, promises |
 | `stream/web` | Full | ReadableStream, WritableStream, TransformStream |
@@ -83,13 +83,13 @@ Status of Node.js built-in module support in howth.
 | `net` advanced options | database drivers, socket.io | Medium |
 | `http2` | gRPC, modern HTTP clients | Medium |
 | `cluster` | PM2, production deployments | Low |
-| `readline` | interactive CLI tools | Low |
+| ~~`readline`~~ | ~~interactive CLI tools~~ | ~~Low~~ **Done** |
 | `dgram` | DNS servers, game servers | Low |
 
 ## Totals
 
 - **Full:** 23 modules
-- **Partial:** 9 modules
+- **Partial:** 10 modules
 - **Stub:** 2 modules
-- **Missing:** 6 modules
-- **Overall:** 34 / 40 modules present (85%)
+- **Missing:** 5 modules
+- **Overall:** 35 / 40 modules present (87.5%)

@@ -6189,6 +6189,7 @@
     "node:vm", "vm",
     "node:tls", "tls",
     "node:http2", "http2",
+    "node:readline", "readline", "node:readline/promises", "readline/promises",
   ], () => {
 
   class _EventEmitterImpl {
@@ -13992,13 +13993,82 @@
         if (typeof input.resume === "function") input.resume();
       }
 
-      rl.question = (query, cb) => { if (cb) cb(""); };
+      const output = opts && opts.output;
+      let currentPrompt = opts && opts.prompt || "> ";
+      let paused = false;
+
+      // question() - prompt user and read line from stdin
+      rl.question = (query, options, cb) => {
+        // Handle (query, callback) signature
+        if (typeof options === "function") {
+          cb = options;
+          options = {};
+        }
+        options = options || {};
+
+        // Write the query/prompt to output
+        if (output && typeof output.write === "function") {
+          output.write(query);
+        } else if (typeof query === "string") {
+          // Fallback to console
+          globalThis.process.stdout.write(query);
+        }
+
+        // If we have an input stream providing data, wait for next line
+        if (input && typeof input.on === "function" && !ops.op_howth_stdin_is_tty()) {
+          // Use the async iterator / line queue mechanism
+          const waitForLine = () => {
+            if (lineQueue.length > 0) {
+              const line = lineQueue.shift();
+              if (cb) cb(line);
+              return;
+            }
+            if (done) {
+              if (cb) cb("");
+              return;
+            }
+            // Set up one-time listener for next line
+            const onLine = (line) => {
+              rl.removeListener("line", onLine);
+              if (cb) cb(line);
+            };
+            rl.once("line", onLine);
+          };
+          waitForLine();
+          return;
+        }
+
+        // Use native stdin reading for interactive TTY input
+        (async () => {
+          try {
+            const line = await ops.op_howth_stdin_read_line();
+            if (cb) cb(line || "");
+          } catch (e) {
+            if (cb) cb("");
+          }
+        })();
+      };
+
       rl.close = () => { finish(); };
-      rl.prompt = () => {};
-      rl.write = () => {};
-      rl.pause = () => rl;
-      rl.resume = () => rl;
-      rl.setPrompt = () => {};
+
+      rl.prompt = (preserveCursor) => {
+        if (output && typeof output.write === "function") {
+          output.write(currentPrompt);
+        } else {
+          globalThis.process.stdout.write(currentPrompt);
+        }
+      };
+
+      rl.write = (data, key) => {
+        // Write data to output if available
+        if (data && output && typeof output.write === "function") {
+          output.write(data);
+        }
+      };
+
+      rl.pause = () => { paused = true; return rl; };
+      rl.resume = () => { paused = false; return rl; };
+      rl.setPrompt = (prompt) => { currentPrompt = prompt; };
       rl[Symbol.asyncIterator] = function() {
         return {
           next() {
@@ -14018,13 +14088,90 @@
       };
       return rl;
     },
-    cursorTo() {},
-    moveCursor() {},
-    clearLine() {},
-    clearScreenDown() {},
+    // Cursor manipulation functions using ANSI escape codes
+    cursorTo(stream, x, y, callback) {
+      if (typeof y === "function") {
+        callback = y;
+        y = undefined;
+      }
+      if (stream && typeof stream.write === "function") {
+        if (typeof y === "number") {
+          // Move to absolute position (x, y) - ESC[y;xH
+          stream.write(`\x1b[${y + 1};${x + 1}H`);
+        } else if (typeof x === "number") {
+          // Move to column x - ESC[xG
+          stream.write(`\x1b[${x + 1}G`);
+        }
+      }
+      if (typeof callback === "function") callback();
+      return true;
+    },
+
+    moveCursor(stream, dx, dy, callback) {
+      if (stream && typeof stream.write === "function") {
+        let seq = "";
+        if (dx < 0) seq += `\x1b[${-dx}D`; // Left
+        else if (dx > 0) seq += `\x1b[${dx}C`; // Right
+        if (dy < 0) seq += `\x1b[${-dy}A`; // Up
+        else if (dy > 0) seq += `\x1b[${dy}B`; // Down
+        if (seq) stream.write(seq);
+      }
+      if (typeof callback === "function") callback();
+      return true;
+    },
+
+    clearLine(stream, dir, callback) {
+      if (typeof dir === "function") {
+        callback = dir;
+        dir = 0;
+      }
+      if (stream && typeof stream.write === "function") {
+        // dir: -1 = before cursor, 0 = entire line, 1 = after cursor
+        const code = dir === -1 ? 1 : dir === 1 ? 0 : 2;
+        stream.write(`\x1b[${code}K`);
+      }
+      if (typeof callback === "function") callback();
+      return true;
+    },
+
+    clearScreenDown(stream, callback) {
+      if (stream && typeof stream.write === "function") {
+        stream.write("\x1b[0J"); // Clear from cursor to end of screen
+      }
+      if (typeof callback === "function") callback();
+      return true;
+    },
+
+    // Additional commonly used function
+    emitKeypressEvents(stream, interface_) {
+      // This sets up keypress event handling on a stream
+      // For now, just ensure stream is in raw mode if possible
+      if (stream && stream.isTTY && typeof stream.setRawMode === "function") {
+        // Raw mode setup would go here
+      }
+    },
   };
+  // readline/promises - creates interfaces where question() returns a Promise
   readlineModule.promises = {
-    createInterface: readlineModule.createInterface,
+    createInterface(opts) {
+      const rl = readlineModule.createInterface(opts);
+
+      // Wrap the callback-based question with a promise-based one
+      const originalQuestion = rl.question.bind(rl);
+      rl.question = (query, options) => {
+        return new Promise((resolve, reject) => {
+          try {
+            originalQuestion(query, options, (answer) => {
+              resolve(answer);
+            });
+          } catch (e) {
+            reject(e);
+          }
+        });
+      };
+
+      return rl;
+    },
   };
   globalThis.__howth_modules["node:readline"] = readlineModule;
   globalThis.__howth_modules["readline"] = readlineModule;

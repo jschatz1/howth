@@ -228,6 +228,9 @@ extension!(
         op_howth_dns_resolve_soa,
         op_howth_dns_resolve_ptr,
         op_howth_dns_reverse,
+        // Stdin ops
+        op_howth_stdin_read_line,
+        op_howth_stdin_is_tty,
         // Child process ops (sync)
         op_howth_spawn_sync,
         op_howth_exec_sync,
@@ -1433,7 +1436,7 @@ fn op_howth_worker_is_running(worker_id: u32) -> bool {
 // ============================================================================
 
 use hickory_resolver::Resolver;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::config::ResolverConfig;
 use hickory_resolver::name_server::TokioConnectionProvider;
 
 /// DNS lookup result
@@ -1742,6 +1745,53 @@ async fn op_howth_dns_reverse(
         .iter()
         .map(|name| name.to_string().trim_end_matches('.').to_string())
         .collect())
+}
+
+// ============================================================================
+// Stdin Operations
+// ============================================================================
+
+use std::io::BufRead;
+
+/// Read a line from stdin (blocking)
+#[op2(async)]
+#[string]
+async fn op_howth_stdin_read_line() -> Result<Option<String>, deno_core::error::AnyError> {
+    // Run blocking stdin read in a separate thread
+    tokio::task::spawn_blocking(|| {
+        let stdin = std::io::stdin();
+        let mut handle = stdin.lock();
+        let mut line = String::new();
+        match handle.read_line(&mut line) {
+            Ok(0) => Ok(None), // EOF
+            Ok(_) => {
+                // Remove trailing newline
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                Ok(Some(line))
+            }
+            Err(e) => Err(deno_core::error::generic_error(format!("stdin read error: {}", e))),
+        }
+    })
+    .await
+    .map_err(|e| deno_core::error::generic_error(format!("spawn_blocking error: {}", e)))?
+}
+
+/// Check if stdin is a TTY
+#[op2(fast)]
+fn op_howth_stdin_is_tty() -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::isatty(libc::STDIN_FILENO) != 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 // ============================================================================
