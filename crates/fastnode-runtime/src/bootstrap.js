@@ -797,11 +797,13 @@
         this.method = init.method || input.method;
         this.headers = new Headers(init.headers || input.headers);
         this._body = init.body !== undefined ? init.body : input._body;
+        this.signal = init.signal || input.signal || null;
       } else {
         this.url = String(input);
         this.method = init.method || "GET";
         this.headers = new Headers(init.headers);
         this._body = init.body;
+        this.signal = init.signal || null;
       }
     }
 
@@ -812,6 +814,21 @@
     async json() {
       const text = await this.text();
       return JSON.parse(text);
+    }
+
+    async arrayBuffer() {
+      const text = await this.text();
+      const encoder = new TextEncoder();
+      return encoder.encode(text).buffer;
+    }
+
+    async blob() {
+      const buffer = await this.arrayBuffer();
+      return new Blob([buffer]);
+    }
+
+    clone() {
+      return new Request(this);
     }
   };
 

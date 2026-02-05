@@ -444,10 +444,24 @@ impl HowthModuleLoader {
         };
 
         // Detect if this is a CommonJS module and wrap it for ESM compatibility
-        // CommonJS indicators: module.exports, exports., require(
-        let is_commonjs = code.contains("module.exports")
-            || code.contains("exports.")
-            || (code.contains("require(") && !code.contains("import "));
+        // ESM indicators: import/export statements at line start
+        // Note: "exports." alone is not reliable (false positive: variable names like "valid_exports.has")
+        let has_esm_syntax = code.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed.starts_with("import ")
+                || trimmed.starts_with("import(")
+                || trimmed.starts_with("export ")
+                || trimmed.starts_with("export{")
+        });
+
+        // CommonJS indicators: module.exports =, exports = (assignment, not just property access)
+        let has_cjs_exports = code.contains("module.exports")
+            || code.contains("exports =")
+            || code.contains("exports[");
+
+        // Treat as CJS only if it has CJS patterns AND no ESM syntax
+        let is_commonjs = !has_esm_syntax
+            && (has_cjs_exports || (code.contains("require(") && !code.contains("import(")));
 
         if std::env::var("DEBUG_MODULES").is_ok() {
             eprintln!(
@@ -788,7 +802,7 @@ impl HowthModuleLoader {
                 "join, resolve, dirname, basename, extname, normalize, isAbsolute, relative, parse, format, sep, delimiter, posix, win32, toNamespacedPath"
             }
             "node:fs" | "fs" => {
-                "readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, rmdirSync, rmSync, unlinkSync, renameSync, copyFileSync, readdirSync, statSync, lstatSync, realpathSync, chmodSync, accessSync, promises, constants, Stats, Dirent, readFile, writeFile, appendFile, mkdir, rmdir, rm, unlink, rename, copyFile, readdir, stat, lstat, realpath, chmod, access, exists, F_OK, R_OK, W_OK, X_OK"
+                "readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, rmdirSync, rmSync, unlinkSync, renameSync, copyFileSync, readdirSync, statSync, lstatSync, realpathSync, chmodSync, accessSync, promises, constants, Stats, Dirent, readFile, writeFile, appendFile, mkdir, rmdir, rm, unlink, rename, copyFile, readdir, stat, lstat, realpath, chmod, access, exists, F_OK, R_OK, W_OK, X_OK, createReadStream, createWriteStream, watch, watchFile, unwatchFile, open, openSync, close, closeSync, read, readSync, write, writeSync, fstat, fstatSync, ftruncate, ftruncateSync, futimes, futimesSync, fsync, fsyncSync, fdatasync, fdatasyncSync"
             }
             "node:fs/promises" | "fs/promises" => {
                 "readFile, writeFile, appendFile, mkdir, rmdir, rm, unlink, rename, copyFile, readdir, stat, lstat, realpath, chmod, access"
@@ -810,6 +824,36 @@ impl HowthModuleLoader {
             }
             "node:assert" | "assert" => {
                 "ok, equal, notEqual, strictEqual, notStrictEqual, deepEqual, notDeepEqual, deepStrictEqual, notDeepStrictEqual, throws, doesNotThrow, rejects, doesNotReject, fail, ifError, match, doesNotMatch, strict, AssertionError"
+            }
+            "node:crypto" | "crypto" => {
+                "randomBytes, randomBytesSync, randomUUID, randomInt, randomFill, randomFillSync, getRandomValues, createHash, createHmac, getHashes, Hash, Hmac, timingSafeEqual, pbkdf2, pbkdf2Sync, scrypt, scryptSync, getCiphers, createCipheriv, createDecipheriv, Cipher, Decipher, sign, verify, publicEncrypt, privateDecrypt, generateKeyPairSync, KeyObject, createSecretKey, createPrivateKey, createPublicKey, subtle, webcrypto, constants"
+            }
+            "node:events" | "events" => {
+                "EventEmitter, once, on, getEventListeners, captureRejectionSymbol, errorMonitor, listenerCount, defaultMaxListeners"
+            }
+            "node:util" | "util" => {
+                "format, inspect, promisify, callbackify, deprecate, inherits, isDeepStrictEqual, types, debuglog, TextEncoder, TextDecoder"
+            }
+            "node:stream" | "stream" => {
+                "Readable, Writable, Duplex, Transform, PassThrough, Stream, pipeline, finished, promises"
+            }
+            "node:buffer" | "buffer" => {
+                "Buffer, Blob, atob, btoa, constants, kMaxLength, kStringMaxLength, SlowBuffer"
+            }
+            "node:url" | "url" => {
+                "URL, URLSearchParams, parse, format, resolve, fileURLToPath, pathToFileURL, domainToASCII, domainToUnicode"
+            }
+            "node:querystring" | "querystring" => {
+                "parse, stringify, decode, encode, escape, unescape"
+            }
+            "node:os" | "os" => {
+                "arch, cpus, endianness, freemem, homedir, hostname, loadavg, networkInterfaces, platform, release, tmpdir, totalmem, type, uptime, userInfo, version, constants, EOL, devNull"
+            }
+            "node:child_process" | "child_process" => {
+                "spawn, spawnSync, exec, execSync, execFile, execFileSync, fork, ChildProcess"
+            }
+            "node:process" | "process" => {
+                "arch, argv, argv0, chdir, config, connected, cwd, debugPort, disconnect, dlopen, emitWarning, env, execArgv, execPath, exit, exitCode, features, getActiveResourcesInfo, getegid, geteuid, getgid, getgroups, getuid, hasUncaughtExceptionCaptureCallback, hrtime, kill, mainModule, memoryUsage, nextTick, noDeprecation, pid, platform, ppid, release, report, resourceUsage, send, setSourceMapsEnabled, setUncaughtExceptionCaptureCallback, stderr, stdin, stdout, throwDeprecation, title, traceDeprecation, umask, uptime, version, versions"
             }
             _ => "",
         }
