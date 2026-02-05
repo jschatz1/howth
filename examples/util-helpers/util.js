@@ -28,6 +28,7 @@ const c = {
   dim: '\x1b[2m',
 };
 
+(async () => {
 console.log(`\n${c.bold}${c.cyan}Util Helpers Demo${c.reset}\n`);
 
 // 1. util.format
@@ -281,3 +282,4 @@ console.log(`  Table format:`);
 console.log(`  ${formatTable(tableData).split('\n').join('\n  ')}`);
 
 console.log(`\n${c.green}${c.bold}Util helpers demo completed!${c.reset}\n`);
+})();

@@ -336,6 +336,7 @@ if (typeof module !== 'undefined') {
 }
 
 // Demo
+(async () => {
 console.log(`\n${c.bold}${c.cyan}Task Scheduler Demo${c.reset}\n`);
 
 const scheduler = new Scheduler({
@@ -423,3 +424,4 @@ for (const entry of history) {
 }
 
 console.log(`\n${c.green}${c.bold}Scheduler demo completed!${c.reset}\n`);
+})();

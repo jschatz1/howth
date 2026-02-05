@@ -24,6 +24,7 @@ const c = {
   dim: '\x1b[2m',
 };
 
+(async () => {
 console.log(`\n${c.bold}${c.cyan}Job Queue Demo${c.reset}\n`);
 
 /**
@@ -341,3 +342,4 @@ for (const job of jobs) {
 queue.stop();
 
 console.log(`\n${c.green}${c.bold}Job queue demo completed!${c.reset}\n`);
+})();

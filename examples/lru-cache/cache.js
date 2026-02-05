@@ -298,6 +298,7 @@ if (typeof module !== 'undefined') {
 }
 
 // Demo
+(async () => {
 console.log(`\n${c.bold}${c.cyan}LRU Cache Demo${c.reset}\n`);
 
 // Create cache with callbacks
@@ -375,3 +376,4 @@ for (const item of cache.dump()) {
 }
 
 console.log(`\n${c.green}${c.bold}LRU Cache demo completed!${c.reset}\n`);
+})();

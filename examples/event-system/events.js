@@ -26,6 +26,7 @@ const c = {
   dim: '\x1b[2m',
 };
 
+(async () => {
 console.log(`\n${c.bold}${c.cyan}Event System Demo${c.reset}\n`);
 
 // 1. Basic EventEmitter
@@ -314,3 +315,4 @@ trafficLight.trigger('timer');
 trafficLight.trigger('timer');
 
 console.log(`\n${c.green}${c.bold}Event system demo completed!${c.reset}\n`);
+})();

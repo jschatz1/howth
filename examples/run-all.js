@@ -25,12 +25,31 @@ const c = {
 };
 
 const EXAMPLES_DIR = path.dirname(process.argv[1] || __filename);
-const HOWTH_BIN = process.env.HOWTH_BIN || path.join(EXAMPLES_DIR, '../target/debug/howth');
+
+// Find howth binary: env var > release build > debug build > PATH
+function findHowthBin() {
+  if (process.env.HOWTH_BIN) return process.env.HOWTH_BIN;
+
+  const releaseBin = path.join(EXAMPLES_DIR, '../target/release/howth');
+  if (fs.existsSync(releaseBin)) return releaseBin;
+
+  const debugBin = path.join(EXAMPLES_DIR, '../target/debug/howth');
+  if (fs.existsSync(debugBin)) return debugBin;
+
+  // Fall back to PATH
+  try {
+    return execSync('which howth', { encoding: 'utf8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+const HOWTH_BIN = findHowthBin();
 
 // Check if howth binary exists
-if (!fs.existsSync(HOWTH_BIN)) {
-  console.error(`${c.red}Error: howth binary not found at ${HOWTH_BIN}${c.reset}`);
-  console.error('Run: cargo build --features native-runtime -p fastnode-cli');
+if (!HOWTH_BIN || !fs.existsSync(HOWTH_BIN)) {
+  console.error(`${c.red}Error: howth binary not found${c.reset}`);
+  console.error('Run: cargo build --release --features native-runtime -p fastnode-cli');
   process.exit(1);
 }
 
@@ -50,23 +69,23 @@ const tests = [
     script: 'cli.js',
     args: ['--help'],
     timeout: 5000,
-    validate: (output, code) => code === 0 && output.includes('howth-cli') && output.includes('COMMANDS'),
+    validate: (output, code) => code === 0 && output.includes('Howth CLI') && output.includes('Commands'),
   },
   {
-    name: 'CLI Tool - Count',
+    name: 'CLI Tool - Greet',
     dir: 'cli-tool',
     script: 'cli.js',
-    args: ['count', EXAMPLES_DIR],
-    timeout: 10000,
-    validate: (output, code) => code === 0 && output.includes('Files:') && output.includes('Directories:'),
-  },
-  {
-    name: 'CLI Tool - Tree',
-    dir: 'cli-tool',
-    script: 'cli.js',
-    args: ['tree', EXAMPLES_DIR],
+    args: ['greet', '--name', 'World'],
     timeout: 5000,
-    validate: (output, code) => code === 0 && output.includes('examples'),
+    validate: (output, code) => code === 0 && output.includes('Hello'),
+  },
+  {
+    name: 'CLI Tool - Files',
+    dir: 'cli-tool',
+    script: 'cli.js',
+    args: ['files', EXAMPLES_DIR],
+    timeout: 5000,
+    validate: (output, code) => code === 0 && output.includes('cli-tool'),
   },
   {
     name: 'File Processor - Analyze',

@@ -1,14 +1,9 @@
 {
-  "name": "react-howth-example",
+  "name": "howth-react-example",
   "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "start": "howth run server.js",
-    "dev": "howth run server.js"
-  },
+  "type": "module",
   "dependencies": {
-    "express": "^4.21.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   }
 }
