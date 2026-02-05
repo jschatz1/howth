@@ -18,4 +18,5 @@ ENV PORT=3001
 
 EXPOSE 3001
 
+ENTRYPOINT []
 CMD ["node", "server.js"]
