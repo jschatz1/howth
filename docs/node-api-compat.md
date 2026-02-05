@@ -48,7 +48,7 @@ Status of Node.js built-in module support in howth.
 | `v8` | Partial | `getHeapStatistics`, `serialize`/`deserialize` |
 | `vm` | Partial | Script, createContext, runInContext/NewContext/ThisContext, compileFunction |
 | `wasi` | Missing | |
-| `worker_threads` | Partial | Worker, MessageChannel/MessagePort, isMainThread. Missing `SharedArrayBuffer` transfer |
+| `worker_threads` | Partial | Worker, MessageChannel/MessagePort, BroadcastChannel, isMainThread, workerData, resourceLimits, receiveMessageOnPort, markAsUntransferable. Missing `SharedArrayBuffer` transfer |
 | `zlib` | Full | gzip/gunzip/deflate/inflate sync + async + streaming |
 
 ## Web APIs (Globals)
@@ -62,13 +62,14 @@ Status of Node.js built-in module support in howth.
 | `AbortController` / `AbortSignal` | Full | |
 | `Blob` / `File` / `FormData` | Full | |
 | `crypto.subtle` | Partial | `digest` works. Missing `encrypt`/`decrypt`/`sign`/`verify`/`generateKey`/`importKey`/`exportKey` |
-| `structuredClone` | Partial | JSON-based, no transferable support |
+| `structuredClone` | Full | Buffer, TypedArrays, Map, Set, Date, RegExp, Error, circular refs. Missing `SharedArrayBuffer` transfer |
 | `Event` / `EventTarget` | Full | |
 | `ReadableStream` / `WritableStream` / `TransformStream` | Full | |
 | `performance.now()` | Full | |
 | `atob` / `btoa` | Full | |
 | `queueMicrotask` | Full | |
 | `setTimeout` / `setInterval` | Full | |
+| `BroadcastChannel` | Full | Message broadcasting between same-named channels |
 
 ## Known Gaps Causing Real-World Failures
 

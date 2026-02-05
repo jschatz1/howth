@@ -234,7 +234,7 @@ howth run --node script.ts
 | `WritableStream` | ✅ | Basic implementation |
 | `TransformStream` | ✅ | Basic implementation |
 | `performance.now()` | ✅ | Full support |
-| `structuredClone` | ✅ | Via JSON (limited) |
+| `structuredClone` | ✅ | Full support (Buffer, TypedArrays, Map, Set, Date, RegExp, Error, circular refs) |
 
 ### Node.js API Coverage
 
@@ -277,7 +277,7 @@ howth run --node script.ts
 | `node:net` | ✅ | Socket, Server, isIP/isIPv4/isIPv6 |
 | `node:zlib` | ✅ | gzip/gunzip/deflate/inflate sync + async + streaming |
 | `node:vm` | ✅ | Script, createContext, runInContext/NewContext/ThisContext |
-| `node:worker_threads` | ❌ | Not yet implemented |
+| `node:worker_threads` | ✅ | Worker, parentPort, workerData, threadId, MessageChannel, MessagePort, BroadcastChannel, resourceLimits, receiveMessageOnPort, markAsUntransferable, structured cloning |
 | `require()` | ✅ | Full CommonJS support |
 
 ### Node.js Compatibility Testing
@@ -330,8 +330,8 @@ HOWTH_BIN=$(pwd)/target/debug/howth node tests/node_compat/run-tests.js
 | `test-path-normalize.js` | CVE-2024-36139 Windows path traversal fixes |
 | `test-path-join.js` | CVE-2024-36139 Windows path traversal fixes |
 | `test-fs-stat.js` | `fstat()` on stdin/stdout not supported |
-| `test-fs-mkdir.js` | Requires `worker_threads` module |
-| `test-fs-realpath.js` | Requires `worker_threads` module |
+| `test-fs-mkdir.js` | Complex async test setup |
+| `test-fs-realpath.js` | Complex async test setup |
 | `test-fs-access.js` | Requires `internal/test/binding` |
 | `test-fs-copyfile.js` | Requires `internal/test/binding` |
 

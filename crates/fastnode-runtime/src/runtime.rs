@@ -207,6 +207,8 @@ extension!(
         // Worker thread ops
         op_howth_worker_is_main_thread,
         op_howth_worker_thread_id,
+        op_howth_worker_get_data,
+        op_howth_worker_get_resource_limits,
         op_howth_worker_create,
         op_howth_worker_post_message,
         op_howth_worker_recv_message,
@@ -1110,6 +1112,8 @@ thread_local! {
 
 struct WorkerContext {
     worker_id: u32,
+    worker_data: String,
+    resource_limits: WorkerResourceLimits,
     parent_tx: mpsc::Sender<String>,
     parent_rx: mpsc::Receiver<String>,
 }
@@ -1144,6 +1148,24 @@ pub struct WorkerCreateResult {
     pub error: Option<String>,
 }
 
+/// Resource limits for worker threads (matches Node.js worker_threads resourceLimits)
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerResourceLimits {
+    /// Maximum size of the old generation heap in MB
+    #[serde(default)]
+    pub max_old_generation_size_mb: Option<usize>,
+    /// Maximum size of the young generation heap in MB
+    #[serde(default)]
+    pub max_young_generation_size_mb: Option<usize>,
+    /// Size of a pre-allocated memory range used for generated code (not directly supported)
+    #[serde(default)]
+    pub code_range_size_mb: Option<usize>,
+    /// Stack size in MB (not directly supported, for compat)
+    #[serde(default)]
+    pub stack_size_mb: Option<usize>,
+}
+
 /// Check if this is the main thread
 #[op2(fast)]
 fn op_howth_worker_is_main_thread() -> bool {
@@ -1156,16 +1178,42 @@ fn op_howth_worker_thread_id() -> u32 {
     WORKER_CONTEXT.with(|ctx| ctx.borrow().as_ref().map(|c| c.worker_id).unwrap_or(0))
 }
 
+/// Get the worker data passed to this worker (empty string if main thread)
+#[op2]
+#[string]
+fn op_howth_worker_get_data() -> String {
+    WORKER_CONTEXT.with(|ctx| {
+        ctx.borrow()
+            .as_ref()
+            .map(|c| c.worker_data.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Get the resource limits for this worker (returns default/empty if main thread)
+#[op2]
+#[serde]
+fn op_howth_worker_get_resource_limits() -> WorkerResourceLimits {
+    WORKER_CONTEXT.with(|ctx| {
+        ctx.borrow()
+            .as_ref()
+            .map(|c| c.resource_limits.clone())
+            .unwrap_or_default()
+    })
+}
+
 /// Create a new worker thread
 #[op2]
 #[serde]
 fn op_howth_worker_create(
     #[string] filename: &str,
     #[string] worker_data: &str,
+    #[serde] resource_limits: Option<WorkerResourceLimits>,
 ) -> WorkerCreateResult {
     let worker_id = NEXT_WORKER_ID.fetch_add(1, Ordering::SeqCst);
     let filename = filename.to_string();
     let worker_data = worker_data.to_string();
+    let resource_limits = resource_limits.unwrap_or_default();
 
     // Create message channels: main -> worker and worker -> main
     let (main_tx, worker_rx) = mpsc::channel::<String>();
@@ -1183,13 +1231,15 @@ fn op_howth_worker_create(
         WORKER_CONTEXT.with(|ctx| {
             *ctx.borrow_mut() = Some(WorkerContext {
                 worker_id,
+                worker_data: worker_data.clone(),
+                resource_limits: resource_limits.clone(),
                 parent_tx: worker_tx_clone,
                 parent_rx: worker_rx,
             });
         });
 
         // Create a new runtime for this worker
-        if let Err(e) = run_worker_script(&filename, &worker_data) {
+        if let Err(e) = run_worker_script(&filename, &worker_data, &resource_limits) {
             eprintln!("Worker {} error: {}", worker_id, e);
         }
     });
@@ -1217,6 +1267,7 @@ fn op_howth_worker_create(
 fn run_worker_script(
     filename: &str,
     _worker_data: &str,
+    resource_limits: &WorkerResourceLimits,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::runtime::Runtime;
 
@@ -1236,10 +1287,33 @@ fn run_worker_script(
                 .to_path_buf(),
         ));
 
+        // Set up V8 create params with resource limits if specified
+        let create_params = if resource_limits.max_old_generation_size_mb.is_some()
+            || resource_limits.max_young_generation_size_mb.is_some()
+        {
+            // Calculate heap limits from the provided values
+            // Node.js uses maxOldGenerationSizeMb as the primary heap limit
+            let max_heap = resource_limits
+                .max_old_generation_size_mb
+                .map(|mb| mb * 1024 * 1024)
+                .unwrap_or(512 * 1024 * 1024); // Default 512MB
+
+            // Initial heap is typically smaller - use young generation or a fraction of max
+            let initial_heap = resource_limits
+                .max_young_generation_size_mb
+                .map(|mb| mb * 1024 * 1024)
+                .unwrap_or(max_heap / 4);
+
+            Some(deno_core::v8::CreateParams::default().heap_limits(initial_heap, max_heap))
+        } else {
+            None
+        };
+
         // Create runtime options
         let options = DenoRuntimeOptions {
             module_loader: Some(module_loader),
             extensions: vec![ext, napi_ext],
+            create_params,
             ..Default::default()
         };
 

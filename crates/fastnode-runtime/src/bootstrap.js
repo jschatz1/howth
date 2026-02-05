@@ -2118,10 +2118,128 @@
     },
   };
 
-  // structuredClone
-  globalThis.structuredClone = (value) => {
-    // Simple implementation using JSON (doesn't handle all cases)
-    return JSON.parse(JSON.stringify(value));
+  // structuredClone - proper implementation supporting Buffer, TypedArrays, etc.
+  globalThis.structuredClone = (value, options) => {
+    const seen = new Map();
+
+    function clone(val) {
+      // Primitives
+      if (val === null || val === undefined) return val;
+      if (typeof val === 'boolean' || typeof val === 'number' || typeof val === 'string') return val;
+      if (typeof val === 'bigint') return val;
+      if (typeof val === 'symbol') throw new DOMException('Symbol cannot be cloned', 'DataCloneError');
+      if (typeof val === 'function') throw new DOMException('Function cannot be cloned', 'DataCloneError');
+
+      // Check circular reference
+      if (seen.has(val)) return seen.get(val);
+
+      // Date
+      if (val instanceof Date) {
+        const cloned = new Date(val.getTime());
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // RegExp
+      if (val instanceof RegExp) {
+        const cloned = new RegExp(val.source, val.flags);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // Error types
+      if (val instanceof Error) {
+        const ErrorConstructor = val.constructor || Error;
+        const cloned = new ErrorConstructor(val.message);
+        cloned.name = val.name;
+        cloned.stack = val.stack;
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // ArrayBuffer
+      if (val instanceof ArrayBuffer) {
+        const cloned = val.slice(0);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // TypedArrays
+      if (ArrayBuffer.isView(val) && !(val instanceof DataView)) {
+        const TypedArrayConstructor = val.constructor;
+        const cloned = new TypedArrayConstructor(val);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // DataView
+      if (val instanceof DataView) {
+        const cloned = new DataView(val.buffer.slice(0), val.byteOffset, val.byteLength);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // Buffer (Node.js specific)
+      if (typeof Buffer !== 'undefined' && Buffer.isBuffer(val)) {
+        const cloned = Buffer.from(val);
+        seen.set(val, cloned);
+        return cloned;
+      }
+
+      // Map
+      if (val instanceof Map) {
+        const cloned = new Map();
+        seen.set(val, cloned);
+        for (const [k, v] of val) {
+          cloned.set(clone(k), clone(v));
+        }
+        return cloned;
+      }
+
+      // Set
+      if (val instanceof Set) {
+        const cloned = new Set();
+        seen.set(val, cloned);
+        for (const v of val) {
+          cloned.add(clone(v));
+        }
+        return cloned;
+      }
+
+      // Array
+      if (Array.isArray(val)) {
+        const cloned = [];
+        seen.set(val, cloned);
+        for (let i = 0; i < val.length; i++) {
+          cloned[i] = clone(val[i]);
+        }
+        return cloned;
+      }
+
+      // Plain object
+      if (Object.getPrototypeOf(val) === Object.prototype || Object.getPrototypeOf(val) === null) {
+        const cloned = Object.create(Object.getPrototypeOf(val));
+        seen.set(val, cloned);
+        for (const key of Object.keys(val)) {
+          cloned[key] = clone(val[key]);
+        }
+        return cloned;
+      }
+
+      // Fallback for other objects - try to clone as plain object
+      const cloned = {};
+      seen.set(val, cloned);
+      for (const key of Object.keys(val)) {
+        try {
+          cloned[key] = clone(val[key]);
+        } catch (e) {
+          // Skip non-cloneable properties
+        }
+      }
+      return cloned;
+    }
+
+    return clone(value);
   };
 
   // sleep helper (non-standard but useful)
@@ -10976,6 +11094,112 @@
   // worker_threads module
   // ============================================================================
 
+  // WeakSet to track objects marked as untransferable
+  const untransferableObjects = new WeakSet();
+
+  // Global registry for BroadcastChannel (per-thread)
+  const broadcastChannelRegistry = new Map();
+
+  /**
+   * BroadcastChannel for broadcasting messages to all subscribers with the same name.
+   * Note: Currently works within the same thread. Cross-thread broadcast requires Rust support.
+   */
+  class BroadcastChannel {
+    #name;
+    #listeners = new Map();
+    #closed = false;
+
+    constructor(name) {
+      if (typeof name !== 'string') {
+        throw new TypeError('BroadcastChannel name must be a string');
+      }
+      this.#name = name;
+
+      // Register this channel
+      if (!broadcastChannelRegistry.has(name)) {
+        broadcastChannelRegistry.set(name, new Set());
+      }
+      broadcastChannelRegistry.get(name).add(this);
+    }
+
+    get name() {
+      return this.#name;
+    }
+
+    postMessage(message) {
+      if (this.#closed) {
+        throw new DOMException('BroadcastChannel is closed', 'InvalidStateError');
+      }
+
+      const data = structuredClone(message);
+      const channels = broadcastChannelRegistry.get(this.#name);
+      if (channels) {
+        for (const channel of channels) {
+          if (channel !== this && !channel.#closed) {
+            // Deliver asynchronously like the spec requires
+            queueMicrotask(() => {
+              channel._deliver(data);
+            });
+          }
+        }
+      }
+    }
+
+    _deliver(data) {
+      const listeners = this.#listeners.get('message') || [];
+      const event = { data, type: 'message', target: this };
+      for (const fn of listeners) {
+        try {
+          fn(event);
+        } catch (e) {
+          // Dispatch messageerror if structured clone fails
+          const errorListeners = this.#listeners.get('messageerror') || [];
+          for (const errFn of errorListeners) {
+            errFn({ error: e, type: 'messageerror', target: this });
+          }
+        }
+      }
+
+      // Also call onmessage if set
+      if (typeof this.onmessage === 'function') {
+        this.onmessage(event);
+      }
+    }
+
+    addEventListener(event, listener) {
+      if (!this.#listeners.has(event)) {
+        this.#listeners.set(event, []);
+      }
+      this.#listeners.get(event).push(listener);
+    }
+
+    removeEventListener(event, listener) {
+      const list = this.#listeners.get(event);
+      if (list) {
+        const idx = list.indexOf(listener);
+        if (idx !== -1) list.splice(idx, 1);
+      }
+    }
+
+    close() {
+      if (this.#closed) return;
+      this.#closed = true;
+
+      // Unregister from the channel registry
+      const channels = broadcastChannelRegistry.get(this.#name);
+      if (channels) {
+        channels.delete(this);
+        if (channels.size === 0) {
+          broadcastChannelRegistry.delete(this.#name);
+        }
+      }
+    }
+
+    // Event handler properties
+    onmessage = null;
+    onmessageerror = null;
+  }
+
   /**
    * MessageChannel for structured message passing
    */
@@ -11003,8 +11227,17 @@
     }
 
     postMessage(message, transferList) {
+      // Check for untransferable objects in transferList
+      if (transferList) {
+        for (const item of transferList) {
+          if (untransferableObjects.has(item)) {
+            throw new DOMException('Object is marked as untransferable', 'DataCloneError');
+          }
+        }
+      }
+
       if (this.#otherPort) {
-        const data = JSON.parse(JSON.stringify(message)); // Clone
+        const data = structuredClone(message);
         if (this.#otherPort.#started) {
           this.#otherPort._deliver(data);
         } else {
@@ -11018,6 +11251,24 @@
       for (const fn of listeners) {
         fn({ data });
       }
+    }
+
+    /**
+     * Synchronously receive a message from the queue (used by receiveMessageOnPort)
+     * @returns {{ message: any } | undefined}
+     */
+    _receiveSync() {
+      if (this.#queue.length > 0) {
+        return { message: this.#queue.shift() };
+      }
+      return undefined;
+    }
+
+    /**
+     * Check if there are queued messages
+     */
+    _hasMessages() {
+      return this.#queue.length > 0;
     }
 
     on(event, listener) {
@@ -11066,6 +11317,215 @@
   }
 
   /**
+   * Serialize a value for cross-thread transfer (handles Buffer, TypedArrays, etc.)
+   */
+  function serializeForTransfer(value) {
+    const seen = new Map();
+    let nextId = 0;
+
+    function serialize(val) {
+      if (val === null) return { __t: 'null' };
+      if (val === undefined) return { __t: 'undefined' };
+      if (typeof val === 'boolean') return val;
+      if (typeof val === 'number') {
+        if (Number.isNaN(val)) return { __t: 'NaN' };
+        if (val === Infinity) return { __t: 'Infinity' };
+        if (val === -Infinity) return { __t: '-Infinity' };
+        return val;
+      }
+      if (typeof val === 'string') return val;
+      if (typeof val === 'bigint') return { __t: 'bigint', v: val.toString() };
+
+      // Circular reference check
+      if (seen.has(val)) return { __t: 'ref', id: seen.get(val) };
+      const id = nextId++;
+      seen.set(val, id);
+
+      // Date
+      if (val instanceof Date) return { __t: 'Date', v: val.toISOString(), id };
+
+      // RegExp
+      if (val instanceof RegExp) return { __t: 'RegExp', source: val.source, flags: val.flags, id };
+
+      // Error
+      if (val instanceof Error) return { __t: 'Error', name: val.name, message: val.message, stack: val.stack, id };
+
+      // Buffer (Node.js)
+      if (typeof Buffer !== 'undefined' && Buffer.isBuffer(val)) {
+        return { __t: 'Buffer', v: Array.from(val), id };
+      }
+
+      // ArrayBuffer
+      if (val instanceof ArrayBuffer) {
+        return { __t: 'ArrayBuffer', v: Array.from(new Uint8Array(val)), id };
+      }
+
+      // TypedArrays
+      if (ArrayBuffer.isView(val) && !(val instanceof DataView)) {
+        return { __t: val.constructor.name, v: Array.from(val), id };
+      }
+
+      // Map
+      if (val instanceof Map) {
+        return { __t: 'Map', entries: Array.from(val.entries()).map(([k, v]) => [serialize(k), serialize(v)]), id };
+      }
+
+      // Set
+      if (val instanceof Set) {
+        return { __t: 'Set', values: Array.from(val).map(serialize), id };
+      }
+
+      // Array
+      if (Array.isArray(val)) {
+        return { __t: 'Array', v: val.map(serialize), id };
+      }
+
+      // Plain object
+      const obj = { __t: 'Object', id };
+      for (const key of Object.keys(val)) {
+        obj[key] = serialize(val[key]);
+      }
+      return obj;
+    }
+
+    return JSON.stringify(serialize(value));
+  }
+
+  /**
+   * Deserialize a value from cross-thread transfer
+   */
+  function deserializeFromTransfer(str) {
+    const data = JSON.parse(str);
+    const refs = new Map();
+
+    function deserialize(val) {
+      if (val === null || typeof val === 'boolean' || typeof val === 'number' || typeof val === 'string') {
+        return val;
+      }
+
+      if (typeof val !== 'object') return val;
+
+      const t = val.__t;
+      if (!t) return val;
+
+      // Handle refs for circular references
+      if (t === 'ref') return refs.get(val.id);
+      if (t === 'null') return null;
+      if (t === 'undefined') return undefined;
+      if (t === 'NaN') return NaN;
+      if (t === 'Infinity') return Infinity;
+      if (t === '-Infinity') return -Infinity;
+      if (t === 'bigint') return BigInt(val.v);
+
+      // Date
+      if (t === 'Date') {
+        const d = new Date(val.v);
+        if (val.id !== undefined) refs.set(val.id, d);
+        return d;
+      }
+
+      // RegExp
+      if (t === 'RegExp') {
+        const r = new RegExp(val.source, val.flags);
+        if (val.id !== undefined) refs.set(val.id, r);
+        return r;
+      }
+
+      // Error
+      if (t === 'Error') {
+        const e = new Error(val.message);
+        e.name = val.name;
+        e.stack = val.stack;
+        if (val.id !== undefined) refs.set(val.id, e);
+        return e;
+      }
+
+      // Buffer
+      if (t === 'Buffer') {
+        const b = Buffer.from(val.v);
+        if (val.id !== undefined) refs.set(val.id, b);
+        return b;
+      }
+
+      // ArrayBuffer
+      if (t === 'ArrayBuffer') {
+        const ab = new Uint8Array(val.v).buffer;
+        if (val.id !== undefined) refs.set(val.id, ab);
+        return ab;
+      }
+
+      // TypedArrays
+      const typedArrays = {
+        'Int8Array': Int8Array,
+        'Uint8Array': Uint8Array,
+        'Uint8ClampedArray': Uint8ClampedArray,
+        'Int16Array': Int16Array,
+        'Uint16Array': Uint16Array,
+        'Int32Array': Int32Array,
+        'Uint32Array': Uint32Array,
+        'Float32Array': Float32Array,
+        'Float64Array': Float64Array,
+        'BigInt64Array': BigInt64Array,
+        'BigUint64Array': BigUint64Array,
+      };
+      if (typedArrays[t]) {
+        const TypedArrayConstructor = typedArrays[t];
+        const arr = t.startsWith('Big')
+          ? new TypedArrayConstructor(val.v.map(BigInt))
+          : new TypedArrayConstructor(val.v);
+        if (val.id !== undefined) refs.set(val.id, arr);
+        return arr;
+      }
+
+      // Map
+      if (t === 'Map') {
+        const m = new Map();
+        if (val.id !== undefined) refs.set(val.id, m);
+        for (const [k, v] of val.entries) {
+          m.set(deserialize(k), deserialize(v));
+        }
+        return m;
+      }
+
+      // Set
+      if (t === 'Set') {
+        const s = new Set();
+        if (val.id !== undefined) refs.set(val.id, s);
+        for (const v of val.values) {
+          s.add(deserialize(v));
+        }
+        return s;
+      }
+
+      // Array
+      if (t === 'Array') {
+        const arr = [];
+        if (val.id !== undefined) refs.set(val.id, arr);
+        for (const v of val.v) {
+          arr.push(deserialize(v));
+        }
+        return arr;
+      }
+
+      // Object
+      if (t === 'Object') {
+        const obj = {};
+        if (val.id !== undefined) refs.set(val.id, obj);
+        for (const key of Object.keys(val)) {
+          if (key !== '__t' && key !== 'id') {
+            obj[key] = deserialize(val[key]);
+          }
+        }
+        return obj;
+      }
+
+      return val;
+    }
+
+    return deserialize(data);
+  }
+
+  /**
    * Worker class for spawning worker threads
    */
   class Worker {
@@ -11073,19 +11533,31 @@
     #workerId = null;
     #pollInterval = null;
     #terminated = false;
+    #resourceLimits = null;
 
     constructor(filename, options = {}) {
       const resolvedPath = posixPath.resolve(filename);
-      const workerData = options.workerData ? JSON.stringify(options.workerData) : '{}';
+      const workerData = options.workerData !== undefined ? serializeForTransfer(options.workerData) : '{"__t":"undefined"}';
+
+      // Prepare resource limits if provided
+      const resourceLimits = options.resourceLimits ? {
+        maxOldGenerationSizeMb: options.resourceLimits.maxOldGenerationSizeMb,
+        maxYoungGenerationSizeMb: options.resourceLimits.maxYoungGenerationSizeMb,
+        codeRangeSizeMb: options.resourceLimits.codeRangeSizeMb,
+        stackSizeMb: options.resourceLimits.stackSizeMb,
+      } : null;
 
       // Create the worker
-      const result = ops.op_howth_worker_create(resolvedPath, workerData);
+      const result = ops.op_howth_worker_create(resolvedPath, workerData, resourceLimits);
       if (result.error) {
         throw new Error(result.error);
       }
 
       this.#workerId = result.id;
       this.threadId = result.id;
+
+      // Store resource limits for the getter
+      this.#resourceLimits = options.resourceLimits || {};
 
       // Start polling for messages
       this.#startPolling();
@@ -11102,9 +11574,10 @@
         const message = ops.op_howth_worker_recv_message(this.#workerId);
         if (message) {
           try {
-            const data = JSON.parse(message);
+            const data = deserializeFromTransfer(message);
             this.#emit('message', data);
           } catch (e) {
+            // Fallback to raw message
             this.#emit('message', message);
           }
         }
@@ -11127,7 +11600,7 @@
 
     postMessage(message, transferList) {
       if (this.#terminated) return;
-      const data = JSON.stringify(message);
+      const data = serializeForTransfer(message);
       ops.op_howth_worker_post_message(this.#workerId, data);
     }
 
@@ -11171,6 +11644,13 @@
 
     ref() { return this; }
     unref() { return this; }
+
+    /**
+     * Get the resource limits for this worker
+     */
+    get resourceLimits() {
+      return Object.freeze({ ...this.#resourceLimits });
+    }
   }
 
   /**
@@ -11179,14 +11659,24 @@
   let parentPort = null;
   let workerData = null;
 
-  // If this is a worker thread, set up parentPort
+  // If this is a worker thread, set up parentPort and workerData
   if (!ops.op_howth_worker_is_main_thread()) {
+    // Initialize workerData from the data passed to the worker
+    try {
+      const rawWorkerData = ops.op_howth_worker_get_data();
+      if (rawWorkerData) {
+        workerData = deserializeFromTransfer(rawWorkerData);
+      }
+    } catch (e) {
+      // If parsing fails, keep workerData as null
+    }
+
     const parentPortListeners = new Map();
     let parentPollInterval = null;
 
     parentPort = {
       postMessage(message) {
-        const data = JSON.stringify(message);
+        const data = serializeForTransfer(message);
         ops.op_howth_worker_parent_post(data);
       },
 
@@ -11202,12 +11692,13 @@
             const message = ops.op_howth_worker_parent_recv();
             if (message) {
               try {
-                const data = JSON.parse(message);
+                const data = deserializeFromTransfer(message);
                 const listeners = parentPortListeners.get('message') || [];
                 for (const fn of listeners) {
                   fn(data);
                 }
               } catch (e) {
+                // Fallback to raw message
                 const listeners = parentPortListeners.get('message') || [];
                 for (const fn of listeners) {
                   fn(message);
@@ -11253,6 +11744,11 @@
     };
   }
 
+  // Get resource limits for the current worker (empty object for main thread)
+  const currentResourceLimits = ops.op_howth_worker_is_main_thread()
+    ? {}
+    : ops.op_howth_worker_get_resource_limits();
+
   const workerThreadsModule = {
     isMainThread: ops.op_howth_worker_is_main_thread(),
     parentPort,
@@ -11261,9 +11757,10 @@
     Worker,
     MessageChannel,
     MessagePort,
+    BroadcastChannel,
 
-    // Additional exports for compatibility
-    resourceLimits: {},
+    // Resource limits for the current worker (empty object for main thread)
+    resourceLimits: Object.freeze(currentResourceLimits),
     SHARE_ENV: Symbol('SHARE_ENV'),
     setEnvironmentData(key, value) {
       // Store in process.env for simplicity
@@ -11277,14 +11774,25 @@
       return process.env[`__WORKER_ENV_${key}`];
     },
     markAsUntransferable(obj) {
-      // No-op for now
+      // Mark an object as untransferable
+      if (obj !== null && typeof obj === 'object') {
+        untransferableObjects.add(obj);
+      }
+    },
+    isMarkedAsUntransferable(obj) {
+      // Check if an object is marked as untransferable
+      return untransferableObjects.has(obj);
     },
     moveMessagePortToContext(port, context) {
-      // No-op for now
+      // Move a MessagePort to a different vm context
+      // For now, just return the port as-is since we don't have full vm context support
       return port;
     },
     receiveMessageOnPort(port) {
-      // Synchronous receive - not fully supported
+      // Synchronously receive a message from a MessagePort
+      if (port && typeof port._receiveSync === 'function') {
+        return port._receiveSync();
+      }
       return undefined;
     },
   };
@@ -11292,6 +11800,9 @@
   // Register the worker_threads module
   globalThis.__howth_modules["node:worker_threads"] = workerThreadsModule;
   globalThis.__howth_modules["worker_threads"] = workerThreadsModule;
+
+  // BroadcastChannel is also a Web API global
+  globalThis.BroadcastChannel = BroadcastChannel;
 
   // ============================================================================
   // http module
