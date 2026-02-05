@@ -13166,98 +13166,440 @@
   globalThis.__howth_modules["net"] = netModule;
 
   // ============================================================================
-  // dns module (stub)
+  // dns module (real DNS resolution via Rust ops)
   // ============================================================================
 
+  // DNS error codes (matching Node.js)
+  const DNS_NODATA = 'ENODATA';
+  const DNS_FORMERR = 'EFORMERR';
+  const DNS_SERVFAIL = 'ESERVFAIL';
+  const DNS_NOTFOUND = 'ENOTFOUND';
+  const DNS_NOTIMP = 'ENOTIMP';
+  const DNS_REFUSED = 'EREFUSED';
+  const DNS_BADQUERY = 'EBADQUERY';
+  const DNS_BADNAME = 'EBADNAME';
+  const DNS_BADFAMILY = 'EBADFAMILY';
+  const DNS_BADRESP = 'EBADRESP';
+  const DNS_CONNREFUSED = 'ECONNREFUSED';
+  const DNS_TIMEOUT = 'ETIMEOUT';
+  const DNS_EOF = 'EOF';
+  const DNS_FILE = 'EFILE';
+  const DNS_NOMEM = 'ENOMEM';
+  const DNS_DESTRUCTION = 'EDESTRUCTION';
+  const DNS_BADSTR = 'EBADSTR';
+  const DNS_BADFLAGS = 'EBADFLAGS';
+  const DNS_NONAME = 'ENONAME';
+  const DNS_BADHINTS = 'EBADHINTS';
+  const DNS_NOTINITIALIZED = 'ENOTINITIALIZED';
+  const DNS_LOADIPHLPAPI = 'ELOADIPHLPAPI';
+  const DNS_ADDRGETNETWORKPARAMS = 'EADDRGETNETWORKPARAMS';
+  const DNS_CANCELLED = 'ECANCELLED';
+
+  // Custom DNS servers (not used yet, but tracked for API compat)
+  let dnsServers = ['8.8.8.8', '8.8.4.4'];
+
+  // Create DNS error
+  function createDnsError(code, syscall, hostname) {
+    const err = new Error(`${syscall} ${code} ${hostname}`);
+    err.code = code;
+    err.syscall = syscall;
+    err.hostname = hostname;
+    return err;
+  }
+
+  // dns.promises API
   const dnsPromises = {
-    lookup(hostname, options) {
-      return Promise.resolve({ address: '127.0.0.1', family: 4 });
+    async lookup(hostname, options = {}) {
+      if (typeof options === 'number') {
+        options = { family: options };
+      }
+      const family = options.family || 0; // 0 = any, 4 = IPv4, 6 = IPv6
+      try {
+        const result = await ops.op_howth_dns_lookup(hostname, family || null);
+        if (options.all) {
+          return [result];
+        }
+        return result;
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'getaddrinfo', hostname);
+      }
     },
-    resolve(hostname, rrtype) {
-      return Promise.resolve(['127.0.0.1']);
+
+    async resolve(hostname, rrtype = 'A') {
+      switch (rrtype.toUpperCase()) {
+        case 'A': return this.resolve4(hostname);
+        case 'AAAA': return this.resolve6(hostname);
+        case 'CNAME': return this.resolveCname(hostname);
+        case 'MX': return this.resolveMx(hostname);
+        case 'NS': return this.resolveNs(hostname);
+        case 'TXT': return this.resolveTxt(hostname);
+        case 'SRV': return this.resolveSrv(hostname);
+        case 'PTR': return this.resolvePtr(hostname);
+        case 'SOA': return this.resolveSoa(hostname);
+        default:
+          throw createDnsError(DNS_BADHINTS, 'queryDns', hostname);
+      }
     },
-    resolve4(hostname) {
-      return Promise.resolve(['127.0.0.1']);
+
+    async resolve4(hostname, options = {}) {
+      try {
+        const addresses = await ops.op_howth_dns_resolve4(hostname);
+        if (options.ttl) {
+          return addresses.map(addr => ({ address: addr, ttl: 300 }));
+        }
+        return addresses;
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'queryA', hostname);
+      }
     },
-    resolve6(hostname) {
-      return Promise.resolve(['::1']);
+
+    async resolve6(hostname, options = {}) {
+      try {
+        const addresses = await ops.op_howth_dns_resolve6(hostname);
+        if (options.ttl) {
+          return addresses.map(addr => ({ address: addr, ttl: 300 }));
+        }
+        return addresses;
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'queryAaaa', hostname);
+      }
     },
-    resolveCname(hostname) {
-      return Promise.resolve([]);
+
+    async resolveCname(hostname) {
+      try {
+        return await ops.op_howth_dns_resolve_cname(hostname);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'queryCname', hostname);
+      }
     },
-    resolveMx(hostname) {
-      return Promise.resolve([]);
+
+    async resolveMx(hostname) {
+      try {
+        return await ops.op_howth_dns_resolve_mx(hostname);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'queryMx', hostname);
+      }
     },
-    resolveTxt(hostname) {
-      return Promise.resolve([]);
+
+    async resolveTxt(hostname) {
+      try {
+        return await ops.op_howth_dns_resolve_txt(hostname);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'queryTxt', hostname);
+      }
     },
-    resolveNs(hostname) {
-      return Promise.resolve([]);
+
+    async resolveNs(hostname) {
+      try {
+        return await ops.op_howth_dns_resolve_ns(hostname);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'queryNs', hostname);
+      }
     },
-    resolveSrv(hostname) {
-      return Promise.resolve([]);
+
+    async resolveSrv(hostname) {
+      try {
+        return await ops.op_howth_dns_resolve_srv(hostname);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'querySrv', hostname);
+      }
     },
-    resolvePtr(hostname) {
-      return Promise.resolve([]);
+
+    async resolvePtr(hostname) {
+      try {
+        return await ops.op_howth_dns_resolve_ptr(hostname);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'queryPtr', hostname);
+      }
     },
-    resolveSoa(hostname) {
-      return Promise.resolve({});
+
+    async resolveSoa(hostname) {
+      try {
+        return await ops.op_howth_dns_resolve_soa(hostname);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'querySoa', hostname);
+      }
     },
-    resolveNaptr(hostname) {
-      return Promise.resolve([]);
+
+    async resolveNaptr(hostname) {
+      // NAPTR records not commonly used, return empty for now
+      return [];
     },
-    resolveCaa(hostname) {
-      return Promise.resolve([]);
+
+    async resolveCaa(hostname) {
+      // CAA records - not yet implemented in Rust
+      return [];
     },
-    reverse(ip) {
-      return Promise.resolve([]);
+
+    async reverse(ip) {
+      try {
+        return await ops.op_howth_dns_reverse(ip);
+      } catch (e) {
+        throw createDnsError(DNS_NOTFOUND, 'getHostByAddr', ip);
+      }
     },
-    setServers(servers) {},
-    getServers() { return ['8.8.8.8']; },
+
+    setServers(servers) {
+      if (!Array.isArray(servers)) {
+        throw new TypeError('servers must be an array');
+      }
+      dnsServers = servers.slice();
+    },
+
+    getServers() {
+      return dnsServers.slice();
+    },
+
     Resolver: class Resolver {
-      resolve(hostname, callback) {
-        callback(null, ['127.0.0.1']);
+      #servers = null;
+
+      constructor(options = {}) {
+        if (options.timeout) this._timeout = options.timeout;
+        if (options.tries) this._tries = options.tries;
+      }
+
+      setServers(servers) {
+        this.#servers = servers.slice();
+      }
+
+      getServers() {
+        return this.#servers || dnsServers.slice();
+      }
+
+      resolve(hostname, rrtype, callback) {
+        if (typeof rrtype === 'function') {
+          callback = rrtype;
+          rrtype = 'A';
+        }
+        dnsPromises.resolve(hostname, rrtype)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolve4(hostname, options, callback) {
+        if (typeof options === 'function') {
+          callback = options;
+          options = {};
+        }
+        dnsPromises.resolve4(hostname, options)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolve6(hostname, options, callback) {
+        if (typeof options === 'function') {
+          callback = options;
+          options = {};
+        }
+        dnsPromises.resolve6(hostname, options)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolveMx(hostname, callback) {
+        dnsPromises.resolveMx(hostname)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolveTxt(hostname, callback) {
+        dnsPromises.resolveTxt(hostname)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolveSrv(hostname, callback) {
+        dnsPromises.resolveSrv(hostname)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolveNs(hostname, callback) {
+        dnsPromises.resolveNs(hostname)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolveCname(hostname, callback) {
+        dnsPromises.resolveCname(hostname)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      resolveSoa(hostname, callback) {
+        dnsPromises.resolveSoa(hostname)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      reverse(ip, callback) {
+        dnsPromises.reverse(ip)
+          .then(result => callback(null, result))
+          .catch(err => callback(err));
+      }
+
+      cancel() {
+        // No-op for now
+      }
+
+      setLocalAddress(ipv4, ipv6) {
+        // No-op for now
       }
     },
   };
 
+  // Callback-based dns module
   const dnsModule = {
     lookup(hostname, options, callback) {
       if (typeof options === 'function') {
         callback = options;
         options = {};
       }
-      process.nextTick(() => callback(null, '127.0.0.1', 4));
+      if (typeof options === 'number') {
+        options = { family: options };
+      }
+      dnsPromises.lookup(hostname, options)
+        .then(result => {
+          if (options && options.all) {
+            callback(null, result);
+          } else {
+            callback(null, result.address, result.family);
+          }
+        })
+        .catch(err => callback(err));
     },
+
     resolve(hostname, rrtype, callback) {
       if (typeof rrtype === 'function') {
         callback = rrtype;
         rrtype = 'A';
       }
-      process.nextTick(() => callback(null, ['127.0.0.1']));
+      dnsPromises.resolve(hostname, rrtype)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
     },
+
     resolve4(hostname, options, callback) {
       if (typeof options === 'function') {
         callback = options;
         options = {};
       }
-      process.nextTick(() => callback(null, ['127.0.0.1']));
+      dnsPromises.resolve4(hostname, options)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
     },
+
     resolve6(hostname, options, callback) {
       if (typeof options === 'function') {
         callback = options;
         options = {};
       }
-      process.nextTick(() => callback(null, ['::1']));
+      dnsPromises.resolve6(hostname, options)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
     },
-    setServers(servers) {},
-    getServers() { return ['8.8.8.8']; },
+
+    resolveMx(hostname, callback) {
+      dnsPromises.resolveMx(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolveTxt(hostname, callback) {
+      dnsPromises.resolveTxt(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolveSrv(hostname, callback) {
+      dnsPromises.resolveSrv(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolveNs(hostname, callback) {
+      dnsPromises.resolveNs(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolveCname(hostname, callback) {
+      dnsPromises.resolveCname(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolveSoa(hostname, callback) {
+      dnsPromises.resolveSoa(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolvePtr(hostname, callback) {
+      dnsPromises.resolvePtr(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolveNaptr(hostname, callback) {
+      dnsPromises.resolveNaptr(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    resolveCaa(hostname, callback) {
+      dnsPromises.resolveCaa(hostname)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    reverse(ip, callback) {
+      dnsPromises.reverse(ip)
+        .then(result => callback(null, result))
+        .catch(err => callback(err));
+    },
+
+    setServers(servers) {
+      dnsPromises.setServers(servers);
+    },
+
+    getServers() {
+      return dnsPromises.getServers();
+    },
+
     promises: dnsPromises,
     Resolver: dnsPromises.Resolver,
+
     // Constants
     ADDRCONFIG: 1024,
     V4MAPPED: 2048,
     ALL: 256,
+
+    // Error codes
+    NODATA: DNS_NODATA,
+    FORMERR: DNS_FORMERR,
+    SERVFAIL: DNS_SERVFAIL,
+    NOTFOUND: DNS_NOTFOUND,
+    NOTIMP: DNS_NOTIMP,
+    REFUSED: DNS_REFUSED,
+    BADQUERY: DNS_BADQUERY,
+    BADNAME: DNS_BADNAME,
+    BADFAMILY: DNS_BADFAMILY,
+    BADRESP: DNS_BADRESP,
+    CONNREFUSED: DNS_CONNREFUSED,
+    TIMEOUT: DNS_TIMEOUT,
+    EOF: DNS_EOF,
+    FILE: DNS_FILE,
+    NOMEM: DNS_NOMEM,
+    DESTRUCTION: DNS_DESTRUCTION,
+    BADSTR: DNS_BADSTR,
+    BADFLAGS: DNS_BADFLAGS,
+    NONAME: DNS_NONAME,
+    BADHINTS: DNS_BADHINTS,
+    NOTINITIALIZED: DNS_NOTINITIALIZED,
+    LOADIPHLPAPI: DNS_LOADIPHLPAPI,
+    ADDRGETNETWORKPARAMS: DNS_ADDRGETNETWORKPARAMS,
+    CANCELLED: DNS_CANCELLED,
   };
 
   globalThis.__howth_modules["node:dns"] = dnsModule;

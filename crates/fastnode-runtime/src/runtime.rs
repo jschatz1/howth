@@ -216,6 +216,18 @@ extension!(
         op_howth_worker_parent_recv,
         op_howth_worker_terminate,
         op_howth_worker_is_running,
+        // DNS ops
+        op_howth_dns_lookup,
+        op_howth_dns_resolve4,
+        op_howth_dns_resolve6,
+        op_howth_dns_resolve_mx,
+        op_howth_dns_resolve_txt,
+        op_howth_dns_resolve_srv,
+        op_howth_dns_resolve_cname,
+        op_howth_dns_resolve_ns,
+        op_howth_dns_resolve_soa,
+        op_howth_dns_resolve_ptr,
+        op_howth_dns_reverse,
         // Child process ops (sync)
         op_howth_spawn_sync,
         op_howth_exec_sync,
@@ -1414,6 +1426,322 @@ fn op_howth_worker_is_running(worker_id: u32) -> bool {
         }
     }
     false
+}
+
+// ============================================================================
+// DNS Operations
+// ============================================================================
+
+use hickory_resolver::Resolver;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::name_server::TokioConnectionProvider;
+
+/// DNS lookup result
+#[derive(serde::Serialize)]
+struct DnsLookupResult {
+    address: String,
+    family: u8,
+}
+
+/// MX record result
+#[derive(serde::Serialize)]
+struct DnsMxResult {
+    exchange: String,
+    priority: u16,
+}
+
+/// SRV record result
+#[derive(serde::Serialize)]
+struct DnsSrvResult {
+    name: String,
+    port: u16,
+    priority: u16,
+    weight: u16,
+}
+
+/// SOA record result
+#[derive(serde::Serialize)]
+struct DnsSoaResult {
+    nsname: String,
+    hostmaster: String,
+    serial: u32,
+    refresh: u32,
+    retry: u32,
+    expire: u32,
+    minttl: u32,
+}
+
+/// Create a DNS resolver (uses system config)
+fn get_resolver() -> Resolver<TokioConnectionProvider> {
+    Resolver::builder_with_config(ResolverConfig::default(), TokioConnectionProvider::default())
+        .build()
+}
+
+/// DNS lookup - resolve hostname to IP address
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_lookup(
+    #[string] hostname: String,
+    family: Option<u8>,
+) -> Result<DnsLookupResult, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .lookup_ip(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS lookup failed: {}", e)))?;
+
+    let prefer_ipv6 = family == Some(6);
+
+    // Find the best matching address
+    for addr in response.iter() {
+        match addr {
+            std::net::IpAddr::V4(ipv4) if !prefer_ipv6 => {
+                return Ok(DnsLookupResult {
+                    address: ipv4.to_string(),
+                    family: 4,
+                });
+            }
+            std::net::IpAddr::V6(ipv6) if prefer_ipv6 => {
+                return Ok(DnsLookupResult {
+                    address: ipv6.to_string(),
+                    family: 6,
+                });
+            }
+            _ => continue,
+        }
+    }
+
+    // Fall back to first available
+    if let Some(addr) = response.iter().next() {
+        return Ok(DnsLookupResult {
+            address: addr.to_string(),
+            family: if addr.is_ipv4() { 4 } else { 6 },
+        });
+    }
+
+    Err(deno_core::error::generic_error("No addresses found"))
+}
+
+/// Resolve A records (IPv4)
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve4(
+    #[string] hostname: String,
+) -> Result<Vec<String>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .ipv4_lookup(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS resolve4 failed: {}", e)))?;
+
+    Ok(response.iter().map(|ip| ip.to_string()).collect())
+}
+
+/// Resolve AAAA records (IPv6)
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve6(
+    #[string] hostname: String,
+) -> Result<Vec<String>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .ipv6_lookup(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS resolve6 failed: {}", e)))?;
+
+    Ok(response.iter().map(|ip| ip.to_string()).collect())
+}
+
+/// Resolve MX records
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve_mx(
+    #[string] hostname: String,
+) -> Result<Vec<DnsMxResult>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .mx_lookup(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS MX lookup failed: {}", e)))?;
+
+    Ok(response
+        .iter()
+        .map(|mx| DnsMxResult {
+            exchange: mx.exchange().to_string().trim_end_matches('.').to_string(),
+            priority: mx.preference(),
+        })
+        .collect())
+}
+
+/// Resolve TXT records
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve_txt(
+    #[string] hostname: String,
+) -> Result<Vec<Vec<String>>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .txt_lookup(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS TXT lookup failed: {}", e)))?;
+
+    Ok(response
+        .iter()
+        .map(|txt| {
+            txt.txt_data()
+                .iter()
+                .map(|data| String::from_utf8_lossy(data).to_string())
+                .collect()
+        })
+        .collect())
+}
+
+/// Resolve SRV records
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve_srv(
+    #[string] hostname: String,
+) -> Result<Vec<DnsSrvResult>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .srv_lookup(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS SRV lookup failed: {}", e)))?;
+
+    Ok(response
+        .iter()
+        .map(|srv| DnsSrvResult {
+            name: srv.target().to_string().trim_end_matches('.').to_string(),
+            port: srv.port(),
+            priority: srv.priority(),
+            weight: srv.weight(),
+        })
+        .collect())
+}
+
+/// Resolve CNAME records
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve_cname(
+    #[string] hostname: String,
+) -> Result<Vec<String>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    // Use generic lookup for CNAME
+    use hickory_resolver::proto::rr::RecordType;
+    let response = resolver
+        .lookup(&hostname, RecordType::CNAME)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS CNAME lookup failed: {}", e)))?;
+
+    Ok(response
+        .iter()
+        .filter_map(|record| {
+            record.as_cname().map(|cname| {
+                cname.to_string().trim_end_matches('.').to_string()
+            })
+        })
+        .collect())
+}
+
+/// Resolve NS records
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve_ns(
+    #[string] hostname: String,
+) -> Result<Vec<String>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .ns_lookup(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS NS lookup failed: {}", e)))?;
+
+    Ok(response
+        .iter()
+        .map(|ns| ns.to_string().trim_end_matches('.').to_string())
+        .collect())
+}
+
+/// Resolve SOA records
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve_soa(
+    #[string] hostname: String,
+) -> Result<DnsSoaResult, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let response = resolver
+        .soa_lookup(&hostname)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS SOA lookup failed: {}", e)))?;
+
+    if let Some(soa) = response.iter().next() {
+        Ok(DnsSoaResult {
+            nsname: soa.mname().to_string().trim_end_matches('.').to_string(),
+            hostmaster: soa.rname().to_string().trim_end_matches('.').to_string(),
+            serial: soa.serial(),
+            refresh: soa.refresh() as u32,
+            retry: soa.retry() as u32,
+            expire: soa.expire() as u32,
+            minttl: soa.minimum(),
+        })
+    } else {
+        Err(deno_core::error::generic_error("No SOA record found"))
+    }
+}
+
+/// Resolve PTR records (for reverse lookup)
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_resolve_ptr(
+    #[string] hostname: String,
+) -> Result<Vec<String>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    use hickory_resolver::proto::rr::RecordType;
+    let response = resolver
+        .lookup(&hostname, RecordType::PTR)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS PTR lookup failed: {}", e)))?;
+
+    Ok(response
+        .iter()
+        .filter_map(|record| {
+            record.as_ptr().map(|ptr| {
+                ptr.to_string().trim_end_matches('.').to_string()
+            })
+        })
+        .collect())
+}
+
+/// Reverse DNS lookup (IP to hostname)
+#[op2(async)]
+#[serde]
+async fn op_howth_dns_reverse(
+    #[string] ip: String,
+) -> Result<Vec<String>, deno_core::error::AnyError> {
+    let resolver = get_resolver();
+
+    let addr: std::net::IpAddr = ip
+        .parse()
+        .map_err(|e| deno_core::error::generic_error(format!("Invalid IP address: {}", e)))?;
+
+    let response = resolver
+        .reverse_lookup(addr)
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("DNS reverse lookup failed: {}", e)))?;
+
+    Ok(response
+        .iter()
+        .map(|name| name.to_string().trim_end_matches('.').to_string())
+        .collect())
 }
 
 // ============================================================================

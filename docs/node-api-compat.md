@@ -18,7 +18,7 @@ Status of Node.js built-in module support in howth.
 | `crypto` | Partial | Hash, HMAC, random, `createCipheriv`/`createDecipheriv` (AES-CBC/CTR/GCM), `sign`/`verify` (RSA), `publicEncrypt`/`privateDecrypt` (RSA-OAEP), `generateKeyPairSync` (RSA). **Missing:** `scrypt`, `createDiffieHellman`, X509, `createECDH` |
 | `dgram` | Missing | UDP sockets |
 | `diagnostics_channel` | Stub | Channel class exists, no real functionality |
-| `dns` | Stub | Returns placeholder 127.0.0.1 results |
+| `dns` | Full | Real DNS resolution via hickory-resolver. lookup, resolve, resolve4/6, resolveMx/Txt/Srv/Ns/Soa/Cname/Ptr, reverse |
 | `domain` | Full | Deprecated module, implemented for compat |
 | `events` | Full | EventEmitter with full API |
 | `fs` | Full | Sync, callback, and `fs.promises`. `createReadStream`/`createWriteStream`, `watch` |
@@ -78,7 +78,7 @@ Status of Node.js built-in module support in howth.
 | ~~`crypto.createCipheriv` / `createDecipheriv`~~ | ~~cookie-signature, express-session, passport~~ | ~~High~~ **Done** |
 | ~~`crypto.sign` / `verify`~~ | ~~jsonwebtoken, google-auth-library~~ | ~~High~~ **Done** |
 | ~~`crypto.publicEncrypt` / `privateDecrypt`~~ | ~~google-auth-library, node-jose~~ | ~~High~~ **Done** |
-| `dns.resolve` (real resolution) | got, axios (for SRV lookups) | Medium |
+| ~~`dns.resolve` (real resolution)~~ | ~~got, axios (for SRV lookups)~~ | ~~Medium~~ **Done** |
 | `tls.connect` (real TLS) | database drivers, custom HTTPS | Medium |
 | `net` advanced options | database drivers, socket.io | Medium |
 | `http2` | gRPC, modern HTTP clients | Medium |
@@ -88,8 +88,8 @@ Status of Node.js built-in module support in howth.
 
 ## Totals
 
-- **Full:** 22 modules
+- **Full:** 23 modules
 - **Partial:** 9 modules
-- **Stub:** 3 modules
+- **Stub:** 2 modules
 - **Missing:** 6 modules
 - **Overall:** 34 / 40 modules present (85%)

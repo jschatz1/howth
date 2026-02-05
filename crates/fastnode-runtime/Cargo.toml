@@ -42,6 +42,7 @@ pkcs8 = { version = "0.10", features = ["pem"] }
 pkcs1 = { version = "0.7", features = ["pem"] }
 rand = "0.8"
 digest = "0.10"
+hickory-resolver = { version = "0.25", features = ["tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
