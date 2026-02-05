@@ -21,6 +21,7 @@ const html = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <title>Howth Playground</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦗</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: system-ui, sans-serif; background: #1e1e1e; color: #fff; }
@@ -188,6 +189,14 @@ console.log('Deleted file');\`
 </html>`;
 
 const server = http.createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/favicon.ico') {
+    // Serve inline SVG favicon as ICO fallback
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦗</text></svg>`;
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
+    res.end(svg);
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -254,7 +263,7 @@ globalThis.fetch = async (url, options) => {
     proc.stderr.on('data', (data) => res.write(data));
 
     proc.on('close', (code) => {
-      try { fs.unlinkSync(tmpFile); } catch {}
+      try { fs.unlinkSync(tmpFile); } catch { }
       res.write(`\n[Process exited with code ${code}]`);
       res.end();
     });
