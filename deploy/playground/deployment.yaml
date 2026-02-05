@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: playground
+  namespace: howth-playground
+  labels:
+    app: playground
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: playground
+  template:
+    metadata:
+      labels:
+        app: playground
+    spec:
+      containers:
+        - name: playground
+          image: ghcr.io/jschatz1/howth:latest
+          command: ["node", "/app/examples/playground/server.js"]
+          env:
+            - name: HOWTH_BIN
+              value: "/usr/local/bin/howth"
+            - name: PORT
+              value: "3001"
+          ports:
+            - containerPort: 3001
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 5
