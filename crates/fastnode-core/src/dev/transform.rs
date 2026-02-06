@@ -87,9 +87,32 @@ impl ModuleTransformer {
                 (rewritten, "application/javascript")
             }
             "css" => {
-                // CSS is served as a JS module that injects a <style> tag
-                let css_module = create_css_module(&source);
-                (css_module, "application/javascript")
+                // Process CSS with lightningcss (autoprefixer, nesting, modules)
+                let is_css_module = file_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.ends_with(".module.css"))
+                    .unwrap_or(false);
+
+                let css_result = crate::css::process_css_file(
+                    &source,
+                    &file_path,
+                    false, // Don't minify in dev
+                    true,  // Enable autoprefixer
+                ).map_err(|e| ModuleTransformError {
+                    message: format!("CSS processing error: {}", e),
+                    file: Some(file_path_str.clone()),
+                })?;
+
+                let js_module = if is_css_module {
+                    // CSS Modules: export class name mappings
+                    crate::css::generate_css_module_js(&css_result.code, &css_result.exports)
+                } else {
+                    // Regular CSS: inject as style tag
+                    create_css_module(&css_result.code)
+                };
+
+                (js_module, "application/javascript")
             }
             "json" => {
                 let json_module = json_to_esm(&source);

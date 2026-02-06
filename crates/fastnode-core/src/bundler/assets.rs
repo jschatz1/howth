@@ -170,9 +170,46 @@ fn hash_bytes(bytes: &[u8]) -> String {
     hash.to_hex().to_string()
 }
 
-/// Process a CSS file: basic minification.
+/// Process a CSS file using lightningcss.
+///
+/// Includes autoprefixer, CSS nesting transformation, and minification.
 pub fn process_css(content: &str) -> String {
-    // Basic CSS minification
+    use crate::css::{process_css as lightning_process, CssOptions};
+
+    let options = CssOptions {
+        minify: true,
+        autoprefixer: true,
+        css_modules: false,
+        filename: None,
+        targets: None,
+    };
+
+    match lightning_process(content, &options) {
+        Ok(result) => result.code,
+        Err(e) => {
+            // Fall back to basic processing on error
+            eprintln!("CSS processing warning: {}", e);
+            basic_css_minify(content)
+        }
+    }
+}
+
+/// Process a CSS Module file, returning the processed CSS and exports.
+pub fn process_css_module(
+    content: &str,
+    path: &Path,
+) -> Result<(String, std::collections::HashMap<String, String>), String> {
+    use crate::css::{process_css_file, CssError};
+
+    process_css_file(content, path, true, true)
+        .map(|r| (r.code, r.exports))
+        .map_err(|e| match e {
+            CssError::Parse(msg) | CssError::Transform(msg) | CssError::Print(msg) => msg,
+        })
+}
+
+/// Basic CSS minification fallback (comment removal, whitespace collapse).
+fn basic_css_minify(content: &str) -> String {
     let mut result = String::with_capacity(content.len());
     let mut in_comment = false;
     let mut last_char = ' ';

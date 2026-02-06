@@ -12,6 +12,7 @@ pub mod build;
 pub mod bundler;
 pub mod compiler;
 pub mod config;
+pub mod css;
 pub mod dev;
 pub mod doctor;
 pub mod error;
