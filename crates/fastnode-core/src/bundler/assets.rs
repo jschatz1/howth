@@ -24,7 +24,7 @@ impl AssetType {
     /// Determine asset type from file extension.
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_lowercase().as_str() {
-            "css" => Some(AssetType::Css),
+            "css" | "scss" | "sass" => Some(AssetType::Css),
             "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "ico" | "avif" => {
                 Some(AssetType::Image)
             }
@@ -39,9 +39,14 @@ impl AssetType {
         Self::from_extension(ext).is_some()
     }
 
-    /// Check if this is a CSS file.
+    /// Check if this is a CSS or Sass file.
     pub fn is_css(ext: &str) -> bool {
-        ext.to_lowercase() == "css"
+        matches!(ext.to_lowercase().as_str(), "css" | "scss" | "sass")
+    }
+
+    /// Check if this is a Sass/SCSS file.
+    pub fn is_sass(ext: &str) -> bool {
+        matches!(ext.to_lowercase().as_str(), "scss" | "sass")
     }
 }
 
@@ -206,6 +211,24 @@ pub fn process_css_module(
         .map_err(|e| match e {
             CssError::Parse(msg) | CssError::Transform(msg) | CssError::Print(msg) => msg,
         })
+}
+
+/// Process a Sass/SCSS file, compiling to CSS and applying lightningcss transforms.
+pub fn process_sass(content: &str, path: &Path) -> Result<String, String> {
+    use crate::css::sass::{compile_sass, SassOptions};
+
+    let options = SassOptions {
+        include_paths: vec![],
+        minify: true,
+        filename: Some(path.display().to_string()),
+    };
+
+    // Compile Sass to CSS
+    let css = compile_sass(content, &options)
+        .map_err(|e| format!("Sass compilation error: {}", e))?;
+
+    // Apply lightningcss processing
+    Ok(process_css(&css))
 }
 
 /// Basic CSS minification fallback (comment removal, whitespace collapse).

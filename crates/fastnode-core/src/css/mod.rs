@@ -5,6 +5,9 @@
 //! - CSS nesting transformation
 //! - CSS Modules support (scoped class names)
 //! - Minification
+//! - Sass/SCSS preprocessing
+
+pub mod sass;
 
 use lightningcss::printer::PrinterOptions;
 use lightningcss::stylesheet::{MinifyOptions, ParserOptions, StyleSheet};

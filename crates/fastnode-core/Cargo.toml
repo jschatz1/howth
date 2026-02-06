@@ -41,6 +41,7 @@ futures.workspace = true
 glob = "0.3"
 regex-lite = "0.1"
 lightningcss = "1.0.0-alpha.57"
+grass = "0.13"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 # Optional SWC integration for full transpilation support

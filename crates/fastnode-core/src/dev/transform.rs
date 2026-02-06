@@ -114,6 +114,48 @@ impl ModuleTransformer {
 
                 (js_module, "application/javascript")
             }
+            "scss" | "sass" => {
+                // Compile Sass/SCSS to CSS, then process with lightningcss
+                use crate::css::sass::{compile_sass, SassOptions};
+
+                let sass_options = SassOptions {
+                    include_paths: vec![],
+                    minify: false, // Don't minify in dev
+                    filename: Some(file_path_str.clone()),
+                };
+
+                let compiled_css = compile_sass(&source, &sass_options)
+                    .map_err(|e| ModuleTransformError {
+                        message: format!("Sass compile error: {}", e),
+                        file: Some(file_path_str.clone()),
+                    })?;
+
+                // Check if it's a CSS Module (.module.scss/.module.sass)
+                let is_css_module = file_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.contains(".module."))
+                    .unwrap_or(false);
+
+                // Process the compiled CSS with lightningcss
+                let css_result = crate::css::process_css_file(
+                    &compiled_css,
+                    &file_path,
+                    false, // Don't minify in dev
+                    true,  // Enable autoprefixer
+                ).map_err(|e| ModuleTransformError {
+                    message: format!("CSS processing error: {}", e),
+                    file: Some(file_path_str.clone()),
+                })?;
+
+                let js_module = if is_css_module {
+                    crate::css::generate_css_module_js(&css_result.code, &css_result.exports)
+                } else {
+                    create_css_module(&css_result.code)
+                };
+
+                (js_module, "application/javascript")
+            }
             "json" => {
                 let json_module = json_to_esm(&source);
                 let transformed =
