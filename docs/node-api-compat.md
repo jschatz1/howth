@@ -40,7 +40,7 @@ Status of Node.js built-in module support in howth.
 | `stream/web` | Full | ReadableStream, WritableStream, TransformStream |
 | `string_decoder` | Full | Multi-byte character handling |
 | `timers` | Full | setTimeout/setInterval/setImmediate + `timers/promises` |
-| `tls` | Stub | TLSSocket exists but no real TLS negotiation |
+| `tls` | Partial | `connect` with real TLS via rustls, TLSSocket read/write, system CA certs. Missing: `createServer` |
 | `trace_events` | Missing | |
 | `tty` | Partial | `isatty`, ReadStream, WriteStream |
 | `url` | Full | Legacy `url.parse` + WHATWG `URL`/`URLSearchParams`, `pathToFileURL`/`fileURLToPath` |
@@ -79,7 +79,7 @@ Status of Node.js built-in module support in howth.
 | ~~`crypto.sign` / `verify`~~ | ~~jsonwebtoken, google-auth-library~~ | ~~High~~ **Done** |
 | ~~`crypto.publicEncrypt` / `privateDecrypt`~~ | ~~google-auth-library, node-jose~~ | ~~High~~ **Done** |
 | ~~`dns.resolve` (real resolution)~~ | ~~got, axios (for SRV lookups)~~ | ~~Medium~~ **Done** |
-| `tls.connect` (real TLS) | database drivers, custom HTTPS | Medium |
+| ~~`tls.connect` (real TLS)~~ | ~~database drivers, custom HTTPS~~ | ~~Medium~~ **Done** |
 | `net` advanced options | database drivers, socket.io | Medium |
 | `http2` | gRPC, modern HTTP clients | Medium |
 | `cluster` | PM2, production deployments | Low |
@@ -89,7 +89,7 @@ Status of Node.js built-in module support in howth.
 ## Totals
 
 - **Full:** 23 modules
-- **Partial:** 10 modules
-- **Stub:** 2 modules
+- **Partial:** 11 modules
+- **Stub:** 1 module
 - **Missing:** 5 modules
 - **Overall:** 35 / 40 modules present (87.5%)

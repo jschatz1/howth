@@ -276,6 +276,11 @@ extension!(
         op_howth_tcp_read,
         op_howth_tcp_write,
         op_howth_tcp_close,
+        // TLS client ops
+        op_howth_tls_connect,
+        op_howth_tls_read,
+        op_howth_tls_write,
+        op_howth_tls_close,
     ],
 );
 
@@ -4549,6 +4554,212 @@ async fn op_howth_tcp_write(
 async fn op_howth_tcp_close(conn_id: u32) -> Result<(), deno_core::error::AnyError> {
     get_tcp_readers().lock().await.remove(&conn_id);
     get_tcp_writers().lock().await.remove(&conn_id);
+    Ok(())
+}
+
+// ============================================================================
+// TLS Operations
+// ============================================================================
+
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::TlsConnector;
+
+type TlsStream = tokio_rustls::client::TlsStream<tokio::net::TcpStream>;
+
+static TLS_STREAMS: std::sync::OnceLock<
+    tokio::sync::Mutex<HashMap<u32, TlsStream>>,
+> = std::sync::OnceLock::new();
+
+static NEXT_TLS_CONN_ID: AtomicU32 = AtomicU32::new(1);
+
+fn get_tls_streams() -> &'static tokio::sync::Mutex<HashMap<u32, TlsStream>> {
+    TLS_STREAMS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+/// Ensure the crypto provider is installed (only needs to happen once)
+static CRYPTO_PROVIDER_INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+fn ensure_crypto_provider() {
+    CRYPTO_PROVIDER_INSTALLED.get_or_init(|| {
+        // Install the ring crypto provider as the default
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+/// Build a TLS client config with system root certificates.
+fn build_tls_client_config() -> Result<std::sync::Arc<tokio_rustls::rustls::ClientConfig>, deno_core::error::AnyError> {
+    use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+
+    // Ensure crypto provider is installed
+    ensure_crypto_provider();
+
+    let mut root_store = RootCertStore::empty();
+
+    // Load native/system certificates (new API returns CertificateResult)
+    let cert_result = rustls_native_certs::load_native_certs();
+    for cert in cert_result.certs {
+        // Ignore individual cert errors, just skip them
+        let _ = root_store.add(cert);
+    }
+
+    // If no native certs loaded, use webpki-roots as fallback
+    if root_store.is_empty() {
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
+
+    let config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    Ok(std::sync::Arc::new(config))
+}
+
+/// TLS connection info returned to JS
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TlsConnectResult {
+    id: u32,
+    local_address: String,
+    local_port: u16,
+    remote_address: String,
+    remote_port: u16,
+    protocol: String,
+    cipher: String,
+    authorized: bool,
+    alpn_protocol: Option<String>,
+}
+
+/// Connect to a TLS server.
+#[op2(async)]
+#[serde]
+async fn op_howth_tls_connect(
+    #[string] host: String,
+    port: u16,
+    #[string] servername: Option<String>,
+    #[string] alpn: Option<String>,
+    reject_unauthorized: Option<bool>,
+) -> Result<TlsConnectResult, deno_core::error::AnyError> {
+    let addr = format!("{}:{}", host, port);
+
+    // Establish TCP connection first
+    let tcp_stream = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {
+        deno_core::error::AnyError::msg(format!("TLS connect failed ({}): {}", addr, e))
+    })?;
+
+    let local = tcp_stream.local_addr().ok();
+    let remote = tcp_stream.peer_addr().ok();
+
+    // Use servername if provided, otherwise use host
+    let sni_name = servername.as_deref().unwrap_or(&host);
+
+    // Build TLS config
+    let config = build_tls_client_config()?;
+
+    // Create connector
+    let connector = TlsConnector::from(config);
+
+    // Parse server name for SNI
+    let server_name = ServerName::try_from(sni_name.to_string())
+        .map_err(|_| deno_core::error::AnyError::msg(format!("Invalid server name: {}", sni_name)))?;
+
+    // Perform TLS handshake
+    let tls_stream = connector.connect(server_name, tcp_stream).await.map_err(|e| {
+        deno_core::error::AnyError::msg(format!("TLS handshake failed: {}", e))
+    })?;
+
+    // Get connection info
+    let (_, conn) = tls_stream.get_ref();
+    let protocol = conn
+        .protocol_version()
+        .map(|v| format!("{:?}", v))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let cipher = conn
+        .negotiated_cipher_suite()
+        .map(|c| format!("{:?}", c.suite()))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let alpn_protocol = conn.alpn_protocol().map(|p| String::from_utf8_lossy(p).to_string());
+
+    let conn_id = NEXT_TLS_CONN_ID.fetch_add(1, Ordering::SeqCst);
+    get_tls_streams().lock().await.insert(conn_id, tls_stream);
+
+    Ok(TlsConnectResult {
+        id: conn_id,
+        local_address: local.map(|a| a.ip().to_string()).unwrap_or_default(),
+        local_port: local.map(|a| a.port()).unwrap_or(0),
+        remote_address: remote.map(|a| a.ip().to_string()).unwrap_or_default(),
+        remote_port: remote.map(|a| a.port()).unwrap_or(0),
+        protocol,
+        cipher,
+        authorized: true, // We verified against root CAs
+        alpn_protocol,
+    })
+}
+
+/// Read from a TLS connection.
+#[op2(async)]
+#[serde]
+async fn op_howth_tls_read(conn_id: u32) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    use tokio::io::AsyncReadExt;
+
+    let mut stream = {
+        let mut streams = get_tls_streams().lock().await;
+        streams
+            .remove(&conn_id)
+            .ok_or_else(|| deno_core::error::AnyError::msg("TLS connection not found"))?
+    };
+
+    let mut buf = vec![0u8; 65536];
+    let result = stream.read(&mut buf).await;
+
+    // Put the stream back
+    get_tls_streams().lock().await.insert(conn_id, stream);
+
+    let n = result.map_err(|e| deno_core::error::AnyError::msg(format!("TLS read failed: {}", e)))?;
+
+    if n == 0 {
+        Ok(serde_json::Value::Null)
+    } else {
+        buf.truncate(n);
+        Ok(serde_json::json!(buf))
+    }
+}
+
+/// Write to a TLS connection.
+#[op2(async)]
+async fn op_howth_tls_write(
+    conn_id: u32,
+    #[buffer] data: JsBuffer,
+) -> Result<u32, deno_core::error::AnyError> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut stream = {
+        let mut streams = get_tls_streams().lock().await;
+        streams
+            .remove(&conn_id)
+            .ok_or_else(|| deno_core::error::AnyError::msg("TLS connection not found"))?
+    };
+
+    let len = data.len();
+    let result = stream.write_all(&data).await;
+
+    // Put the stream back
+    get_tls_streams().lock().await.insert(conn_id, stream);
+
+    result.map_err(|e| deno_core::error::AnyError::msg(format!("TLS write failed: {}", e)))?;
+    Ok(len as u32)
+}
+
+/// Close a TLS connection.
+#[op2(async)]
+async fn op_howth_tls_close(conn_id: u32) -> Result<(), deno_core::error::AnyError> {
+    use tokio::io::AsyncWriteExt;
+
+    if let Some(mut stream) = get_tls_streams().lock().await.remove(&conn_id) {
+        // Attempt graceful shutdown
+        let _ = stream.shutdown().await;
+    }
     Ok(())
 }
 

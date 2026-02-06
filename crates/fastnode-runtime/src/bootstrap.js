@@ -13795,24 +13795,160 @@
   globalThis.__howth_modules["node:vm"] = vmModule;
   globalThis.__howth_modules["vm"] = vmModule;
 
-  // tls module - TLS/SSL functionality (stub)
+  // tls module - TLS/SSL functionality with real TLS via rustls
   const tlsModule = (() => {
     class TLSSocket extends Duplex {
       constructor(socket, options = {}) {
         super(options);
         this._socket = socket;
-        this.authorized = true;
+        this._tlsConnId = null;
+        this._connecting = false;
+        this._connected = false;
+        this._destroyed = false;
+        this._reading = false;
+        this.authorized = false;
         this.encrypted = true;
         this.alpnProtocol = null;
         this.servername = options.servername || null;
+        this._protocol = null;
+        this._cipher = null;
+        this._localAddress = null;
+        this._localPort = null;
+        this._remoteAddress = null;
+        this._remotePort = null;
       }
+
+      // Initialize connection info from connect result
+      _initFromConnectResult(info) {
+        this._tlsConnId = info.id;
+        this._connected = true;
+        this.authorized = info.authorized;
+        this.alpnProtocol = info.alpnProtocol || null;
+        this._protocol = info.protocol;
+        this._cipher = info.cipher;
+        this._localAddress = info.localAddress;
+        this._localPort = info.localPort;
+        this._remoteAddress = info.remoteAddress;
+        this._remotePort = info.remotePort;
+      }
+
       getPeerCertificate(detailed) { return {}; }
-      getProtocol() { return 'TLSv1.3'; }
-      getCipher() { return { name: 'TLS_AES_256_GCM_SHA384', standardName: 'TLS_AES_256_GCM_SHA384', version: 'TLSv1.3' }; }
+
+      getProtocol() {
+        return this._protocol || 'TLSv1.3';
+      }
+
+      getCipher() {
+        const name = this._cipher || 'TLS_AES_256_GCM_SHA384';
+        return { name, standardName: name, version: this.getProtocol() };
+      }
+
       renegotiate(options, callback) { if (callback) callback(null); }
       setMaxSendFragment(size) { return true; }
       setServername(name) { this.servername = name; }
-      address() { return this._socket ? this._socket.address() : {}; }
+
+      address() {
+        return {
+          address: this._localAddress || '0.0.0.0',
+          family: 'IPv4',
+          port: this._localPort || 0
+        };
+      }
+
+      get remoteAddress() { return this._remoteAddress; }
+      get remotePort() { return this._remotePort; }
+      get localAddress() { return this._localAddress; }
+      get localPort() { return this._localPort; }
+
+      // Start reading from TLS connection
+      _startReading() {
+        if (this._reading || this._destroyed || !this._connected) return;
+        this._reading = true;
+
+        const readLoop = () => {
+          if (this._destroyed || !this._connected) {
+            this._reading = false;
+            return;
+          }
+
+          ops.op_howth_tls_read(this._tlsConnId).then((data) => {
+            if (data === null) {
+              // EOF
+              this._reading = false;
+              this.push(null);
+              return;
+            }
+            const buf = Buffer.from(data);
+            const ok = this.push(buf);
+            if (ok && !this._destroyed) {
+              readLoop();
+            } else {
+              this._reading = false;
+            }
+          }).catch((err) => {
+            this._reading = false;
+            if (!this._destroyed) {
+              this.destroy(new Error(err.message || String(err)));
+            }
+          });
+        };
+
+        readLoop();
+      }
+
+      _read(size) {
+        if (this._connected && !this._reading) {
+          this._startReading();
+        }
+      }
+
+      _write(chunk, encoding, callback) {
+        if (this._destroyed || !this._connected) {
+          callback(new Error('Socket is not connected'));
+          return;
+        }
+
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+
+        ops.op_howth_tls_write(this._tlsConnId, buf).then(() => {
+          callback();
+        }).catch((err) => {
+          callback(new Error(err.message || String(err)));
+        });
+      }
+
+      _final(callback) {
+        this._closeConnection().then(() => callback()).catch(callback);
+      }
+
+      _destroy(err, callback) {
+        this._destroyed = true;
+        this._closeConnection().then(() => callback(err)).catch(() => callback(err));
+      }
+
+      async _closeConnection() {
+        if (this._tlsConnId !== null) {
+          try {
+            await ops.op_howth_tls_close(this._tlsConnId);
+          } catch (e) {
+            // Ignore close errors
+          }
+          this._tlsConnId = null;
+        }
+        this._connected = false;
+      }
+
+      end(data, encoding, callback) {
+        if (typeof data === 'function') {
+          callback = data;
+          data = undefined;
+        }
+        if (typeof encoding === 'function') {
+          callback = encoding;
+          encoding = undefined;
+        }
+        return super.end(data, encoding, callback);
+      }
     }
 
     class TLSServer extends Stream {
@@ -13846,15 +13982,60 @@
       createServer(options, listener) {
         return new TLSServer(options, listener);
       },
-      connect(...args) {
-        const socket = new TLSSocket(null);
-        process.nextTick(() => socket.emit('connect'));
-        process.nextTick(() => socket.emit('secureConnect'));
+
+      connect(options, callback) {
+        // Handle different argument formats
+        let opts = {};
+        let cb = callback;
+
+        if (typeof options === 'number') {
+          // connect(port, host, callback)
+          opts.port = options;
+          opts.host = arguments[1] || 'localhost';
+          cb = arguments[2];
+        } else if (typeof options === 'string') {
+          // connect(path) - not supported for TLS
+          throw new Error('Unix sockets not supported for TLS');
+        } else {
+          opts = options || {};
+        }
+
+        const host = opts.host || opts.hostname || 'localhost';
+        const port = opts.port;
+        const servername = opts.servername || host;
+        const rejectUnauthorized = opts.rejectUnauthorized !== false;
+
+        if (!port) {
+          throw new Error('Port is required for TLS connection');
+        }
+
+        const socket = new TLSSocket(null, { servername });
+        socket._connecting = true;
+
+        if (cb) {
+          socket.once('secureConnect', cb);
+        }
+
+        // Perform TLS connection
+        ops.op_howth_tls_connect(host, port, servername, null, rejectUnauthorized)
+          .then((info) => {
+            socket._initFromConnectResult(info);
+            socket._connecting = false;
+            socket.emit('connect');
+            socket.emit('secureConnect');
+            socket._startReading();
+          })
+          .catch((err) => {
+            socket._connecting = false;
+            socket.destroy(new Error(err.message || String(err)));
+          });
+
         return socket;
       },
+
       createSecureContext(options) { return {}; },
-      getCiphers() { return ['TLS_AES_256_GCM_SHA384', 'TLS_AES_128_GCM_SHA256']; },
-      DEFAULT_CIPHERS: 'TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256',
+      getCiphers() { return ['TLS_AES_256_GCM_SHA384', 'TLS_AES_128_GCM_SHA256', 'TLS_CHACHA20_POLY1305_SHA256']; },
+      DEFAULT_CIPHERS: 'TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256',
       DEFAULT_ECDH_CURVE: 'auto',
       DEFAULT_MIN_VERSION: 'TLSv1.2',
       DEFAULT_MAX_VERSION: 'TLSv1.3',
