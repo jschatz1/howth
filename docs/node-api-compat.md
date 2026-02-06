@@ -15,7 +15,7 @@ Status of Node.js built-in module support in howth.
 | `cluster` | Missing | |
 | `console` | Full | log/warn/error/debug, time/timeEnd, table, group |
 | `constants` | Full | Legacy constants (deprecated) |
-| `crypto` | Partial | Hash, HMAC, random, `createCipheriv`/`createDecipheriv` (AES-CBC/CTR/GCM), `sign`/`verify` (RSA), `publicEncrypt`/`privateDecrypt` (RSA-OAEP), `generateKeyPairSync` (RSA). **Missing:** `scrypt`, `createDiffieHellman`, X509, `createECDH` |
+| `crypto` | Partial | Hash, HMAC, random, `createCipheriv`/`createDecipheriv` (AES-CBC/CTR/GCM), `sign`/`verify` (RSA), `publicEncrypt`/`privateDecrypt` (RSA-OAEP), `generateKeyPairSync` (RSA), `scrypt`/`scryptSync`. **Missing:** `createDiffieHellman`, X509, `createECDH` |
 | `dgram` | Missing | UDP sockets |
 | `diagnostics_channel` | Stub | Channel class exists, no real functionality |
 | `dns` | Full | Real DNS resolution via hickory-resolver. lookup, resolve, resolve4/6, resolveMx/Txt/Srv/Ns/Soa/Cname/Ptr, reverse |

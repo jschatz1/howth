@@ -8123,18 +8123,74 @@
   }
 
   /**
-   * Scrypt key derivation (stub).
+   * Scrypt key derivation.
+   * @param {Buffer|string} password
+   * @param {Buffer|string} salt
+   * @param {number} keylen - Desired key length
+   * @param {object} options - { N: cost, r: blockSize, p: parallelization, maxmem }
+   * @param {function} callback - (err, derivedKey)
    */
   function scrypt(password, salt, keylen, options, callback) {
     if (typeof options === "function") {
       callback = options;
       options = {};
     }
-    callback(new Error("scrypt not implemented"));
+    options = options || {};
+
+    // Convert to Buffer if needed
+    const pwdBuf = Buffer.isBuffer(password) ? password : Buffer.from(password);
+    const saltBuf = Buffer.isBuffer(salt) ? salt : Buffer.from(salt);
+
+    // Default parameters (Node.js defaults)
+    const N = options.N || options.cost || 16384;  // CPU/memory cost (2^14)
+    const r = options.r || options.blockSize || 8; // Block size
+    const p = options.p || options.parallelization || 1; // Parallelization
+
+    // Validate N is power of 2
+    if (N === 0 || (N & (N - 1)) !== 0) {
+      const err = new Error("scrypt: N must be a power of 2");
+      if (callback) {
+        process.nextTick(() => callback(err));
+        return;
+      }
+      throw err;
+    }
+
+    // Call native op asynchronously
+    (async () => {
+      try {
+        const result = ops.op_howth_scrypt(pwdBuf, saltBuf, keylen, N, r, p);
+        const derivedKey = Buffer.from(result);
+        if (callback) callback(null, derivedKey);
+      } catch (e) {
+        const err = new Error(e.message || String(e));
+        if (callback) callback(err);
+      }
+    })();
   }
 
-  function scryptSync() {
-    throw new Error("scryptSync not implemented");
+  /**
+   * Synchronous scrypt key derivation.
+   */
+  function scryptSync(password, salt, keylen, options) {
+    options = options || {};
+
+    // Convert to Buffer if needed
+    const pwdBuf = Buffer.isBuffer(password) ? password : Buffer.from(password);
+    const saltBuf = Buffer.isBuffer(salt) ? salt : Buffer.from(salt);
+
+    // Default parameters (Node.js defaults)
+    const N = options.N || options.cost || 16384;
+    const r = options.r || options.blockSize || 8;
+    const p = options.p || options.parallelization || 1;
+
+    // Validate N is power of 2
+    if (N === 0 || (N & (N - 1)) !== 0) {
+      throw new Error("scrypt: N must be a power of 2");
+    }
+
+    const result = ops.op_howth_scrypt(pwdBuf, saltBuf, keylen, N, r, p);
+    return Buffer.from(result);
   }
 
   const cryptoModule = {

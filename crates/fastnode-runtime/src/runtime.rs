@@ -159,6 +159,7 @@ extension!(
         op_howth_hash,
         op_howth_hmac,
         op_howth_pbkdf2,
+        op_howth_scrypt,
         op_howth_cipher,
         op_howth_cipher_gcm,
         op_howth_sign,
@@ -5255,6 +5256,42 @@ fn op_howth_pbkdf2(
     }
 
     Ok(dk)
+}
+
+/// Scrypt key derivation.
+/// Options: N (cost), r (block size), p (parallelization)
+#[op2]
+#[serde]
+fn op_howth_scrypt(
+    #[buffer] password: &[u8],
+    #[buffer] salt: &[u8],
+    key_length: u32,
+    cost: u32,        // N - CPU/memory cost parameter (must be power of 2)
+    block_size: u32,  // r - block size
+    parallelization: u32, // p - parallelization parameter
+) -> Result<Vec<u8>, deno_core::error::AnyError> {
+    use scrypt::{scrypt, Params};
+
+    // Validate cost is a power of 2
+    if cost == 0 || (cost & (cost - 1)) != 0 {
+        return Err(deno_core::error::AnyError::msg(
+            "scrypt: N must be a power of 2"
+        ));
+    }
+
+    // Calculate log2(N)
+    let log_n = (cost as f64).log2() as u8;
+
+    // Create scrypt params
+    let params = Params::new(log_n, block_size, parallelization, key_length as usize)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("scrypt params error: {}", e)))?;
+
+    // Derive key
+    let mut output = vec![0u8; key_length as usize];
+    scrypt(password, salt, &params, &mut output)
+        .map_err(|e| deno_core::error::AnyError::msg(format!("scrypt error: {}", e)))?;
+
+    Ok(output)
 }
 
 /// Symmetric cipher operation (CBC, CTR modes).
