@@ -1,0 +1,28 @@
+[package]
+name = "howth-parser"
+version = "0.1.0"
+edition = "2021"
+description = "Fast JavaScript/TypeScript/JSX parser for howth"
+license = "MIT"
+repository = "https://github.com/jschatz1/howth"
+
+[dependencies]
+bumpalo = { version = "3.19.1", features = ["collections"] }
+# String interning for identifiers
+rustc-hash = "2.0"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "lexer"
+harness = false
+
+[features]
+default = []
+# Enable TypeScript parsing
+typescript = []
+# Enable JSX parsing
+jsx = []
+# Enable all features
+full = ["typescript", "jsx"]
