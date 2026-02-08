@@ -6,7 +6,10 @@
 
 <p align="center"><em>A commodius vicus of recirculation for your JavaScript.</em></p>
 
-<p align="center"><strong><a href="https://run.howth.run">Try it in your browser →</a></strong></p>
+<p align="center">
+  <strong><a href="https://howth.run">Website</a></strong> ·
+  <strong><a href="https://run.howth.run">Playground</a></strong>
+</p>
 
 The playground includes examples for:
 - **Hello World** — Basic console output
