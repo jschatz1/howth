@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod build;
+pub mod bundler;
 pub mod http;
 pub mod install;
 pub mod rusage;
@@ -22,6 +23,10 @@ pub mod test;
 pub use build::{
     run_build_bench, BaselineResult, BenchTarget, BuildBenchParams, BuildBenchReport,
     BuildBenchResult, MachineInfo, ResourceStats, WorkDoneStats, BUILD_BENCH_SCHEMA_VERSION,
+};
+pub use bundler::{
+    run_bundler_bench, BundlerBenchParams, BundlerBenchReport, BundlerComparison,
+    BundlerToolResult, BUNDLER_BENCH_SCHEMA_VERSION,
 };
 pub use http::{
     run_http_bench, HttpBenchParams, HttpBenchReport, HttpComparison, HttpToolResult,

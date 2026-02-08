@@ -117,7 +117,8 @@ pub fn run_http_bench(params: HttpBenchParams) -> HttpBenchReport {
     let mut port = BASE_PORT;
 
     // Benchmark each tool
-    for tool in &["howth", "node", "bun", "deno"] {
+    // Note: "howth-static" is the pure Rust server (no JS callback) for theoretical max
+    for tool in &["howth-static", "howth", "node", "bun", "deno"] {
         port += 1;
         if let Some(result) = bench_tool(tool, temp_dir.path(), port, &params, &mut warnings) {
             results.push(result);
@@ -157,6 +158,18 @@ Howth.serveBatch({ port, hostname: '127.0.0.1', batchSize: 64 }, (req) => {
 console.log(`READY:${port}`);
 ";
     fs::write(dir.join("server-howth.ts"), howth_server).expect("Failed to write howth server");
+
+    // Howth static server (pure Rust, no JS callback - theoretical max performance)
+    // Note: serveStatic prints READY internally
+    let howth_static_server = r#"
+const port = parseInt(process.argv[2] || '3000', 10);
+
+const server = await Howth.serveStatic({ port, hostname: '127.0.0.1' }, 'Hello World\n');
+
+// Keep the process running indefinitely using setInterval
+setInterval(() => {}, 60000);
+"#;
+    fs::write(dir.join("server-howth-static.ts"), howth_static_server).expect("Failed to write howth static server");
 
     // Node.js server (uses node:http)
     let node_server = r"
@@ -277,6 +290,17 @@ fn start_server(tool: &str, script_dir: &Path, port: u16) -> Result<Child, Strin
     let port_str = port.to_string();
 
     let child = match tool {
+        "howth-static" => Command::new("howth")
+            .args([
+                "run",
+                "--native",
+                script_dir.join("server-howth-static.ts").to_str().unwrap(),
+                "--",
+                &port_str,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn(),
         "howth" => Command::new("howth")
             .args([
                 "run",
@@ -566,8 +590,13 @@ fn compute_comparisons(results: &[HttpToolResult]) -> Vec<HttpComparison> {
 
 /// Check if a tool is available in PATH.
 fn tool_available(tool: &str) -> bool {
+    // Map tool names to actual binaries (howth-static uses howth binary)
+    let binary = match tool {
+        "howth-static" => "howth",
+        other => other,
+    };
     Command::new("which")
-        .arg(tool)
+        .arg(binary)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
