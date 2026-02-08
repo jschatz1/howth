@@ -44,6 +44,35 @@ pub struct ServerConfig {
     pub host: Option<String>,
     /// Open browser automatically.
     pub open: Option<bool>,
+    /// Proxy configuration (path prefix → target).
+    pub proxy: HashMap<String, ProxyConfig>,
+}
+
+/// Proxy configuration for a single path prefix.
+///
+/// Compatible with Vite's proxy configuration:
+/// ```js
+/// server: {
+///   proxy: {
+///     '/api': {
+///       target: 'http://localhost:3000',
+///       changeOrigin: true,
+///       rewrite: (path) => path.replace(/^\/api/, '')
+///     }
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct ProxyConfig {
+    /// Target URL to proxy to.
+    pub target: String,
+    /// Whether to change the Origin header to match the target.
+    pub change_origin: bool,
+    /// Path rewrite pattern (simple prefix removal for static config).
+    /// E.g., `Some("/api")` means remove `/api` prefix from the path.
+    pub rewrite_remove_prefix: Option<String>,
+    /// Secure mode (validate SSL certs). Default: true for https targets.
+    pub secure: bool,
 }
 
 /// Resolve configuration from config file.
@@ -176,6 +205,15 @@ fn parse_config_object(source: &str) -> Result<HowthConfig, String> {
             if let Some(open) = server.get("open").and_then(serde_json::Value::as_bool) {
                 config.server.open = Some(open);
             }
+
+            // Parse proxy configuration
+            if let Some(proxy) = server.get("proxy").and_then(|v| v.as_object()) {
+                for (path, proxy_val) in proxy {
+                    if let Some(proxy_config) = parse_proxy_config(path, proxy_val) {
+                        config.server.proxy.insert(path.clone(), proxy_config);
+                    }
+                }
+            }
         }
 
         // resolve
@@ -207,6 +245,57 @@ fn parse_config_object(source: &str) -> Result<HowthConfig, String> {
     }
 
     Ok(config)
+}
+
+/// Parse a single proxy configuration entry.
+///
+/// Supports two formats:
+/// - String shorthand: `'/api': 'http://localhost:3000'`
+/// - Object config: `'/api': { target: 'http://localhost:3000', changeOrigin: true }`
+fn parse_proxy_config(path: &str, value: &serde_json::Value) -> Option<ProxyConfig> {
+    // String shorthand: '/api': 'http://localhost:3000'
+    if let Some(target) = value.as_str() {
+        return Some(ProxyConfig {
+            target: target.to_string(),
+            change_origin: false,
+            rewrite_remove_prefix: None,
+            secure: target.starts_with("https://"),
+        });
+    }
+
+    // Object config: { target, changeOrigin, rewrite, secure }
+    let obj = value.as_object()?;
+    let target = obj.get("target").and_then(|v| v.as_str())?.to_string();
+
+    let change_origin = obj
+        .get("changeOrigin")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let secure = obj
+        .get("secure")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| target.starts_with("https://"));
+
+    // For rewrite, we only support static prefix removal in the static parser.
+    // Full function-based rewrite requires V8.
+    // Look for `rewrite: (path) => path.replace(/^\/api/, '')`
+    // We can't parse this statically, but we can detect a simple pattern
+    // and store the prefix to remove.
+    let rewrite_remove_prefix = if obj.contains_key("rewrite") {
+        // Static parser can't evaluate rewrite functions.
+        // As a simple heuristic, use the path prefix itself.
+        Some(path.to_string())
+    } else {
+        None
+    };
+
+    Some(ProxyConfig {
+        target,
+        change_origin,
+        rewrite_remove_prefix,
+        secure,
+    })
 }
 
 /// Detect whether the config source contains a `plugins` key with an array value.
@@ -1411,5 +1500,87 @@ mod tests {
             };
         ";
         assert!(detect_plugins_key(source));
+    }
+
+    #[test]
+    fn test_parse_proxy_string_shorthand() {
+        let source = r#"
+            export default {
+                server: {
+                    port: 3000,
+                    proxy: {
+                        '/api': 'http://localhost:8080'
+                    }
+                }
+            };
+        "#;
+        let config = parse_config_object(source).unwrap();
+        assert!(config.server.proxy.contains_key("/api"));
+        let proxy = config.server.proxy.get("/api").unwrap();
+        assert_eq!(proxy.target, "http://localhost:8080");
+        assert!(!proxy.change_origin);
+    }
+
+    #[test]
+    fn test_parse_proxy_object_config() {
+        let source = r#"
+            export default {
+                server: {
+                    proxy: {
+                        '/api': {
+                            target: 'https://api.example.com',
+                            changeOrigin: true,
+                            secure: false
+                        }
+                    }
+                }
+            };
+        "#;
+        let config = parse_config_object(source).unwrap();
+        let proxy = config.server.proxy.get("/api").unwrap();
+        assert_eq!(proxy.target, "https://api.example.com");
+        assert!(proxy.change_origin);
+        assert!(!proxy.secure);
+    }
+
+    #[test]
+    fn test_parse_proxy_multiple_paths() {
+        let source = r#"
+            export default {
+                server: {
+                    proxy: {
+                        '/api': 'http://localhost:3001',
+                        '/auth': {
+                            target: 'http://localhost:3002',
+                            changeOrigin: true
+                        }
+                    }
+                }
+            };
+        "#;
+        let config = parse_config_object(source).unwrap();
+        assert_eq!(config.server.proxy.len(), 2);
+        assert!(config.server.proxy.contains_key("/api"));
+        assert!(config.server.proxy.contains_key("/auth"));
+    }
+
+    #[test]
+    fn test_parse_proxy_with_rewrite() {
+        let source = r#"
+            export default {
+                server: {
+                    proxy: {
+                        '/api': {
+                            target: 'http://localhost:3000',
+                            rewrite: true
+                        }
+                    }
+                }
+            };
+        "#;
+        let config = parse_config_object(source).unwrap();
+        let proxy = config.server.proxy.get("/api").unwrap();
+        // Static parser uses the path prefix as rewrite hint
+        assert_eq!(proxy.rewrite_remove_prefix, Some("/api".to_string()));
     }
 }

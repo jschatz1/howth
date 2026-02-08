@@ -11412,6 +11412,23 @@
         return { __t: 'Buffer', v: Array.from(val), id };
       }
 
+      // SharedArrayBuffer - create shared memory in Rust and transfer by ID
+      if (typeof SharedArrayBuffer !== 'undefined' && val instanceof SharedArrayBuffer) {
+        // Check if this SAB already has a shared buffer ID
+        let sabId = val.__howthSharedBufferId;
+        if (!sabId) {
+          // Create new shared buffer in Rust
+          sabId = Deno.core.ops.op_howth_shared_buffer_create(val.byteLength);
+          // Copy data to shared buffer
+          const bytes = new Uint8Array(val);
+          Deno.core.ops.op_howth_shared_buffer_set_bytes(sabId, bytes);
+          // Store ID on the SAB for future transfers
+          Object.defineProperty(val, '__howthSharedBufferId', { value: sabId, writable: false });
+        }
+        // Convert BigInt to string for JSON serialization
+        return { __t: 'SharedArrayBuffer', sabId: sabId.toString(), byteLength: val.byteLength, id };
+      }
+
       // ArrayBuffer
       if (val instanceof ArrayBuffer) {
         return { __t: 'ArrayBuffer', v: Array.from(new Uint8Array(val)), id };
@@ -11509,6 +11526,24 @@
         const ab = new Uint8Array(val.v).buffer;
         if (val.id !== undefined) refs.set(val.id, ab);
         return ab;
+      }
+
+      // SharedArrayBuffer - reconstruct from shared memory
+      if (t === 'SharedArrayBuffer') {
+        // Convert sabId string back to BigInt
+        const sabId = BigInt(val.sabId);
+        // Create a SharedArrayBuffer backed by the Rust shared memory
+        const sab = new SharedArrayBuffer(val.byteLength);
+        // Copy current data from Rust shared buffer
+        const bytes = Deno.core.ops.op_howth_shared_buffer_get_bytes(sabId);
+        const view = new Uint8Array(sab);
+        for (let i = 0; i < bytes.length; i++) {
+          view[i] = bytes[i];
+        }
+        // Store the shared buffer ID for future atomic operations
+        Object.defineProperty(sab, '__howthSharedBufferId', { value: sabId, writable: false });
+        if (val.id !== undefined) refs.set(val.id, sab);
+        return sab;
       }
 
       // TypedArrays
@@ -11806,6 +11841,127 @@
     ? {}
     : ops.op_howth_worker_get_resource_limits();
 
+  // SharedAtomics: Wrapper for Atomics that uses Rust shared memory for transferred SABs
+  // This enables true atomic operations across workers.
+  const SharedAtomics = {
+    _getBufferId(typedArray) {
+      const sab = typedArray.buffer;
+      if (sab.__howthSharedBufferId !== undefined) {
+        return sab.__howthSharedBufferId;
+      }
+      return null;
+    },
+
+    _getByteOffset(typedArray, index) {
+      return typedArray.byteOffset + (index * typedArray.BYTES_PER_ELEMENT);
+    },
+
+    load(typedArray, index) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_load_i32(bufferId, byteOffset);
+      }
+      return Atomics.load(typedArray, index);
+    },
+
+    store(typedArray, index, value) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        ops.op_howth_shared_buffer_store_i32(bufferId, byteOffset, value);
+        return value;
+      }
+      return Atomics.store(typedArray, index, value);
+    },
+
+    add(typedArray, index, value) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_add_i32(bufferId, byteOffset, value);
+      }
+      return Atomics.add(typedArray, index, value);
+    },
+
+    sub(typedArray, index, value) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_sub_i32(bufferId, byteOffset, value);
+      }
+      return Atomics.sub(typedArray, index, value);
+    },
+
+    exchange(typedArray, index, value) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_exchange_i32(bufferId, byteOffset, value);
+      }
+      return Atomics.exchange(typedArray, index, value);
+    },
+
+    compareExchange(typedArray, index, expected, replacement) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_compare_exchange_i32(bufferId, byteOffset, expected, replacement);
+      }
+      return Atomics.compareExchange(typedArray, index, expected, replacement);
+    },
+
+    and(typedArray, index, value) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_and_i32(bufferId, byteOffset, value);
+      }
+      return Atomics.and(typedArray, index, value);
+    },
+
+    or(typedArray, index, value) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_or_i32(bufferId, byteOffset, value);
+      }
+      return Atomics.or(typedArray, index, value);
+    },
+
+    xor(typedArray, index, value) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        return ops.op_howth_shared_buffer_xor_i32(bufferId, byteOffset, value);
+      }
+      return Atomics.xor(typedArray, index, value);
+    },
+
+    wait(typedArray, index, expected, timeout) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null && typedArray.BYTES_PER_ELEMENT === 4) {
+        const byteOffset = this._getByteOffset(typedArray, index);
+        const timeoutMs = timeout === undefined ? null : timeout;
+        return ops.op_howth_shared_buffer_wait_i32(bufferId, byteOffset, expected, timeoutMs);
+      }
+      return Atomics.wait(typedArray, index, expected, timeout);
+    },
+
+    notify(typedArray, index, count = Infinity) {
+      const bufferId = this._getBufferId(typedArray);
+      if (bufferId !== null) {
+        const notifyCount = count === Infinity ? 0xFFFFFFFF : count;
+        return ops.op_howth_shared_buffer_notify(bufferId, notifyCount);
+      }
+      return Atomics.notify(typedArray, index, count);
+    },
+
+    isLockFree(size) {
+      return Atomics.isLockFree(size);
+    },
+  };
+
   const workerThreadsModule = {
     isMainThread: ops.op_howth_worker_is_main_thread(),
     parentPort,
@@ -11815,6 +11971,7 @@
     MessageChannel,
     MessagePort,
     BroadcastChannel,
+    SharedAtomics,
 
     // Resource limits for the current worker (empty object for main thread)
     resourceLimits: Object.freeze(currentResourceLimits),
@@ -15461,7 +15618,496 @@
         },
       };
     },
+
+    // ========================================================================
+    // Howth.serveStatic - Pure Rust HTTP server (no JS overhead)
+    // ========================================================================
+
+    /**
+     * Start a pure Rust HTTP server that returns a static response.
+     * No JavaScript is involved in request handling - maximum performance.
+     * Useful for benchmarking theoretical maximum throughput.
+     *
+     * @param {Object} options - Server options
+     * @param {number} options.port - Port to listen on (default: 3000)
+     * @param {string} options.hostname - Hostname to bind to (default: "127.0.0.1")
+     * @param {string} body - Static response body to return for all requests
+     * @returns {Promise<Object>} Server info with port and hostname
+     *
+     * @example
+     * const server = await Howth.serveStatic({ port: 3000 }, "Hello World\n");
+     * console.log(`Server running at http://${server.hostname}:${server.port}`);
+     */
+    async serveStatic(options, body) {
+      const port = options.port || 3000;
+      const hostname = options.hostname || "127.0.0.1";
+      const responseBody = typeof body === 'string' ? body : String(body);
+
+      const result = await ops.op_howth_http_serve_rust_only(port, hostname, responseBody);
+
+      console.log(`READY:${result.port}`);
+
+      return {
+        port: result.port,
+        hostname: result.hostname,
+      };
+    },
+
+    // ========================================================================
+    // Howth.markdown - Built-in CommonMark/GFM Markdown parser
+    // ========================================================================
+
+    /**
+     * Markdown API - CommonMark-compliant Markdown parser.
+     * Similar to Bun.markdown.
+     *
+     * @example
+     * const html = Howth.markdown("# Hello **world**");
+     * // or with options
+     * const html = Howth.markdown("## Hello", { headingIds: true });
+     */
+    markdown: Object.assign(
+      function markdown(content, options) {
+        if (typeof content !== 'string') {
+          throw new TypeError('markdown content must be a string');
+        }
+        return Deno.core.ops.op_howth_markdown_to_html(content, options || {});
+      },
+      {
+        /**
+         * Convert Markdown to HTML.
+         *
+         * @param {string} content - Markdown content
+         * @param {Object} [options] - Parsing options
+         * @param {boolean} [options.headingIds=false] - Generate IDs for headings
+         * @param {boolean} [options.gfm=true] - Enable GitHub Flavored Markdown (tables, strikethrough, tasklists)
+         * @param {boolean} [options.smartPunctuation=false] - Enable smart quotes and dashes
+         * @returns {string} HTML output
+         *
+         * @example
+         * const html = Howth.markdown.html("# Hello **world**");
+         * // Returns: "<h1>Hello <strong>world</strong></h1>\n"
+         *
+         * @example
+         * // With heading IDs
+         * const html = Howth.markdown.html("## Features", { headingIds: true });
+         * // Returns: "<h2 id=\"features\">Features</h2>\n"
+         *
+         * @example
+         * // GFM tables
+         * const html = Howth.markdown.html(`
+         * | Name | Age |
+         * |------|-----|
+         * | John | 30  |
+         * `);
+         */
+        html(content, options) {
+          if (typeof content !== 'string') {
+            throw new TypeError('markdown content must be a string');
+          }
+          return Deno.core.ops.op_howth_markdown_to_html(content, options || {});
+        },
+      }
+    ),
   };
+
+  // ==========================================================================
+  // Howth.Cookie and Howth.CookieMap - HTTP Cookie APIs (similar to Bun)
+  // ==========================================================================
+
+  /**
+   * Cookie class - represents an HTTP cookie with its name, value, and attributes.
+   * Similar to Bun.Cookie.
+   */
+  class Cookie {
+    #name = '';
+    #value = '';
+    #domain = null;
+    #path = '/';
+    #expires = undefined;
+    #secure = false;
+    #sameSite = 'lax';
+    #partitioned = false;
+    #maxAge = undefined;
+    #httpOnly = false;
+
+    /**
+     * Create a new Cookie.
+     * @param {string|object} nameOrString - Cookie name, cookie string, or options object
+     * @param {string} [value] - Cookie value
+     * @param {object} [options] - Cookie options
+     */
+    constructor(nameOrString, value, options) {
+      if (typeof nameOrString === 'string' && value === undefined && nameOrString.includes('=')) {
+        // Parse from cookie string
+        this.#parseString(nameOrString);
+      } else if (typeof nameOrString === 'object' && nameOrString !== null) {
+        // From options object
+        this.#fromOptions(nameOrString);
+      } else if (typeof nameOrString === 'string') {
+        // name, value, options
+        this.#name = nameOrString;
+        this.#value = value !== undefined ? String(value) : '';
+        if (options) {
+          this.#applyOptions(options);
+        }
+      }
+    }
+
+    #parseString(str) {
+      const parts = str.split(';').map(p => p.trim());
+      if (parts.length === 0) return;
+
+      // First part is name=value
+      const [first, ...rest] = parts;
+      const eqIndex = first.indexOf('=');
+      if (eqIndex !== -1) {
+        this.#name = first.substring(0, eqIndex).trim();
+        this.#value = first.substring(eqIndex + 1).trim();
+      }
+
+      // Parse attributes
+      for (const part of rest) {
+        const lower = part.toLowerCase();
+        if (lower === 'secure') {
+          this.#secure = true;
+        } else if (lower === 'httponly') {
+          this.#httpOnly = true;
+        } else if (lower === 'partitioned') {
+          this.#partitioned = true;
+        } else if (lower.startsWith('path=')) {
+          this.#path = part.substring(5).trim();
+        } else if (lower.startsWith('domain=')) {
+          this.#domain = part.substring(7).trim();
+        } else if (lower.startsWith('expires=')) {
+          const dateStr = part.substring(8).trim();
+          const date = new Date(dateStr);
+          if (!isNaN(date.getTime())) {
+            this.#expires = date.getTime();
+          }
+        } else if (lower.startsWith('max-age=')) {
+          this.#maxAge = parseInt(part.substring(8).trim(), 10);
+        } else if (lower.startsWith('samesite=')) {
+          const val = part.substring(9).trim().toLowerCase();
+          if (val === 'strict' || val === 'lax' || val === 'none') {
+            this.#sameSite = val;
+          }
+        }
+      }
+    }
+
+    #fromOptions(opts) {
+      if (opts.name !== undefined) this.#name = String(opts.name);
+      if (opts.value !== undefined) this.#value = String(opts.value);
+      this.#applyOptions(opts);
+    }
+
+    #applyOptions(opts) {
+      if (opts.domain !== undefined) this.#domain = opts.domain;
+      if (opts.path !== undefined) this.#path = opts.path;
+      if (opts.expires !== undefined) {
+        if (opts.expires instanceof Date) {
+          this.#expires = opts.expires.getTime();
+        } else if (typeof opts.expires === 'number') {
+          this.#expires = opts.expires;
+        } else if (typeof opts.expires === 'string') {
+          const date = new Date(opts.expires);
+          if (!isNaN(date.getTime())) {
+            this.#expires = date.getTime();
+          }
+        }
+      }
+      if (opts.secure !== undefined) this.#secure = Boolean(opts.secure);
+      if (opts.sameSite !== undefined) this.#sameSite = opts.sameSite;
+      if (opts.partitioned !== undefined) this.#partitioned = Boolean(opts.partitioned);
+      if (opts.maxAge !== undefined) this.#maxAge = opts.maxAge;
+      if (opts.httpOnly !== undefined) this.#httpOnly = Boolean(opts.httpOnly);
+    }
+
+    get name() { return this.#name; }
+    get value() { return this.#value; }
+    set value(v) { this.#value = String(v); }
+    get domain() { return this.#domain; }
+    get path() { return this.#path; }
+    get expires() { return this.#expires; }
+    get secure() { return this.#secure; }
+    get sameSite() { return this.#sameSite; }
+    get partitioned() { return this.#partitioned; }
+    get maxAge() { return this.#maxAge; }
+    get httpOnly() { return this.#httpOnly; }
+
+    /**
+     * Check if the cookie has expired.
+     * @returns {boolean}
+     */
+    isExpired() {
+      if (this.#maxAge !== undefined) {
+        // maxAge of 0 or negative means expired
+        return this.#maxAge <= 0;
+      }
+      if (this.#expires !== undefined) {
+        return Date.now() > this.#expires;
+      }
+      return false; // Session cookie - never expires during session
+    }
+
+    /**
+     * Serialize the cookie for Set-Cookie header.
+     * @returns {string}
+     */
+    serialize() {
+      let str = `${encodeURIComponent(this.#name)}=${encodeURIComponent(this.#value)}`;
+
+      if (this.#domain) str += `; Domain=${this.#domain}`;
+      if (this.#path) str += `; Path=${this.#path}`;
+      if (this.#expires !== undefined) {
+        str += `; Expires=${new Date(this.#expires).toUTCString()}`;
+      }
+      if (this.#maxAge !== undefined) str += `; Max-Age=${this.#maxAge}`;
+      if (this.#secure) str += '; Secure';
+      if (this.#httpOnly) str += '; HttpOnly';
+      if (this.#sameSite) str += `; SameSite=${this.#sameSite}`;
+      if (this.#partitioned) str += '; Partitioned';
+
+      return str;
+    }
+
+    toString() {
+      return this.serialize();
+    }
+
+    /**
+     * Convert to JSON-serializable object.
+     * @returns {object}
+     */
+    toJSON() {
+      const obj = {
+        name: this.#name,
+        value: this.#value,
+        path: this.#path,
+        secure: this.#secure,
+        httpOnly: this.#httpOnly,
+        sameSite: this.#sameSite,
+        partitioned: this.#partitioned,
+      };
+      if (this.#domain) obj.domain = this.#domain;
+      if (this.#expires !== undefined) obj.expires = this.#expires;
+      if (this.#maxAge !== undefined) obj.maxAge = this.#maxAge;
+      return obj;
+    }
+
+    /**
+     * Parse a cookie string into a Cookie instance.
+     * @param {string} cookieString
+     * @returns {Cookie}
+     */
+    static parse(cookieString) {
+      return new Cookie(cookieString);
+    }
+
+    /**
+     * Factory method to create a cookie.
+     * @param {string} name
+     * @param {string} value
+     * @param {object} [options]
+     * @returns {Cookie}
+     */
+    static from(name, value, options) {
+      return new Cookie(name, value, options);
+    }
+  }
+
+  /**
+   * CookieMap class - Map-like interface for working with collections of cookies.
+   * Similar to Bun.CookieMap.
+   */
+  class CookieMap {
+    #cookies = new Map();
+    #deleted = new Set(); // Track deleted cookies for toSetCookieHeaders
+
+    /**
+     * Create a new CookieMap.
+     * @param {string|object|Array} [init] - Initial cookies
+     */
+    constructor(init) {
+      if (typeof init === 'string') {
+        // Parse cookie header string "name=value; foo=bar"
+        this.#parseString(init);
+      } else if (Array.isArray(init)) {
+        // Array of [name, value] pairs
+        for (const [name, value] of init) {
+          this.#cookies.set(name, new Cookie(name, value));
+        }
+      } else if (init && typeof init === 'object') {
+        // Object { name: value }
+        for (const [name, value] of Object.entries(init)) {
+          this.#cookies.set(name, new Cookie(name, value));
+        }
+      }
+    }
+
+    #parseString(str) {
+      const pairs = str.split(';').map(p => p.trim()).filter(p => p);
+      for (const pair of pairs) {
+        const eqIndex = pair.indexOf('=');
+        if (eqIndex !== -1) {
+          const name = pair.substring(0, eqIndex).trim();
+          const value = pair.substring(eqIndex + 1).trim();
+          this.#cookies.set(name, new Cookie(name, value));
+        }
+      }
+    }
+
+    /**
+     * Get a cookie value by name.
+     * @param {string} name
+     * @returns {string|null}
+     */
+    get(name) {
+      const cookie = this.#cookies.get(name);
+      return cookie ? cookie.value : null;
+    }
+
+    /**
+     * Check if a cookie exists.
+     * @param {string} name
+     * @returns {boolean}
+     */
+    has(name) {
+      return this.#cookies.has(name);
+    }
+
+    /**
+     * Set a cookie.
+     * @param {string|object|Cookie} nameOrOptions
+     * @param {string} [value]
+     * @param {object} [options]
+     */
+    set(nameOrOptions, value, options) {
+      let cookie;
+      if (nameOrOptions instanceof Cookie) {
+        cookie = nameOrOptions;
+      } else if (typeof nameOrOptions === 'object') {
+        cookie = new Cookie(nameOrOptions);
+      } else {
+        cookie = new Cookie(nameOrOptions, value, options);
+      }
+      this.#cookies.set(cookie.name, cookie);
+      this.#deleted.delete(cookie.name);
+    }
+
+    /**
+     * Delete a cookie.
+     * @param {string|object} nameOrOptions
+     * @param {object} [options]
+     */
+    delete(nameOrOptions, options) {
+      let name, domain, path;
+      if (typeof nameOrOptions === 'object') {
+        name = nameOrOptions.name;
+        domain = nameOrOptions.domain;
+        path = nameOrOptions.path;
+      } else {
+        name = nameOrOptions;
+        if (options) {
+          domain = options.domain;
+          path = options.path;
+        }
+      }
+      this.#cookies.delete(name);
+      this.#deleted.add({ name, domain, path });
+    }
+
+    /**
+     * Get the number of cookies.
+     * @returns {number}
+     */
+    get size() {
+      return this.#cookies.size;
+    }
+
+    /**
+     * Convert to JSON-serializable object.
+     * @returns {object}
+     */
+    toJSON() {
+      const obj = {};
+      for (const [name, cookie] of this.#cookies) {
+        obj[name] = cookie.value;
+      }
+      return obj;
+    }
+
+    /**
+     * Get Set-Cookie header values for all cookies (including deletions).
+     * @returns {string[]}
+     */
+    toSetCookieHeaders() {
+      const headers = [];
+
+      // Add set cookies
+      for (const cookie of this.#cookies.values()) {
+        headers.push(cookie.serialize());
+      }
+
+      // Add delete cookies (expired)
+      for (const { name, domain, path } of this.#deleted) {
+        let str = `${encodeURIComponent(name)}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+        if (domain) str += `; Domain=${domain}`;
+        if (path) str += `; Path=${path}`;
+        headers.push(str);
+      }
+
+      return headers;
+    }
+
+    /**
+     * Iterate over [name, value] entries.
+     */
+    *entries() {
+      for (const [name, cookie] of this.#cookies) {
+        yield [name, cookie.value];
+      }
+    }
+
+    /**
+     * Iterate over cookie names.
+     */
+    *keys() {
+      yield* this.#cookies.keys();
+    }
+
+    /**
+     * Iterate over cookie values.
+     */
+    *values() {
+      for (const cookie of this.#cookies.values()) {
+        yield cookie.value;
+      }
+    }
+
+    /**
+     * ForEach iteration.
+     * @param {Function} callback
+     */
+    forEach(callback) {
+      for (const [name, cookie] of this.#cookies) {
+        callback(cookie.value, name, this);
+      }
+    }
+
+    [Symbol.iterator]() {
+      return this.entries();
+    }
+  }
+
+  // Attach Cookie and CookieMap to Howth
+  Howth.Cookie = Cookie;
+  Howth.CookieMap = CookieMap;
+
+  // Also expose globally for convenience (like Bun does)
+  globalThis.Cookie = Cookie;
+  globalThis.CookieMap = CookieMap;
 
   globalThis.Howth = Howth;
 

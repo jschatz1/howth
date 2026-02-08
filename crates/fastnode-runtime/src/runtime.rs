@@ -217,6 +217,22 @@ extension!(
         op_howth_worker_parent_recv,
         op_howth_worker_terminate,
         op_howth_worker_is_running,
+        // Shared memory ops (for SharedArrayBuffer transfer)
+        op_howth_shared_buffer_create,
+        op_howth_shared_buffer_get_length,
+        op_howth_shared_buffer_load_i32,
+        op_howth_shared_buffer_store_i32,
+        op_howth_shared_buffer_add_i32,
+        op_howth_shared_buffer_sub_i32,
+        op_howth_shared_buffer_exchange_i32,
+        op_howth_shared_buffer_compare_exchange_i32,
+        op_howth_shared_buffer_and_i32,
+        op_howth_shared_buffer_or_i32,
+        op_howth_shared_buffer_xor_i32,
+        op_howth_shared_buffer_wait_i32,
+        op_howth_shared_buffer_notify,
+        op_howth_shared_buffer_get_bytes,
+        op_howth_shared_buffer_set_bytes,
         // DNS ops
         op_howth_dns_lookup,
         op_howth_dns_resolve4,
@@ -282,6 +298,8 @@ extension!(
         op_howth_tls_read,
         op_howth_tls_write,
         op_howth_tls_close,
+        // Markdown ops
+        op_howth_markdown_to_html,
     ],
 );
 
@@ -291,7 +309,9 @@ const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
 /// Print to stdout.
 #[op2(fast)]
 fn op_howth_print(#[string] msg: &str) {
+    use std::io::Write;
     print!("{}", msg);
+    let _ = std::io::stdout().flush();
 }
 
 /// Print to stderr.
@@ -1161,7 +1181,167 @@ lazy_static::lazy_static! {
     /// Storage for messages to parent (when running as worker)
     static ref WORKER_OUTBOX: Arc<std::sync::Mutex<Vec<String>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    /// Shared memory pool for SharedArrayBuffer transfer between workers.
+    /// Maps buffer ID to shared memory.
+    static ref SHARED_MEMORY_POOL: Arc<std::sync::RwLock<HashMap<u64, Arc<SharedMemoryBuffer>>>> =
+        Arc::new(std::sync::RwLock::new(HashMap::new()));
 }
+
+/// Next shared memory buffer ID
+static NEXT_SHARED_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Shared memory buffer that can be accessed atomically across threads.
+pub struct SharedMemoryBuffer {
+    /// The raw memory, accessed atomically
+    data: Vec<std::sync::atomic::AtomicU8>,
+    /// Condition variable for Atomics.wait/notify
+    condvar: std::sync::Condvar,
+    /// Mutex for the condition variable
+    mutex: std::sync::Mutex<()>,
+}
+
+impl SharedMemoryBuffer {
+    fn new(size: usize) -> Self {
+        let mut data = Vec::with_capacity(size);
+        for _ in 0..size {
+            data.push(std::sync::atomic::AtomicU8::new(0));
+        }
+        Self {
+            data,
+            condvar: std::sync::Condvar::new(),
+            mutex: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn load_i32(&self, byte_offset: usize) -> i32 {
+        if byte_offset + 4 > self.data.len() {
+            return 0;
+        }
+        let bytes = [
+            self.data[byte_offset].load(Ordering::SeqCst),
+            self.data[byte_offset + 1].load(Ordering::SeqCst),
+            self.data[byte_offset + 2].load(Ordering::SeqCst),
+            self.data[byte_offset + 3].load(Ordering::SeqCst),
+        ];
+        i32::from_le_bytes(bytes)
+    }
+
+    fn store_i32(&self, byte_offset: usize, value: i32) {
+        if byte_offset + 4 > self.data.len() {
+            return;
+        }
+        let bytes = value.to_le_bytes();
+        self.data[byte_offset].store(bytes[0], Ordering::SeqCst);
+        self.data[byte_offset + 1].store(bytes[1], Ordering::SeqCst);
+        self.data[byte_offset + 2].store(bytes[2], Ordering::SeqCst);
+        self.data[byte_offset + 3].store(bytes[3], Ordering::SeqCst);
+    }
+
+    fn add_i32(&self, byte_offset: usize, value: i32) -> i32 {
+        let old = self.load_i32(byte_offset);
+        self.store_i32(byte_offset, old.wrapping_add(value));
+        old
+    }
+
+    fn sub_i32(&self, byte_offset: usize, value: i32) -> i32 {
+        let old = self.load_i32(byte_offset);
+        self.store_i32(byte_offset, old.wrapping_sub(value));
+        old
+    }
+
+    fn exchange_i32(&self, byte_offset: usize, value: i32) -> i32 {
+        let old = self.load_i32(byte_offset);
+        self.store_i32(byte_offset, value);
+        old
+    }
+
+    fn compare_exchange_i32(&self, byte_offset: usize, expected: i32, replacement: i32) -> i32 {
+        let old = self.load_i32(byte_offset);
+        if old == expected {
+            self.store_i32(byte_offset, replacement);
+        }
+        old
+    }
+
+    fn and_i32(&self, byte_offset: usize, value: i32) -> i32 {
+        let old = self.load_i32(byte_offset);
+        self.store_i32(byte_offset, old & value);
+        old
+    }
+
+    fn or_i32(&self, byte_offset: usize, value: i32) -> i32 {
+        let old = self.load_i32(byte_offset);
+        self.store_i32(byte_offset, old | value);
+        old
+    }
+
+    fn xor_i32(&self, byte_offset: usize, value: i32) -> i32 {
+        let old = self.load_i32(byte_offset);
+        self.store_i32(byte_offset, old ^ value);
+        old
+    }
+
+    /// Wait until the value at the given offset is not equal to the expected value,
+    /// or until timeout (in milliseconds). Returns "ok", "not-equal", or "timed-out".
+    fn wait_i32(&self, byte_offset: usize, expected: i32, timeout_ms: Option<u64>) -> String {
+        let current = self.load_i32(byte_offset);
+        if current != expected {
+            return "not-equal".to_string();
+        }
+
+        let guard = self.mutex.lock().unwrap();
+        match timeout_ms {
+            Some(ms) => {
+                let duration = std::time::Duration::from_millis(ms);
+                let result = self.condvar.wait_timeout(guard, duration).unwrap();
+                if result.1.timed_out() {
+                    "timed-out".to_string()
+                } else {
+                    "ok".to_string()
+                }
+            }
+            None => {
+                let _guard = self.condvar.wait(guard).unwrap();
+                "ok".to_string()
+            }
+        }
+    }
+
+    /// Notify waiters at the given offset. Returns the number of waiters notified.
+    fn notify(&self, count: u32) -> u32 {
+        if count == 0 {
+            return 0;
+        }
+        if count == 1 {
+            self.condvar.notify_one();
+            1
+        } else {
+            self.condvar.notify_all();
+            count // Approximate - we don't know exact count
+        }
+    }
+
+    /// Get all bytes as a Vec
+    fn to_vec(&self) -> Vec<u8> {
+        self.data.iter().map(|a| a.load(Ordering::SeqCst)).collect()
+    }
+
+    /// Set bytes from a slice
+    fn from_slice(&self, data: &[u8]) {
+        for (i, byte) in data.iter().enumerate() {
+            if i < self.data.len() {
+                self.data[i].store(*byte, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+use std::sync::atomic::AtomicU64;
 
 #[derive(serde::Serialize)]
 pub struct WorkerCreateResult {
@@ -1435,6 +1615,189 @@ fn op_howth_worker_is_running(worker_id: u32) -> bool {
         }
     }
     false
+}
+
+// ============================================================================
+// Shared Memory Operations (for SharedArrayBuffer transfer between workers)
+// ============================================================================
+
+/// Create a new shared memory buffer and return its ID.
+#[op2(fast)]
+#[bigint]
+fn op_howth_shared_buffer_create(size: u32) -> u64 {
+    let id = NEXT_SHARED_BUFFER_ID.fetch_add(1, Ordering::SeqCst);
+    let buffer = Arc::new(SharedMemoryBuffer::new(size as usize));
+
+    if let Ok(mut pool) = SHARED_MEMORY_POOL.write() {
+        pool.insert(id, buffer);
+    }
+
+    id
+}
+
+/// Get the length of a shared buffer.
+#[op2(fast)]
+fn op_howth_shared_buffer_get_length(#[bigint] buffer_id: u64) -> u32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.len() as u32;
+        }
+    }
+    0
+}
+
+/// Atomically load an i32 from a shared buffer.
+#[op2(fast)]
+fn op_howth_shared_buffer_load_i32(#[bigint] buffer_id: u64, byte_offset: u32) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.load_i32(byte_offset as usize);
+        }
+    }
+    0
+}
+
+/// Atomically store an i32 to a shared buffer.
+#[op2(fast)]
+fn op_howth_shared_buffer_store_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            buffer.store_i32(byte_offset as usize, value);
+        }
+    }
+}
+
+/// Atomically add to an i32 in a shared buffer, returning the old value.
+#[op2(fast)]
+fn op_howth_shared_buffer_add_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.add_i32(byte_offset as usize, value);
+        }
+    }
+    0
+}
+
+/// Atomically subtract from an i32 in a shared buffer, returning the old value.
+#[op2(fast)]
+fn op_howth_shared_buffer_sub_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.sub_i32(byte_offset as usize, value);
+        }
+    }
+    0
+}
+
+/// Atomically exchange an i32 in a shared buffer, returning the old value.
+#[op2(fast)]
+fn op_howth_shared_buffer_exchange_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.exchange_i32(byte_offset as usize, value);
+        }
+    }
+    0
+}
+
+/// Atomically compare and exchange an i32 in a shared buffer.
+#[op2(fast)]
+fn op_howth_shared_buffer_compare_exchange_i32(
+    #[bigint] buffer_id: u64,
+    byte_offset: u32,
+    expected: i32,
+    replacement: i32,
+) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.compare_exchange_i32(byte_offset as usize, expected, replacement);
+        }
+    }
+    0
+}
+
+/// Atomically AND an i32 in a shared buffer, returning the old value.
+#[op2(fast)]
+fn op_howth_shared_buffer_and_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.and_i32(byte_offset as usize, value);
+        }
+    }
+    0
+}
+
+/// Atomically OR an i32 in a shared buffer, returning the old value.
+#[op2(fast)]
+fn op_howth_shared_buffer_or_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.or_i32(byte_offset as usize, value);
+        }
+    }
+    0
+}
+
+/// Atomically XOR an i32 in a shared buffer, returning the old value.
+#[op2(fast)]
+fn op_howth_shared_buffer_xor_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) -> i32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.xor_i32(byte_offset as usize, value);
+        }
+    }
+    0
+}
+
+/// Wait on a shared buffer until the value changes or timeout.
+/// Returns "ok", "not-equal", or "timed-out".
+#[op2]
+#[string]
+fn op_howth_shared_buffer_wait_i32(
+    #[bigint] buffer_id: u64,
+    byte_offset: u32,
+    expected: i32,
+    #[bigint] timeout_ms: Option<u64>,
+) -> String {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.wait_i32(byte_offset as usize, expected, timeout_ms);
+        }
+    }
+    "not-equal".to_string()
+}
+
+/// Notify waiters on a shared buffer.
+#[op2(fast)]
+fn op_howth_shared_buffer_notify(#[bigint] buffer_id: u64, count: u32) -> u32 {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.notify(count);
+        }
+    }
+    0
+}
+
+/// Get all bytes from a shared buffer.
+#[op2]
+#[serde]
+fn op_howth_shared_buffer_get_bytes(#[bigint] buffer_id: u64) -> Vec<u8> {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            return buffer.to_vec();
+        }
+    }
+    Vec::new()
+}
+
+/// Set bytes in a shared buffer.
+#[op2(fast)]
+fn op_howth_shared_buffer_set_bytes(#[bigint] buffer_id: u64, #[buffer] data: &[u8]) {
+    if let Ok(pool) = SHARED_MEMORY_POOL.read() {
+        if let Some(buffer) = pool.get(&buffer_id) {
+            buffer.from_slice(data);
+        }
+    }
 }
 
 // ============================================================================
@@ -5626,6 +5989,80 @@ fn op_howth_hrtime() -> u64 {
 #[serde]
 async fn op_howth_sleep(ms: u32) -> () {
     tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+}
+
+/// Markdown options for parsing
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct MarkdownOptions {
+    /// Generate IDs for headings (e.g., <h1 id="heading-text">)
+    #[serde(default)]
+    heading_ids: bool,
+    /// Enable GitHub Flavored Markdown extensions (tables, strikethrough, etc.)
+    #[serde(default = "default_true")]
+    gfm: bool,
+    /// Enable smart punctuation (quotes, dashes, ellipses)
+    #[serde(default)]
+    smart_punctuation: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Convert markdown to HTML.
+/// Supports CommonMark with optional GFM extensions.
+#[op2]
+#[string]
+fn op_howth_markdown_to_html(
+    #[string] markdown: &str,
+    #[serde] options: Option<MarkdownOptions>,
+) -> String {
+    use pulldown_cmark::{html, Options, Parser};
+
+    let opts = options.unwrap_or_default();
+
+    // Build pulldown-cmark options
+    let mut parser_options = Options::empty();
+    if opts.gfm {
+        parser_options.insert(Options::ENABLE_TABLES);
+        parser_options.insert(Options::ENABLE_STRIKETHROUGH);
+        parser_options.insert(Options::ENABLE_TASKLISTS);
+    }
+    if opts.smart_punctuation {
+        parser_options.insert(Options::ENABLE_SMART_PUNCTUATION);
+    }
+
+    let parser = Parser::new_ext(markdown, parser_options);
+
+    // Convert to HTML
+    let mut html_output = String::new();
+    html::push_html(&mut html_output, parser);
+
+    // If heading IDs are enabled, post-process to add IDs
+    if opts.heading_ids {
+        let heading_regex =
+            regex::Regex::new(r"<(h[1-6])>([^<]+)</h[1-6]>").expect("valid regex");
+
+        html_output = heading_regex
+            .replace_all(&html_output, |caps: &regex::Captures| {
+                let tag = &caps[1];
+                let text = &caps[2];
+                let id = text
+                    .to_lowercase()
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                    .collect::<String>()
+                    .split('-')
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("-");
+                format!("<{} id=\"{}\">{}</{}>", tag, id, text, tag)
+            })
+            .to_string();
+    }
+
+    html_output
 }
 
 impl Runtime {

@@ -49,6 +49,7 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 rustls-pemfile = "2"
 webpki-roots = "0.26"
 rustls-native-certs = "0.8"
+pulldown-cmark = { version = "0.12", default-features = false, features = ["simd", "html"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

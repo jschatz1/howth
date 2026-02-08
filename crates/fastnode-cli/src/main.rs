@@ -409,6 +409,21 @@ enum BenchCommands {
         #[arg(long, default_value_t = commands::bench::http::DEFAULT_WARMUP_SECS)]
         warmup: u32,
     },
+
+    /// Benchmark bundler performance (howth vs bun vs esbuild)
+    Bundler {
+        /// Number of modules to generate
+        #[arg(long, default_value_t = commands::bench::bundler::DEFAULT_MODULES)]
+        modules: u32,
+
+        /// Number of measured iterations
+        #[arg(long, default_value_t = commands::bench::bundler::DEFAULT_ITERS)]
+        iters: u32,
+
+        /// Number of warmup iterations
+        #[arg(long, default_value_t = commands::bench::bundler::DEFAULT_WARMUP)]
+        warmup: u32,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -693,6 +708,11 @@ fn main() -> Result<()> {
                 connections,
                 warmup,
             } => commands::bench::http::run(*duration, *connections, *warmup, cli.json),
+            BenchCommands::Bundler {
+                modules,
+                iters,
+                warmup,
+            } => commands::bench::bundler::run(*modules, *iters, *warmup, cli.json),
         };
     }
 

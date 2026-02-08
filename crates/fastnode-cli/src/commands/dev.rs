@@ -21,15 +21,18 @@
 //! and served at `/@modules/{pkg}` URLs.
 
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, RawQuery, State,
+        Path as AxumPath, RawQuery, Request, State,
     },
-    http::StatusCode,
+    http::{header, Method, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
+use fastnode_core::dev::config::ProxyConfig;
+use tower_http::cors::{Any, CorsLayer};
 use fastnode_core::bundler::{
     plugins::ReactRefreshPlugin, AliasPlugin, BundleFormat, BundleOptions, Bundler, DevConfig,
     PluginContainer, ReplacePlugin,
@@ -87,6 +90,10 @@ struct DevState {
     bundler: Bundler,
     /// Bundle options for fallback.
     bundle_options: BundleOptions,
+    /// Proxy configuration (path prefix → config).
+    proxy: std::collections::HashMap<String, ProxyConfig>,
+    /// HTTP client for proxying requests.
+    http_client: reqwest::Client,
 }
 
 /// HMR message types.
@@ -189,6 +196,23 @@ pub async fn run(action: DevAction) -> Result<()> {
     } else {
         action.open
     };
+
+    // Extract proxy configuration
+    let proxy_config: std::collections::HashMap<String, ProxyConfig> = howth_config
+        .as_ref()
+        .map(|cfg| cfg.server.proxy.clone())
+        .unwrap_or_default();
+
+    if !proxy_config.is_empty() {
+        println!(
+            "  Proxy configured: {}",
+            proxy_config
+                .iter()
+                .map(|(path, cfg)| format!("{} → {}", path, cfg.target))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 
     // Load .env files
     let mode = &action.mode;
@@ -373,6 +397,12 @@ pub async fn run(action: DevAction) -> Result<()> {
         format!("/{}", action.entry.display())
     };
 
+    // Create HTTP client for proxying
+    let http_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("Failed to build HTTP client");
+
     // Create shared state
     let state = Arc::new(DevState {
         hmr_tx: hmr_tx.clone(),
@@ -385,6 +415,8 @@ pub async fn run(action: DevAction) -> Result<()> {
         hmr_engine,
         bundler,
         bundle_options,
+        proxy: proxy_config,
+        http_client,
     });
 
     // Set up file watcher
@@ -443,7 +475,13 @@ pub async fn run(action: DevAction) -> Result<()> {
         .route("/@modules/*pkg", get(serve_prebundled_dep))
         .route("/@style/*path", get(serve_css_module))
         .route("/*path", get(serve_module))
-        .with_state((state, index_html));
+        .with_state((state, index_html))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        );
 
     // Start server
     let host_ip = if effective_host == "localhost" {
@@ -585,6 +623,114 @@ async fn serve_css_module(
     }
 }
 
+/// Handle proxied requests to external servers.
+///
+/// Forwards requests matching proxy path prefixes to their configured targets.
+async fn handle_proxy(
+    state: &Arc<DevState>,
+    url_path: &str,
+    query: Option<&str>,
+    config: &ProxyConfig,
+    request: Request<Body>,
+) -> Response<String> {
+    // Build target URL
+    let path = if let Some(ref prefix) = config.rewrite_remove_prefix {
+        url_path.strip_prefix(prefix).unwrap_or(url_path)
+    } else {
+        url_path
+    };
+
+    let target_url = if let Some(q) = query {
+        format!("{}{}?{}", config.target.trim_end_matches('/'), path, q)
+    } else {
+        format!("{}{}", config.target.trim_end_matches('/'), path)
+    };
+
+    // Forward the request
+    let method = request.method().clone();
+    let headers = request.headers().clone();
+
+    // Build the proxied request
+    let mut proxy_req = state.http_client.request(method.clone(), &target_url);
+
+    // Forward headers (except Host if changeOrigin is set)
+    for (key, value) in headers.iter() {
+        if config.change_origin && key == header::HOST {
+            continue; // Skip Host header, reqwest will set it from the URL
+        }
+        // Skip hop-by-hop headers
+        if key == header::CONNECTION
+            || key == header::TRANSFER_ENCODING
+            || key == header::UPGRADE
+            || key == "keep-alive"
+            || key == "proxy-connection"
+        {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            proxy_req = proxy_req.header(key.as_str(), v);
+        }
+    }
+
+    // Forward body for POST/PUT/PATCH
+    if method == Method::POST || method == Method::PUT || method == Method::PATCH {
+        let body_bytes = match axum::body::to_bytes(request.into_body(), 10 * 1024 * 1024).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(format!("Failed to read request body: {}", e))
+                    .unwrap();
+            }
+        };
+        proxy_req = proxy_req.body(body_bytes);
+    }
+
+    // Send the request
+    match proxy_req.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let resp_headers = resp.headers().clone();
+
+            // Read response body
+            let body = match resp.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    return Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .body(format!("Failed to read proxy response: {}", e))
+                        .unwrap();
+                }
+            };
+
+            // Build response with forwarded headers
+            let mut response = Response::builder().status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
+
+            for (key, value) in resp_headers.iter() {
+                // Skip hop-by-hop headers
+                if key == header::CONNECTION
+                    || key == header::TRANSFER_ENCODING
+                    || key == "keep-alive"
+                {
+                    continue;
+                }
+                if let Ok(v) = value.to_str() {
+                    response = response.header(key.as_str(), v);
+                }
+            }
+
+            response.body(body).unwrap()
+        }
+        Err(e) => {
+            eprintln!("Proxy error for {}: {}", target_url, e);
+            Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(format!("Proxy error: {}", e))
+                .unwrap()
+        }
+    }
+}
+
 /// Serve an individual module on demand.
 ///
 /// This is the core of the unbundled dev server: each request triggers
@@ -596,8 +742,16 @@ async fn serve_module(
     State((state, index_html)): State<AppState>,
     AxumPath(path): AxumPath<String>,
     RawQuery(query): RawQuery,
+    request: Request<Body>,
 ) -> impl IntoResponse {
     let url_path = format!("/{}", path);
+
+    // Check if this path should be proxied
+    for (prefix, proxy_config) in &state.proxy {
+        if url_path.starts_with(prefix) {
+            return handle_proxy(&state, &url_path, query.as_deref(), proxy_config, request).await;
+        }
+    }
 
     // Check for ?import query (asset imports from JS)
     // Note: AxumPath does NOT include query parameters, so we use RawQuery
