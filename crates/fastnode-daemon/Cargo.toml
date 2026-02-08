@@ -5,10 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "Long-running daemon for fastnode"
 
+[features]
+default = []
+runtime = ["fastnode-runtime"]
+
 [dependencies]
 fastnode-core.workspace = true
 fastnode-proto.workspace = true
-fastnode-runtime = { path = "../fastnode-runtime" }
+fastnode-runtime = { path = "../fastnode-runtime", optional = true }
 tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true

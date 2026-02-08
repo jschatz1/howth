@@ -16,7 +16,7 @@ path = "src/compat.rs"
 
 [features]
 default = []
-native-runtime = ["fastnode-runtime", "url"]
+native-runtime = ["fastnode-runtime", "fastnode-daemon/runtime", "url"]
 
 [dependencies]
 fastnode-core = { workspace = true, features = ["swc"] }
@@ -32,11 +32,13 @@ miette.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 axum.workspace = true
+tower-http.workspace = true
 notify.workspace = true
 walkdir.workspace = true
 which = "7"
 url = { workspace = true, optional = true }
 dunce = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [dev-dependencies]
 tempfile.workspace = true

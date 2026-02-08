@@ -6,6 +6,7 @@
 
 use crate::cache::{DaemonBuildCache, DaemonPkgJsonCache, DaemonResolverCache};
 use crate::test_worker::NodeTestWorker;
+#[cfg(feature = "runtime")]
 use crate::v8_test_worker::V8TestWorker;
 use crate::watch::WatcherState;
 use fastnode_core::compiler::{CompilerBackend, SwcBackend};
@@ -32,23 +33,25 @@ pub struct DaemonState {
     /// Warm Node.js test worker (lazy-started on first test run, fallback).
     pub test_worker: tokio::sync::Mutex<Option<NodeTestWorker>>,
     /// Native V8 test worker (lazy-started on first test run).
+    #[cfg(feature = "runtime")]
     pub v8_test_worker: std::sync::Mutex<Option<V8TestWorker>>,
 }
 
 // Manual Debug impl because dyn CompilerBackend doesn't implement Debug
 impl std::fmt::Debug for DaemonState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DaemonState")
-            .field("cache", &self.cache)
+        let d = &mut f.debug_struct("DaemonState");
+        d.field("cache", &self.cache)
             .field("watcher", &self.watcher)
             .field("pkg_cache", &self.pkg_cache)
             .field("pkg_json_cache", &self.pkg_json_cache)
             .field("build_cache", &self.build_cache)
             .field("compiler", &self.compiler.name())
             .field("registry", &"RegistryClient")
-            .field("test_worker", &"<Mutex>")
-            .field("v8_test_worker", &"<Mutex>")
-            .finish()
+            .field("test_worker", &"<Mutex>");
+        #[cfg(feature = "runtime")]
+        d.field("v8_test_worker", &"<Mutex>");
+        d.finish()
     }
 }
 
@@ -84,6 +87,7 @@ impl DaemonState {
             compiler,
             registry: Arc::new(registry),
             test_worker: tokio::sync::Mutex::new(None),
+            #[cfg(feature = "runtime")]
             v8_test_worker: std::sync::Mutex::new(None),
         }
     }
@@ -112,6 +116,7 @@ impl DaemonState {
             compiler,
             registry: Arc::new(registry),
             test_worker: tokio::sync::Mutex::new(None),
+            #[cfg(feature = "runtime")]
             v8_test_worker: std::sync::Mutex::new(None),
         }
     }
@@ -140,6 +145,7 @@ impl DaemonState {
             compiler,
             registry: Arc::new(registry),
             test_worker: tokio::sync::Mutex::new(None),
+            #[cfg(feature = "runtime")]
             v8_test_worker: std::sync::Mutex::new(None),
         }
     }

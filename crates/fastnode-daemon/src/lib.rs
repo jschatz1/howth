@@ -43,6 +43,7 @@ pub mod pkg;
 mod server;
 pub mod state;
 pub mod test_worker;
+#[cfg(feature = "runtime")]
 pub mod v8_test_worker;
 pub mod watch;
 
@@ -792,32 +793,49 @@ async fn handle_run_tests(
     }
 
     // Try native V8 test worker first, fall back to Node.js worker
-    let v8_result = try_v8_test_worker(state, &transpiled);
-
-    let result = match v8_result {
-        Ok(result) => result,
-        Err(v8_err) if v8_err.kind() == std::io::ErrorKind::TimedOut => {
-            // Don't fall back to Node.js on timeout — the tests need
-            // infrastructure (Redis, Postgres) which isn't running.
-            warn!("V8 test worker timed out: {v8_err}");
-            return Response::error(
-                codes::TEST_WORKER_TIMEOUT,
-                format!("Test worker timed out. Ensure required services (Redis, Postgres) are running. ({v8_err})"),
-            );
-        }
-        Err(v8_err) => {
-            warn!("V8 test worker failed ({v8_err}), falling back to Node.js worker");
-            // Fallback to Node.js worker
-            match run_tests_node_worker(state, transpiled).await {
-                Ok(r) => r,
-                Err(e) => {
-                    let code = if e.kind() == std::io::ErrorKind::TimedOut {
-                        codes::TEST_WORKER_TIMEOUT
-                    } else {
-                        codes::TEST_WORKER_FAILED
-                    };
-                    return Response::error(code, format!("Test worker error: {e}"));
+    #[cfg(feature = "runtime")]
+    let result = {
+        let v8_result = try_v8_test_worker(state, &transpiled);
+        match v8_result {
+            Ok(result) => result,
+            Err(v8_err) if v8_err.kind() == std::io::ErrorKind::TimedOut => {
+                // Don't fall back to Node.js on timeout — the tests need
+                // infrastructure (Redis, Postgres) which isn't running.
+                warn!("V8 test worker timed out: {v8_err}");
+                return Response::error(
+                    codes::TEST_WORKER_TIMEOUT,
+                    format!("Test worker timed out. Ensure required services (Redis, Postgres) are running. ({v8_err})"),
+                );
+            }
+            Err(v8_err) => {
+                warn!("V8 test worker failed ({v8_err}), falling back to Node.js worker");
+                // Fallback to Node.js worker
+                match run_tests_node_worker(state, transpiled).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let code = if e.kind() == std::io::ErrorKind::TimedOut {
+                            codes::TEST_WORKER_TIMEOUT
+                        } else {
+                            codes::TEST_WORKER_FAILED
+                        };
+                        return Response::error(code, format!("Test worker error: {e}"));
+                    }
                 }
+            }
+        }
+    };
+
+    #[cfg(not(feature = "runtime"))]
+    let result = {
+        match run_tests_node_worker(state, transpiled).await {
+            Ok(r) => r,
+            Err(e) => {
+                let code = if e.kind() == std::io::ErrorKind::TimedOut {
+                    codes::TEST_WORKER_TIMEOUT
+                } else {
+                    codes::TEST_WORKER_FAILED
+                };
+                return Response::error(code, format!("Test worker error: {e}"));
             }
         }
     };
@@ -860,6 +878,7 @@ fn worker_response_to_response(cwd: &str, result: crate::test_worker::WorkerResp
 }
 
 /// Try running tests via the native V8 test worker.
+#[cfg(feature = "runtime")]
 fn try_v8_test_worker(
     state: &Arc<DaemonState>,
     files: &[crate::test_worker::TranspiledTestFile],
