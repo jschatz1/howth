@@ -10,6 +10,7 @@ members = [
     "crates/fastnode-proto",
     "crates/fastnode-runtime",
     "crates/napi-sym",
+    "crates/howth-parser",
 ]
 
 [workspace.package]
@@ -66,6 +67,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # Testing / Dev server
 axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
 serial_test = "3"
 
 # Internal crates
@@ -75,6 +77,7 @@ fastnode-compat = { path = "crates/fastnode-compat" }
 fastnode-proto = { path = "crates/fastnode-proto" }
 fastnode-daemon = { path = "crates/fastnode-daemon" }
 fastnode-runtime = { path = "crates/fastnode-runtime" }
+howth-parser = { path = "crates/howth-parser" }
 
 [profile.release]
 lto = true

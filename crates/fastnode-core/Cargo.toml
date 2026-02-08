@@ -44,6 +44,9 @@ lightningcss = "1.0.0-alpha.57"
 grass = "0.13"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
+# Custom JS parser (arena-allocated, Bun-style speed)
+howth-parser = { path = "../howth-parser" }
+
 # Optional SWC integration for full transpilation support
 # NOTE: SWC has a known compatibility issue with serde 1.0.220+
 # See: https://github.com/swc-project/swc/issues/11092

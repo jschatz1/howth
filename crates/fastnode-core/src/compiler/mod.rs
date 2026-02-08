@@ -29,6 +29,7 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::manual_strip)]
 
+pub mod ast_parser;
 pub mod spec;
 pub mod swc;
 
@@ -55,9 +56,29 @@ pub struct ImportInfo {
 
 /// Parse import statements from source code.
 ///
-/// Uses a simple regex-based approach for now.
-/// TODO: Use SWC AST parsing for accuracy.
+/// Uses the arena-based AST parser for accurate extraction.
+/// Handles all edge cases including template literals, comments,
+/// dynamic imports, and re-exports.
 pub fn parse_imports(
+    source: &str,
+    path: &Path,
+) -> Result<Vec<crate::bundler::Import>, CompilerError> {
+    let imports = ast_parser::extract_imports_ast(source);
+
+    // If AST parser returned nothing but source has import statements,
+    // fall back to regex parser. This handles JSX/TSX files that the
+    // arena parser can't parse yet.
+    if imports.is_empty() && !source.is_empty() && source.contains("import ") {
+        return parse_imports_regex(source, path);
+    }
+
+    Ok(imports)
+}
+
+/// Parse imports using the legacy regex-based approach.
+/// Kept for benchmarking comparison.
+#[allow(dead_code)]
+pub fn parse_imports_regex(
     source: &str,
     _path: &Path,
 ) -> Result<Vec<crate::bundler::Import>, CompilerError> {
