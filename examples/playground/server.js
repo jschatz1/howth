@@ -7,11 +7,11 @@
  * Open: http://localhost:3001
  */
 
-const http = require('http');
-const { spawn } = require('child_process');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+const http = require("http");
+const { spawn } = require("child_process");
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
 
 const PORT = process.env.PORT || 3001;
 
@@ -189,22 +189,14 @@ console.log('Deleted file');\`
 </html>`;
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/favicon.ico') {
-    // Serve inline SVG favicon as ICO fallback
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦗</text></svg>`;
-    res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
-    res.end(svg);
-    return;
-  }
-
-  if (req.method === 'GET' && req.url === '/') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  if (req.method === "GET" && req.url === "/") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(html);
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/run') {
-    let body = '';
+  if (req.method === "POST" && req.url === "/run") {
+    let body = "";
     for await (const chunk of req) {
       body += chunk;
     }
@@ -237,21 +229,21 @@ globalThis.fetch = async (url, options) => {
     fs.writeFileSync(tmpFile, fetchWrapper + code);
 
     res.writeHead(200, {
-      'Content-Type': 'text/plain',
-      'Transfer-Encoding': 'chunked'
+      "Content-Type": "text/plain",
+      "Transfer-Encoding": "chunked",
     });
 
     // Run with howth (or node as fallback)
-    let howthPath = process.env.HOWTH_BIN || 'howth';
+    let howthPath = process.env.HOWTH_BIN || "howth";
     // Resolve relative paths
-    if (howthPath.startsWith('./') || howthPath.startsWith('../')) {
+    if (howthPath.startsWith("./") || howthPath.startsWith("../")) {
       howthPath = path.resolve(process.cwd(), howthPath);
     }
 
     let proc;
     try {
-      proc = spawn(howthPath, ['run', tmpFile], {
-        env: { ...process.env, NO_COLOR: '1' }
+      proc = spawn(howthPath, ["run", tmpFile], {
+        env: { ...process.env, NO_COLOR: "1" },
       });
     } catch (err) {
       res.write(`Spawn error: ${err.message}\n`);
@@ -259,16 +251,18 @@ globalThis.fetch = async (url, options) => {
       return;
     }
 
-    proc.stdout.on('data', (data) => res.write(data));
-    proc.stderr.on('data', (data) => res.write(data));
+    proc.stdout.on("data", (data) => res.write(data));
+    proc.stderr.on("data", (data) => res.write(data));
 
-    proc.on('close', (code) => {
-      try { fs.unlinkSync(tmpFile); } catch { }
+    proc.on("close", (code) => {
+      try {
+        fs.unlinkSync(tmpFile);
+      } catch {}
       res.write(`\n[Process exited with code ${code}]`);
       res.end();
     });
 
-    proc.on('error', (err) => {
+    proc.on("error", (err) => {
       res.write(`\nError: ${err.message}`);
       res.end();
     });
@@ -282,7 +276,7 @@ globalThis.fetch = async (url, options) => {
   }
 
   res.writeHead(404);
-  res.end('Not found');
+  res.end("Not found");
 });
 
 server.listen(PORT, () => {
