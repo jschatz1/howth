@@ -135,6 +135,12 @@ pub fn run(action: BundleAction, json: bool) -> Result<()> {
                 }
                 std::fs::write(outfile, code).into_diagnostic()?;
 
+                // Write sourcemap if generated
+                if let Some(ref map) = bundle_result.map {
+                    let map_path = outfile.with_extension("js.map");
+                    std::fs::write(&map_path, map).into_diagnostic()?;
+                }
+
                 // Write additional chunks if code splitting is enabled
                 if has_chunks {
                     let parent = outfile.parent().unwrap_or(std::path::Path::new("."));
