@@ -1,4 +1,4 @@
-import{b as r,e as t,f as e,h as i,i as n,j as d,l as a,n as m,o as l}from"/build/_shared/chunk-KLB75NCB.js";var o=r(l()),s=`
+import{b as r,e as t,f as e,h as i,i as n,j as d,l as a,n as m,o as l}from"/build/_shared/chunk-QJBC3U4N.js";var o=r(l()),s=`
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #333; }
   .container { max-width: 640px; margin: 2rem auto; padding: 0 1rem; }

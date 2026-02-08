@@ -316,6 +316,63 @@ const tests = [
     timeout: 10000,
     validate: (output, code) => code === 0 && output.includes('Data Validator Demo') && output.includes('demo completed'),
   },
+  // Worker thread examples
+  {
+    name: 'Worker Atomics',
+    dir: 'worker-atomics',
+    script: 'main.js',
+    args: [],
+    timeout: 15000,
+    validate: (output, code) => code === 0 && output.includes('Worker Atomics Example') && output.includes('example complete'),
+  },
+  {
+    name: 'Parallel Compute',
+    dir: 'parallel-compute',
+    script: 'main.js',
+    args: [],
+    timeout: 30000,
+    validate: (output, code) => code === 0 && output.includes('Parallel Compute Example') && output.includes('Results match'),
+  },
+  {
+    name: 'Real-Time Game',
+    dir: 'real-time-game',
+    script: 'main.js',
+    args: [],
+    timeout: 15000,
+    validate: (output, code) => code === 0 && output.includes('Real-Time Game Example') && output.includes('Physics worker ran'),
+  },
+  {
+    name: 'Data Pipeline',
+    dir: 'data-pipeline',
+    script: 'main.js',
+    args: [],
+    timeout: 15000,
+    validate: (output, code) => code === 0 && output.includes('Data Pipeline Example') && output.includes('Pipeline processing complete'),
+  },
+  {
+    name: 'Sass App',
+    dir: 'sass-app',
+    script: 'main.js',
+    args: [],
+    timeout: 10000,
+    validate: (output, code) => code === 0 && output.includes('Sass/SCSS Example') && output.includes('Sass example ready'),
+  },
+  {
+    name: 'Markdown API',
+    dir: 'markdown-api',
+    script: 'main.js',
+    args: [],
+    timeout: 15000,
+    validate: (output, code) => code === 0 && output.includes('Markdown API Example') && output.includes('example complete'),
+  },
+  {
+    name: 'Cookie API',
+    dir: 'cookies',
+    script: 'main.js',
+    args: [],
+    timeout: 10000,
+    validate: (output, code) => code === 0 && output.includes('Cookie API Example') && output.includes('example complete'),
+  },
 ];
 
 // Run a single test
