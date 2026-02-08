@@ -283,6 +283,202 @@ fn extract_string_literal(s: &str) -> Option<String> {
     None
 }
 
+/// Transform JSX source using howth-parser (no SWC needed).
+/// Returns (transformed_code, imports) in a single parse+codegen pass.
+pub fn transform_jsx(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
+    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+
+    let parser_opts = ParserOptions {
+        module: true,
+        jsx: true,
+        ..Default::default()
+    };
+
+    let ast = Parser::new(source, parser_opts)
+        .parse()
+        .map_err(|e| CompilerError::parse_error(e.to_string()))?;
+
+    // Extract imports from the non-arena AST
+    let imports = extract_imports_from_ast(&ast);
+
+    // Generate transformed JS with JSX→_jsx() calls
+    let code = Codegen::new(&ast, CodegenOptions::default()).generate();
+
+    // Prepend jsx runtime import
+    let code = format!(
+        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
+        code
+    );
+
+    Ok((code, imports))
+}
+
+/// Extract imports from a non-arena `Ast` (used by `transform_jsx` to avoid re-parsing).
+fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Import> {
+    use howth_parser::{StmtKind, ExportDecl, ImportSpecifier};
+    use crate::bundler::{Import, ImportedName};
+
+    let mut imports = Vec::new();
+
+    for stmt in &ast.stmts {
+        match &stmt.kind {
+            StmtKind::Import(import_decl) => {
+                let mut names = Vec::new();
+                for spec in &import_decl.specifiers {
+                    match spec {
+                        ImportSpecifier::Default { local, .. } => {
+                            names.push(ImportedName {
+                                imported: "default".to_string(),
+                                local: local.clone(),
+                            });
+                        }
+                        ImportSpecifier::Namespace { local, .. } => {
+                            names.push(ImportedName {
+                                imported: "*".to_string(),
+                                local: local.clone(),
+                            });
+                        }
+                        ImportSpecifier::Named { imported, local, .. } => {
+                            names.push(ImportedName {
+                                imported: imported.clone(),
+                                local: local.clone(),
+                            });
+                        }
+                    }
+                }
+                imports.push(Import {
+                    specifier: import_decl.source.clone(),
+                    dynamic: false,
+                    names,
+                });
+            }
+            StmtKind::Export(export_decl) => {
+                match export_decl.as_ref() {
+                    ExportDecl::All { source, .. } => {
+                        imports.push(Import {
+                            specifier: source.clone(),
+                            dynamic: false,
+                            names: vec![ImportedName {
+                                imported: "*".to_string(),
+                                local: "*".to_string(),
+                            }],
+                        });
+                    }
+                    ExportDecl::Named { source: Some(source), specifiers, .. } => {
+                        let names = specifiers
+                            .iter()
+                            .map(|s| ImportedName {
+                                imported: s.local.clone(),
+                                local: s.exported.clone(),
+                            })
+                            .collect();
+                        imports.push(Import {
+                            specifier: source.clone(),
+                            dynamic: false,
+                            names,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            StmtKind::Expr(expr) => {
+                extract_dynamic_imports_expr(expr, &mut imports);
+            }
+            StmtKind::Var { decls, .. } => {
+                for decl in decls {
+                    if let Some(init) = &decl.init {
+                        extract_dynamic_imports_expr(init, &mut imports);
+                    }
+                }
+            }
+            StmtKind::Function(func) => {
+                extract_dynamic_imports_stmts(&func.body, &mut imports);
+            }
+            StmtKind::Block(stmts) => {
+                extract_dynamic_imports_stmts(stmts, &mut imports);
+            }
+            StmtKind::If { consequent, alternate, .. } => {
+                extract_dynamic_imports_stmt(consequent, &mut imports);
+                if let Some(alt) = alternate {
+                    extract_dynamic_imports_stmt(alt, &mut imports);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    imports
+}
+
+fn extract_dynamic_imports_stmts(stmts: &[howth_parser::Stmt], imports: &mut Vec<crate::bundler::Import>) {
+    for stmt in stmts {
+        extract_dynamic_imports_stmt(stmt, imports);
+    }
+}
+
+fn extract_dynamic_imports_stmt(stmt: &howth_parser::Stmt, imports: &mut Vec<crate::bundler::Import>) {
+    use howth_parser::StmtKind;
+    match &stmt.kind {
+        StmtKind::Expr(expr) => extract_dynamic_imports_expr(expr, imports),
+        StmtKind::Var { decls, .. } => {
+            for decl in decls {
+                if let Some(init) = &decl.init {
+                    extract_dynamic_imports_expr(init, imports);
+                }
+            }
+        }
+        StmtKind::Function(func) => extract_dynamic_imports_stmts(&func.body, imports),
+        StmtKind::Block(stmts) => extract_dynamic_imports_stmts(stmts, imports),
+        StmtKind::If { consequent, alternate, .. } => {
+            extract_dynamic_imports_stmt(consequent, imports);
+            if let Some(alt) = alternate {
+                extract_dynamic_imports_stmt(alt, imports);
+            }
+        }
+        StmtKind::Return { arg: Some(expr) } => extract_dynamic_imports_expr(expr, imports),
+        _ => {}
+    }
+}
+
+fn extract_dynamic_imports_expr(expr: &howth_parser::Expr, imports: &mut Vec<crate::bundler::Import>) {
+    use howth_parser::ExprKind;
+    use crate::bundler::Import;
+
+    match &expr.kind {
+        ExprKind::Import(source_expr) => {
+            if let ExprKind::String(s) = &source_expr.kind {
+                imports.push(Import {
+                    specifier: s.clone(),
+                    dynamic: true,
+                    names: Vec::new(),
+                });
+            }
+        }
+        ExprKind::Call { callee, args, .. } => {
+            extract_dynamic_imports_expr(callee, imports);
+            for arg in args {
+                extract_dynamic_imports_expr(arg, imports);
+            }
+        }
+        ExprKind::Binary { left, right, .. } => {
+            extract_dynamic_imports_expr(left, imports);
+            extract_dynamic_imports_expr(right, imports);
+        }
+        ExprKind::Conditional { test, consequent, alternate, .. } => {
+            extract_dynamic_imports_expr(test, imports);
+            extract_dynamic_imports_expr(consequent, imports);
+            extract_dynamic_imports_expr(alternate, imports);
+        }
+        ExprKind::Arrow(arrow) => {
+            if let howth_parser::ArrowBody::Expr(body) = &arrow.body {
+                extract_dynamic_imports_expr(body, imports);
+            }
+        }
+        ExprKind::Await(inner) => extract_dynamic_imports_expr(inner, imports),
+        _ => {}
+    }
+}
+
 /// Error during compilation.
 #[derive(Debug)]
 pub struct CompilerError {

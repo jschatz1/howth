@@ -19,6 +19,8 @@ pub struct Lexer<'a> {
     /// Whether the previous token allows a regex to follow.
     /// This disambiguates `/regex/` vs `a / b`.
     allow_regex: bool,
+    /// Whether a newline was encountered while skipping whitespace before the current token.
+    had_newline: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -29,6 +31,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             token_start: 0,
             allow_regex: true, // At start of file, regex is allowed
+            had_newline: false,
         }
     }
 
@@ -37,10 +40,18 @@ impl<'a> Lexer<'a> {
         self.pos
     }
 
+    /// Disable regex scanning for the next token.
+    /// Used by JSX parser where `/` in `</Tag>` must not be scanned as regex.
+    pub fn set_no_regex(&mut self) {
+        self.allow_regex = false;
+    }
+
     /// Get the next token.
     pub fn next_token(&mut self) -> Token {
+        self.had_newline = false;
         self.skip_whitespace_and_comments();
         self.token_start = self.pos;
+        let had_newline = self.had_newline;
 
         if self.is_eof() {
             return self.make_token(TokenKind::Eof);
@@ -96,18 +107,21 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        // Update regex context based on the token we just scanned
-        self.allow_regex = kind.can_start_expr() || matches!(
+        // Update regex context: regex is allowed after tokens that CANNOT end an expression.
+        // After value tokens (identifiers, literals, `)`, `]`, `}`), `/` is division.
+        // After operators, punctuation, keywords, `/` starts a regex.
+        self.allow_regex = !matches!(
             kind,
-            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace
-            | TokenKind::Comma | TokenKind::Semicolon | TokenKind::Colon
-            | TokenKind::Question | TokenKind::Arrow
-            | TokenKind::Eq | TokenKind::PlusEq | TokenKind::MinusEq
-            | TokenKind::StarEq | TokenKind::SlashEq | TokenKind::PercentEq
-            | TokenKind::AmpAmpEq | TokenKind::PipePipeEq | TokenKind::QuestionQuestionEq
+            TokenKind::Identifier(_) | TokenKind::Number(_) | TokenKind::BigInt(_)
+            | TokenKind::String(_) | TokenKind::TemplateNoSub(_)
+            | TokenKind::Regex { .. }
+            | TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace
+            | TokenKind::True | TokenKind::False | TokenKind::Null
+            | TokenKind::This | TokenKind::Super
+            | TokenKind::PlusPlus | TokenKind::MinusMinus
         );
 
-        self.make_token(kind)
+        Token::with_newline(kind, Span::new(self.token_start as u32, self.pos as u32), had_newline)
     }
 
     /// Peek at the next token without consuming it.
@@ -115,12 +129,14 @@ impl<'a> Lexer<'a> {
         let saved_pos = self.pos;
         let saved_start = self.token_start;
         let saved_regex = self.allow_regex;
+        let saved_newline = self.had_newline;
 
         let token = self.next_token();
 
         self.pos = saved_pos;
         self.token_start = saved_start;
         self.allow_regex = saved_regex;
+        self.had_newline = saved_newline;
 
         token
     }
@@ -170,7 +186,11 @@ impl<'a> Lexer<'a> {
         loop {
             match self.current() {
                 // Whitespace
-                b' ' | b'\t' | b'\r' | b'\n' => {
+                b' ' | b'\t' | b'\r' => {
+                    self.advance();
+                }
+                b'\n' => {
+                    self.had_newline = true;
                     self.advance();
                 }
                 // Comments
@@ -195,6 +215,9 @@ impl<'a> Lexer<'a> {
     fn skip_block_comment(&mut self) {
         self.advance_n(2); // Skip /*
         while !self.is_eof() {
+            if self.current() == b'\n' {
+                self.had_newline = true;
+            }
             if self.current() == b'*' && self.peek_char() == b'/' {
                 self.advance_n(2);
                 return;
@@ -787,10 +810,12 @@ mod tests {
 
     #[test]
     fn test_operators() {
+        // Use `a` before `/` so the lexer knows it's division, not regex
         assert_eq!(
-            tokenize("+ - * / % ** ++ --"),
+            tokenize("+ - * a / % ** ++ --"),
             vec![
-                TokenKind::Plus, TokenKind::Minus, TokenKind::Star, TokenKind::Slash,
+                TokenKind::Plus, TokenKind::Minus, TokenKind::Star,
+                TokenKind::Identifier("a".into()), TokenKind::Slash,
                 TokenKind::Percent, TokenKind::StarStar, TokenKind::PlusPlus, TokenKind::MinusMinus,
             ]
         );

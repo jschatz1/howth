@@ -369,6 +369,8 @@ impl<'a> Parser<'a> {
                 self.current.span,
             ));
         }
+        // Tell the lexer that `/` in `</Tag>` is not a regex
+        self.lexer.set_no_regex();
         self.advance(); // consume `<`
 
         // Consume `/`
@@ -407,6 +409,8 @@ impl<'a> Parser<'a> {
         if !self.check(&TokenKind::Lt) {
             return Err(ParseError::new("Expected '<' for closing fragment", self.current.span));
         }
+        // Tell the lexer that `/` in `</>` is not a regex
+        self.lexer.set_no_regex();
         self.advance();
 
         // Consume `/`

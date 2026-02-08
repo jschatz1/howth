@@ -17,6 +17,7 @@ swc = [
     "dep:swc_ecma_transforms_react",
     "dep:swc_ecma_transforms_typescript",
     "dep:swc_ecma_visit",
+    "dep:swc_ecma_minifier",
 ]
 
 [dependencies]
@@ -45,7 +46,7 @@ grass = "0.13"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 # Custom JS parser (arena-allocated, Bun-style speed)
-howth-parser = { path = "../howth-parser" }
+howth-parser = { path = "../howth-parser", features = ["jsx"] }
 
 # Optional SWC integration for full transpilation support
 # NOTE: SWC has a known compatibility issue with serde 1.0.220+
@@ -55,10 +56,11 @@ swc_common = { version = "0.37", optional = true, features = ["sourcemap"] }
 swc_ecma_ast = { version = "0.118", optional = true }
 swc_ecma_parser = { version = "0.149", optional = true }
 swc_ecma_codegen = { version = "0.155", optional = true }
-swc_ecma_transforms_base = { version = "0.144", optional = true }
+swc_ecma_transforms_base = { version = "0.146", optional = true }
 swc_ecma_transforms_react = { version = "0.190", optional = true }
 swc_ecma_transforms_typescript = { version = "0.195", optional = true }
 swc_ecma_visit = { version = "0.104", optional = true }
+swc_ecma_minifier = { version = "0.205", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

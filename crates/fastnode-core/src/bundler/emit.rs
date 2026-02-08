@@ -18,6 +18,32 @@ use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 // =============================================================================
+// Minification
+// =============================================================================
+
+/// Minify a bundle string using howth-parser (whitespace removal).
+///
+/// Parses the concatenated bundle and re-emits with minified codegen
+/// (no whitespace, no newlines, deferred semicolons).
+fn minify_bundle(code: &str) -> Result<String, BundleError> {
+    let opts = ParserOptions {
+        module: false,
+        ..Default::default()
+    };
+    let ast = Parser::new(code, opts).parse().map_err(|e| BundleError {
+        code: "MINIFY_PARSE_ERROR",
+        message: format!("Failed to parse bundle for minification: {e}"),
+        path: None,
+    })?;
+
+    let codegen_opts = CodegenOptions {
+        minify: true,
+        ..Default::default()
+    };
+    Ok(Codegen::new(&ast, codegen_opts).generate())
+}
+
+// =============================================================================
 // Source Map Support
 // =============================================================================
 
@@ -229,7 +255,12 @@ pub fn emit_bundle_with_entry(
         )?,
     }
 
-    // Generate sourcemap if requested
+    // Run minifier when minify is enabled (whitespace removal)
+    if options.minify {
+        output = minify_bundle(&output).unwrap_or(output);
+    }
+
+    // Generate sourcemap if requested (must be after minification since line numbers change)
     let map = if options.sourcemap {
         Some(build_sourcemap_from_output(&output, graph, order))
     } else {
@@ -845,7 +876,12 @@ pub fn emit_scope_hoisted(
         BundleFormat::Iife => emit_scope_hoisted_iife(graph, order, options, &ctx, &mut output)?,
     }
 
-    // Generate sourcemap if requested
+    // Run minifier when minify is enabled (whitespace removal)
+    if options.minify {
+        output = minify_bundle(&output).unwrap_or(output);
+    }
+
+    // Generate sourcemap if requested (must be after minification since line numbers change)
     let map = if options.sourcemap {
         Some(build_sourcemap_from_output(&output, graph, order))
     } else {

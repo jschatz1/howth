@@ -147,9 +147,10 @@ impl<'a> Parser<'a> {
         if self.is_eof() {
             return Ok(());
         }
-        // 4. After newline (handled by lexer tracking)
-        // For now, we just require explicit semicolons or ASI triggers
-        // TODO: Track newlines properly for full ASI support
+        // 4. After newline - the current token was preceded by a line terminator
+        if self.current.had_newline_before {
+            return Ok(());
+        }
         Err(ParseError::new(
             "Expected semicolon",
             self.current.span,

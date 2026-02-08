@@ -9,13 +9,21 @@ use crate::span::Span;
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
+    /// Whether a line terminator was encountered before this token (for ASI).
+    pub had_newline_before: bool,
 }
 
 impl Token {
     /// Create a new token.
     #[inline]
     pub const fn new(kind: TokenKind, span: Span) -> Self {
-        Self { kind, span }
+        Self { kind, span, had_newline_before: false }
+    }
+
+    /// Create a new token with newline tracking.
+    #[inline]
+    pub const fn with_newline(kind: TokenKind, span: Span, had_newline_before: bool) -> Self {
+        Self { kind, span, had_newline_before }
     }
 }
 

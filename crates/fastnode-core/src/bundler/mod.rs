@@ -720,44 +720,49 @@ impl Bundler {
         path_set.insert(entry_path.display().to_string());
 
         // Process level by level
+        let externals = &options.external;
+
         while !current_level.is_empty() {
-            // Read all files in current level in parallel
-            let level_results: Vec<(String, String, Vec<Import>)> = current_level
+            // Read all files in current level in parallel, resolve imports in parallel too
+            let level_results: Vec<(String, String, Vec<Import>, Vec<std::path::PathBuf>)> = current_level
                 .par_iter()
                 .filter_map(|path| {
                     let path_str = path.display().to_string();
                     let source = std::fs::read_to_string(path).ok()?;
                     let imports = self.extract_imports(&source, path).unwrap_or_default();
-                    Some((path_str, source, imports))
+
+                    // Resolve imports in parallel (resolver uses RwLock cache)
+                    let mut resolved_deps = Vec::new();
+                    for import in &imports {
+                        if externals.iter().any(|e| import.specifier.starts_with(e)) {
+                            continue;
+                        }
+                        if let Ok(ResolveResult::Found(dep_path)) =
+                            self.resolver.resolve(&import.specifier, path, cwd)
+                        {
+                            let ext = dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            if AssetType::is_css(ext) || AssetType::is_asset(ext) {
+                                continue;
+                            }
+                            resolved_deps.push(dep_path);
+                        }
+                    }
+
+                    Some((path_str, source, imports, resolved_deps))
                 })
                 .collect();
 
-            // Collect next level of files to process
+            // Collect next level of files to process (sequential dedup only)
             let mut next_level: Vec<std::path::PathBuf> = Vec::new();
 
-            for (path_str, source, imports) in level_results {
+            for (path_str, source, _imports, resolved_deps) in level_results {
                 ordered_paths.push(path_str.clone());
-                let path = std::path::PathBuf::from(&path_str);
 
-                // Resolve imports to find next level files
-                for import in &imports {
-                    if options.external.iter().any(|e| import.specifier.starts_with(e)) {
-                        continue;
-                    }
-
-                    if let Ok(ResolveResult::Found(dep_path)) =
-                        self.resolver.resolve(&import.specifier, &path, cwd)
-                    {
-                        let dep_str = dep_path.display().to_string();
-                        let ext = dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        if AssetType::is_css(ext) || AssetType::is_asset(ext) {
-                            continue;
-                        }
-
-                        if !path_set.contains(&dep_str) {
-                            path_set.insert(dep_str);
-                            next_level.push(dep_path);
-                        }
+                for dep_path in resolved_deps {
+                    let dep_str = dep_path.display().to_string();
+                    if !path_set.contains(&dep_str) {
+                        path_set.insert(dep_str);
+                        next_level.push(dep_path);
                     }
                 }
 
@@ -778,7 +783,11 @@ impl Bundler {
         // Use SWC backend for transpilation (shared across threads - SWC is thread-safe)
         use crate::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
 
-        let processed: Vec<Result<(String, String, Vec<Import>), BundleError>> = paths_and_sources
+        // Phase 2: Transform all files AND resolve imports in parallel
+        // Each worker: plugin transform → transpile → extract imports → resolve deps
+        let externals = &options.external;
+
+        let processed: Vec<Result<(String, String, Vec<Import>, Vec<(String, String, bool)>), BundleError>> = paths_and_sources
             .par_iter()
             .map(|(path_str, source)| {
                 // First apply plugin transforms if any
@@ -792,49 +801,69 @@ impl Bundler {
                     source.clone()
                 };
 
-                // Then transpile TypeScript/JSX to JavaScript using SWC (in parallel!)
-                let backend = SwcBackend::new();
-                let spec = TranspileSpec::new(path_str, "");
-                let transpiled = backend.transpile(&spec, &plugin_transformed).map_err(|e| BundleError {
-                    code: "BUNDLE_TRANSPILE_ERROR",
-                    message: e.message,
-                    path: Some(path_str.clone()),
-                })?;
+                let ext = Path::new(path_str).extension().and_then(|e| e.to_str()).unwrap_or("");
 
-                // Extract imports from transpiled source
+                let (transpiled_code, imports) = match ext {
+                    // Fast path: JSX files use howth-parser (no SWC)
+                    "jsx" => {
+                        crate::compiler::transform_jsx(&plugin_transformed)
+                            .map_err(|e| BundleError {
+                                code: "BUNDLE_TRANSPILE_ERROR",
+                                message: e.message,
+                                path: Some(path_str.clone()),
+                            })?
+                    }
+                    // Plain JS: no transformation needed, just extract imports
+                    "js" | "mjs" | "cjs" => {
+                        let path = std::path::PathBuf::from(path_str);
+                        let imports = self.extract_imports(&plugin_transformed, &path)?;
+                        (plugin_transformed.clone(), imports)
+                    }
+                    // TypeScript/TSX files: still need SWC for type stripping + JSX
+                    _ => {
+                        let backend = SwcBackend::new();
+                        let spec = TranspileSpec::new(path_str, "");
+                        let transpiled = backend.transpile(&spec, &plugin_transformed).map_err(|e| BundleError {
+                            code: "BUNDLE_TRANSPILE_ERROR",
+                            message: e.message,
+                            path: Some(path_str.clone()),
+                        })?;
+                        let path = std::path::PathBuf::from(path_str);
+                        let imports = self.extract_imports(&transpiled.code, &path)?;
+                        (transpiled.code, imports)
+                    }
+                };
+
+                // Resolve imports to dependencies (in parallel!)
                 let path = std::path::PathBuf::from(path_str);
-                let imports = self.extract_imports(&transpiled.code, &path)?;
-
-                Ok((path_str.clone(), transpiled.code, imports))
-            })
-            .collect();
-
-        // Phase 3: Build the graph from processed results
-        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
-
-        for result in processed {
-            let (path_str, source, imports) = result?;
-            let path = std::path::PathBuf::from(&path_str);
-
-            // Resolve imports to dependencies
-            let mut module_deps: Vec<(String, String, bool)> = Vec::new();
-            for import in &imports {
-                if options.external.iter().any(|e| import.specifier.starts_with(e)) {
-                    continue;
-                }
-
-                if let Ok(ResolveResult::Found(dep_path)) =
-                    self.resolver.resolve(&import.specifier, &path, cwd)
-                {
-                    let ext = dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if AssetType::is_css(ext) || AssetType::is_asset(ext) {
+                let mut module_deps: Vec<(String, String, bool)> = Vec::new();
+                for import in &imports {
+                    if externals.iter().any(|e| import.specifier.starts_with(e)) {
                         continue;
                     }
 
-                    let dep_str = dep_path.display().to_string();
-                    module_deps.push((import.specifier.clone(), dep_str, import.dynamic));
+                    if let Ok(ResolveResult::Found(dep_path)) =
+                        self.resolver.resolve(&import.specifier, &path, cwd)
+                    {
+                        let ext = dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if AssetType::is_css(ext) || AssetType::is_asset(ext) {
+                            continue;
+                        }
+
+                        let dep_str = dep_path.display().to_string();
+                        module_deps.push((import.specifier.clone(), dep_str, import.dynamic));
+                    }
                 }
-            }
+
+                Ok((path_str.clone(), transpiled_code, imports, module_deps))
+            })
+            .collect();
+
+        // Phase 3: Build the graph from processed results (just assembly, no I/O)
+        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+
+        for result in processed {
+            let (path_str, source, imports, module_deps) = result?;
 
             dep_info.insert(path_str.clone(), module_deps);
 

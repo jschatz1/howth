@@ -13,7 +13,10 @@
 #![allow(clippy::unused_self)]
 #![allow(clippy::self_only_used_in_recursion)]
 
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 /// Result of resolving an import specifier.
 #[derive(Debug, Clone)]
@@ -24,6 +27,22 @@ pub enum ResolveResult {
     External(String),
     /// Built-in module (node:fs, etc.).
     Builtin(String),
+}
+
+/// Normalize a path by resolving `.` and `..` components without filesystem access.
+fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut result = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            other => result.push(other),
+        }
+    }
+    result.iter().collect()
 }
 
 /// Error during resolution.
@@ -46,11 +65,17 @@ impl std::fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-/// Import resolver.
+/// Cached directory listing: (file names, subdirectory names).
+type DirListing = Arc<(HashSet<OsString>, HashSet<OsString>)>;
+
+/// Import resolver with directory listing cache for fast extension probing.
 #[derive(Debug, Default)]
 pub struct Resolver {
-    /// Cached resolutions for performance.
-    cache: std::sync::RwLock<std::collections::HashMap<(String, String), ResolveResult>>,
+    /// Cached resolutions: (specifier, from) → result.
+    cache: RwLock<HashMap<(String, String), ResolveResult>>,
+    /// Cached directory listings: dir path → (files, subdirs).
+    /// None means directory doesn't exist or can't be read.
+    dir_cache: RwLock<HashMap<PathBuf, Option<DirListing>>>,
 }
 
 impl Resolver {
@@ -89,6 +114,63 @@ impl Resolver {
         Ok(result)
     }
 
+    /// Get or populate the directory listing cache for the given directory.
+    fn get_dir_listing(&self, dir: &Path) -> Option<DirListing> {
+        // Fast path: check cache with read lock
+        {
+            let cache = self.dir_cache.read().unwrap();
+            if let Some(entry) = cache.get(dir) {
+                return entry.clone();
+            }
+        }
+
+        // Cache miss: read directory
+        let listing = std::fs::read_dir(dir).ok().map(|rd| {
+            let mut files = HashSet::new();
+            let mut subdirs = HashSet::new();
+            for entry in rd.filter_map(|e| e.ok()) {
+                let name = entry.file_name();
+                match entry.file_type() {
+                    Ok(ft) if ft.is_dir() => {
+                        subdirs.insert(name);
+                    }
+                    _ => {
+                        files.insert(name);
+                    }
+                }
+            }
+            Arc::new((files, subdirs))
+        });
+
+        let result = listing.clone();
+        self.dir_cache.write().unwrap().insert(dir.to_path_buf(), listing);
+        result
+    }
+
+    /// Check if a file exists using the directory listing cache.
+    fn file_exists_cached(&self, path: &Path) -> bool {
+        let Some(dir) = path.parent() else {
+            return false;
+        };
+        let Some(name) = path.file_name() else {
+            return false;
+        };
+        self.get_dir_listing(dir)
+            .map_or(false, |l| l.0.contains(name))
+    }
+
+    /// Check if a directory exists using the directory listing cache.
+    fn dir_exists_cached(&self, path: &Path) -> bool {
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        let Some(name) = path.file_name() else {
+            return false;
+        };
+        self.get_dir_listing(parent)
+            .map_or(false, |l| l.1.contains(name))
+    }
+
     fn resolve_uncached(
         &self,
         specifier: &str,
@@ -121,7 +203,7 @@ impl Resolver {
         from: &Path,
     ) -> Result<ResolveResult, ResolveError> {
         let from_dir = from.parent().unwrap_or(Path::new("."));
-        let target = from_dir.join(specifier);
+        let target = normalize_path(&from_dir.join(specifier));
 
         self.resolve_file_or_directory(&target, specifier, from)
     }
@@ -130,25 +212,20 @@ impl Resolver {
     fn resolve_absolute(&self, specifier: &str) -> Result<ResolveResult, ResolveError> {
         let target = PathBuf::from(specifier);
 
-        if target.exists() {
-            let resolved = dunce::canonicalize(target).map_err(|e| ResolveError {
-                specifier: specifier.to_string(),
-                from: String::new(),
-                message: e.to_string(),
-            })?;
-            return Ok(ResolveResult::Found(resolved));
+        if self.file_exists_cached(&target) {
+            return Ok(ResolveResult::Found(target));
         }
 
         // Try with extensions
-        for ext in &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
-            let with_ext = target.with_extension(&ext[1..]);
-            if with_ext.exists() {
-                let resolved = dunce::canonicalize(with_ext).map_err(|e| ResolveError {
-                    specifier: specifier.to_string(),
-                    from: "".to_string(),
-                    message: e.to_string(),
-                })?;
-                return Ok(ResolveResult::Found(resolved));
+        let dir = target.parent().unwrap_or(Path::new("."));
+        let stem = target.file_name().unwrap_or_default();
+        if let Some(listing) = self.get_dir_listing(dir) {
+            for ext in &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
+                let mut name = stem.to_os_string();
+                name.push(ext);
+                if listing.0.contains(&name) {
+                    return Ok(ResolveResult::Found(dir.join(&name)));
+                }
             }
         }
 
@@ -174,11 +251,11 @@ impl Resolver {
         while let Some(dir) = current {
             let node_modules = dir.join("node_modules").join(&pkg_name);
 
-            if node_modules.exists() {
+            if self.dir_exists_cached(&node_modules) {
                 // Found the package directory
                 let pkg_json = node_modules.join("package.json");
 
-                if pkg_json.exists() {
+                if self.file_exists_cached(&pkg_json) {
                     // Read package.json to find entry point
                     if let Ok(entry) =
                         self.resolve_package_entry(&node_modules, &pkg_json, subpath.as_deref())
@@ -195,10 +272,12 @@ impl Resolver {
                     }
                 } else {
                     // Try common entry points
-                    for entry in &["index.js", "index.ts", "index.mjs"] {
-                        let target = node_modules.join(entry);
-                        if target.exists() {
-                            return Ok(ResolveResult::Found(dunce::canonicalize(target).unwrap()));
+                    if let Some(listing) = self.get_dir_listing(&node_modules) {
+                        for entry in &["index.js", "index.ts", "index.mjs"] {
+                            let entry_os = OsString::from(entry);
+                            if listing.0.contains(&entry_os) {
+                                return Ok(ResolveResult::Found(node_modules.join(entry)));
+                            }
                         }
                     }
                 }
@@ -268,13 +347,9 @@ impl Resolver {
             // Check exports field
             if let Some(exports) = json.get("exports") {
                 if let Some(entry) = self.resolve_exports(exports, &format!("./{}", sub)) {
-                    let target = pkg_dir.join(entry);
-                    if target.exists() {
-                        return dunce::canonicalize(target).map_err(|e| ResolveError {
-                            specifier: "".to_string(),
-                            from: pkg_json.display().to_string(),
-                            message: e.to_string(),
-                        });
+                    let target = pkg_dir.join(&entry);
+                    if self.file_exists_cached(&target) {
+                        return Ok(target);
                     }
                 }
             }
@@ -293,13 +368,9 @@ impl Resolver {
         // Check exports["."]
         if let Some(exports) = json.get("exports") {
             if let Some(entry) = self.resolve_exports(exports, ".") {
-                let target = pkg_dir.join(entry);
-                if target.exists() {
-                    return dunce::canonicalize(target).map_err(|e| ResolveError {
-                        specifier: "".to_string(),
-                        from: pkg_json.display().to_string(),
-                        message: e.to_string(),
-                    });
+                let target = pkg_dir.join(&entry);
+                if self.file_exists_cached(&target) {
+                    return Ok(target);
                 }
             }
         }
@@ -307,35 +378,23 @@ impl Resolver {
         // Check module field (ESM)
         if let Some(module) = json.get("module").and_then(|v| v.as_str()) {
             let target = pkg_dir.join(module);
-            if target.exists() {
-                return dunce::canonicalize(target).map_err(|e| ResolveError {
-                    specifier: "".to_string(),
-                    from: pkg_json.display().to_string(),
-                    message: e.to_string(),
-                });
+            if self.file_exists_cached(&target) {
+                return Ok(target);
             }
         }
 
         // Check main field
         if let Some(main) = json.get("main").and_then(|v| v.as_str()) {
             let target = pkg_dir.join(main);
-            if target.exists() {
-                return dunce::canonicalize(target).map_err(|e| ResolveError {
-                    specifier: "".to_string(),
-                    from: pkg_json.display().to_string(),
-                    message: e.to_string(),
-                });
+            if self.file_exists_cached(&target) {
+                return Ok(target);
             }
         }
 
         // Fallback to index.js
         let index = pkg_dir.join("index.js");
-        if index.exists() {
-            return dunce::canonicalize(index).map_err(|e| ResolveError {
-                specifier: "".to_string(),
-                from: pkg_json.display().to_string(),
-                message: e.to_string(),
-            });
+        if self.file_exists_cached(&index) {
+            return Ok(index);
         }
 
         Err(ResolveError {
@@ -392,33 +451,41 @@ impl Resolver {
     }
 
     /// Resolve a path that might be a file or directory.
+    /// Uses directory listing cache to avoid per-extension stat() calls.
     fn resolve_file_or_directory(
         &self,
         target: &Path,
         specifier: &str,
         from: &Path,
     ) -> Result<ResolveResult, ResolveError> {
-        // If it exists as-is
-        if target.is_file() {
-            return Ok(ResolveResult::Found(dunce::canonicalize(target).unwrap()));
-        }
+        let dir = target.parent().unwrap_or(Path::new("."));
+        let stem = target.file_name().unwrap_or_default();
 
-        // Try with extensions
-        for ext in &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
-            let with_ext = PathBuf::from(format!("{}{}", target.display(), ext));
-            if with_ext.is_file() {
-                return Ok(ResolveResult::Found(dunce::canonicalize(with_ext).unwrap()));
+        if let Some(listing) = self.get_dir_listing(dir) {
+            let (ref files, _) = *listing;
+
+            // Check exact match (file with extension already present)
+            if files.contains(stem) {
+                return Ok(ResolveResult::Found(dir.join(stem)));
+            }
+
+            // Try with extensions
+            for ext in &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"] {
+                let mut name = stem.to_os_string();
+                name.push(ext);
+                if files.contains(&name) {
+                    return Ok(ResolveResult::Found(dir.join(&name)));
+                }
             }
         }
 
         // Try as directory with index file
-        if target.is_dir() {
+        if let Some(listing) = self.get_dir_listing(target) {
+            let (ref files, _) = *listing;
             for index in &["index.ts", "index.tsx", "index.js", "index.jsx"] {
-                let index_path = target.join(index);
-                if index_path.is_file() {
-                    return Ok(ResolveResult::Found(
-                        dunce::canonicalize(index_path).unwrap(),
-                    ));
+                let index_os = OsString::from(index);
+                if files.contains(&index_os) {
+                    return Ok(ResolveResult::Found(target.join(index)));
                 }
             }
         }
