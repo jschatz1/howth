@@ -45,11 +45,13 @@ mod graph;
 mod plugin;
 pub mod plugins;
 mod resolve;
+mod scope;
 mod treeshake;
 
 pub use assets::{Asset, AssetCollection, AssetType};
 pub use chunks::{Chunk, ChunkGraph, ChunkId, ChunkManifest};
-pub use emit::{emit_bundle, emit_bundle_with_entry, BundleFormat, BundleOutput};
+pub use emit::{emit_bundle, emit_bundle_with_entry, emit_scope_hoisted, BundleFormat, BundleOutput};
+pub use scope::{ScopeHoistContext, Symbol, SymbolId, SymbolKind};
 pub use graph::{Module, ModuleGraph, ModuleId};
 pub use plugin::{
     AliasPlugin,
@@ -77,6 +79,7 @@ pub use plugin::{
 pub use resolve::{ResolveError, ResolveResult, Resolver};
 pub use treeshake::UsedExports;
 
+use rayon::prelude::*;
 use std::path::Path;
 
 /// Bundle options.
@@ -96,6 +99,10 @@ pub struct BundleOptions {
     pub treeshake: bool,
     /// Enable code splitting on dynamic imports.
     pub splitting: bool,
+    /// Enable scope hoisting (produces smaller, faster bundles).
+    /// When enabled, top-level declarations are hoisted to the bundle scope
+    /// instead of being wrapped in module functions.
+    pub scope_hoist: bool,
 }
 
 impl Default for BundleOptions {
@@ -106,8 +113,9 @@ impl Default for BundleOptions {
             sourcemap: false,
             external: Vec::new(),
             target: crate::compiler::Target::ES2020,
-            treeshake: true,  // Enable by default
-            splitting: false, // Disabled by default
+            treeshake: true,   // Enable by default
+            splitting: false,  // Disabled by default
+            scope_hoist: false, // Disabled by default for backwards compatibility
         }
     }
 }
@@ -246,9 +254,9 @@ impl Bundler {
             path: None,
         })?;
 
-        // 1. Build module graph starting from entry
+        // 1. Build module graph starting from entry (using parallel processing)
         let mut graph = ModuleGraph::new();
-        let entry_id = self.build_graph(entry, cwd, &mut graph, options)?;
+        let entry_id = self.build_graph_parallel(entry, cwd, &mut graph, options)?;
 
         // 2. Check if code splitting is enabled and there are dynamic imports
         if options.splitting {
@@ -269,8 +277,12 @@ impl Bundler {
         // 3. Get modules in topological order (no splitting)
         let order = graph.toposort();
 
-        // 4. Emit bundled output
-        let output = emit_bundle(&graph, &order, options)?;
+        // 4. Emit bundled output (use scope hoisting if enabled)
+        let output = if options.scope_hoist {
+            emit_scope_hoisted(&graph, &order, options)?
+        } else {
+            emit_bundle(&graph, &order, options)?
+        };
 
         // 5. Apply render_chunk hook if plugins are registered
         let final_code = if self.plugins.has_plugins() {
@@ -671,6 +683,181 @@ impl Bundler {
             message: e.to_string(),
             path: Some(path.display().to_string()),
         })
+    }
+
+    /// Build the module graph with parallel file reading and transformation.
+    /// This is significantly faster for large codebases.
+    fn build_graph_parallel(
+        &self,
+        entry: &Path,
+        cwd: &Path,
+        graph: &mut ModuleGraph,
+        options: &BundleOptions,
+    ) -> Result<ModuleId, BundleError> {
+        use std::collections::{HashMap, HashSet};
+
+
+        let entry_path = if entry.is_absolute() {
+            entry.to_path_buf()
+        } else {
+            cwd.join(entry)
+        };
+
+        let entry_path = dunce::canonicalize(entry_path).map_err(|e| BundleError {
+            code: "BUNDLE_ENTRY_NOT_FOUND",
+            message: format!("Cannot find entry point: {}", e),
+            path: Some(entry.display().to_string()),
+        })?;
+
+        // Phase 1: Parallel discovery - process files level by level
+        // Each level is processed in parallel for both reading and import extraction
+        let mut file_contents: HashMap<String, String> = HashMap::new();
+        let mut path_set: HashSet<String> = HashSet::new();
+        let mut ordered_paths: Vec<String> = Vec::new();
+
+        // Start with entry file
+        let mut current_level: Vec<std::path::PathBuf> = vec![entry_path.clone()];
+        path_set.insert(entry_path.display().to_string());
+
+        // Process level by level
+        while !current_level.is_empty() {
+            // Read all files in current level in parallel
+            let level_results: Vec<(String, String, Vec<Import>)> = current_level
+                .par_iter()
+                .filter_map(|path| {
+                    let path_str = path.display().to_string();
+                    let source = std::fs::read_to_string(path).ok()?;
+                    let imports = self.extract_imports(&source, path).unwrap_or_default();
+                    Some((path_str, source, imports))
+                })
+                .collect();
+
+            // Collect next level of files to process
+            let mut next_level: Vec<std::path::PathBuf> = Vec::new();
+
+            for (path_str, source, imports) in level_results {
+                ordered_paths.push(path_str.clone());
+                let path = std::path::PathBuf::from(&path_str);
+
+                // Resolve imports to find next level files
+                for import in &imports {
+                    if options.external.iter().any(|e| import.specifier.starts_with(e)) {
+                        continue;
+                    }
+
+                    if let Ok(ResolveResult::Found(dep_path)) =
+                        self.resolver.resolve(&import.specifier, &path, cwd)
+                    {
+                        let dep_str = dep_path.display().to_string();
+                        let ext = dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if AssetType::is_css(ext) || AssetType::is_asset(ext) {
+                            continue;
+                        }
+
+                        if !path_set.contains(&dep_str) {
+                            path_set.insert(dep_str);
+                            next_level.push(dep_path);
+                        }
+                    }
+                }
+
+                file_contents.insert(path_str, source);
+            }
+
+            current_level = next_level;
+        }
+
+        // Phase 2: Transform all files in parallel (SWC transpilation)
+        let paths_and_sources: Vec<(String, String)> = ordered_paths
+            .iter()
+            .filter_map(|p| file_contents.remove(p).map(|s| (p.clone(), s)))
+            .collect();
+
+        let has_plugins = self.plugins.has_plugins();
+
+        // Use SWC backend for transpilation (shared across threads - SWC is thread-safe)
+        use crate::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
+
+        let processed: Vec<Result<(String, String, Vec<Import>), BundleError>> = paths_and_sources
+            .par_iter()
+            .map(|(path_str, source)| {
+                // First apply plugin transforms if any
+                let plugin_transformed = if has_plugins {
+                    self.plugins.transform(source, path_str).map_err(|e| BundleError {
+                        code: "PLUGIN_ERROR",
+                        message: e.to_string(),
+                        path: Some(path_str.clone()),
+                    })?
+                } else {
+                    source.clone()
+                };
+
+                // Then transpile TypeScript/JSX to JavaScript using SWC (in parallel!)
+                let backend = SwcBackend::new();
+                let spec = TranspileSpec::new(path_str, "");
+                let transpiled = backend.transpile(&spec, &plugin_transformed).map_err(|e| BundleError {
+                    code: "BUNDLE_TRANSPILE_ERROR",
+                    message: e.message,
+                    path: Some(path_str.clone()),
+                })?;
+
+                // Extract imports from transpiled source
+                let path = std::path::PathBuf::from(path_str);
+                let imports = self.extract_imports(&transpiled.code, &path)?;
+
+                Ok((path_str.clone(), transpiled.code, imports))
+            })
+            .collect();
+
+        // Phase 3: Build the graph from processed results
+        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+
+        for result in processed {
+            let (path_str, source, imports) = result?;
+            let path = std::path::PathBuf::from(&path_str);
+
+            // Resolve imports to dependencies
+            let mut module_deps: Vec<(String, String, bool)> = Vec::new();
+            for import in &imports {
+                if options.external.iter().any(|e| import.specifier.starts_with(e)) {
+                    continue;
+                }
+
+                if let Ok(ResolveResult::Found(dep_path)) =
+                    self.resolver.resolve(&import.specifier, &path, cwd)
+                {
+                    let ext = dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if AssetType::is_css(ext) || AssetType::is_asset(ext) {
+                        continue;
+                    }
+
+                    let dep_str = dep_path.display().to_string();
+                    module_deps.push((import.specifier.clone(), dep_str, import.dynamic));
+                }
+            }
+
+            dep_info.insert(path_str.clone(), module_deps);
+
+            let module = Module {
+                path: path_str,
+                source,
+                imports,
+                dependencies: Vec::new(),
+                dynamic_dependencies: Vec::new(),
+            };
+            graph.add(module);
+        }
+
+        graph.set_dependencies(&dep_info);
+
+        graph
+            .get_by_path(&entry_path)
+            .map(|m| m.0)
+            .ok_or_else(|| BundleError {
+                code: "BUNDLE_INTERNAL_ERROR",
+                message: "Entry module not found after graph build".to_string(),
+                path: None,
+            })
     }
 }
 
