@@ -653,7 +653,7 @@ With `--json`, outputs a single JSON object to stdout (no logs mixed in):
 
 ```json
 {
-  "runtime": {"version": "0.2.0", "schema_version": 1, "channel": "stable"},
+  "runtime": {"version": "0.3.0", "schema_version": 1, "channel": "stable"},
   "os": {"name": "macos", "version": "15.3.1", "arch": "aarch64"},
   "hardware": {"cpu_cores": 11},
   "paths": {...},

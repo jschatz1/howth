@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.3.0 — TypeScript Parser
+
+### TypeScript Support
+- **Native TypeScript parser**: parse and strip types without SWC — `.ts` files now use howth-parser for fast type erasure
+- **92.5% compatibility** on 8,116-file broad test suite (TypeScript compiler tests + Vue 3 + Deno std)
+- **99.7% compatibility** on 1,132-file Deno standard library (3 failures: unicode/regex edge cases)
+- Supports: type annotations, generics, conditional types, template literal types, mapped types, labeled tuples, `infer`, `keyof`, `typeof`, `as`/`satisfies`, non-null `!`, type assertions, generic arrows, instantiation expressions, `import("mod").Type`, `accessor` keyword, anonymous modules, `declare const enum`
+
+### Bug Fixes
+- Fixed type-only import/export side effects — type-only re-exports no longer pull in unused modules
+- Fixed JSX runtime dependency tracking for type-only files
+
+---
+
 ## v0.2.0 — Fastest JavaScript Bundler
 
 ### Bundler Performance
