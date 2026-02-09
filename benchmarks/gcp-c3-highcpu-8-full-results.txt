@@ -1,0 +1,86 @@
+=== Howth Full Benchmark — GCP c3-highcpu-8 (Linux x64) ===
+Date: Mon Feb  9 05:31:24 UTC 2026
+
+=== System Info ===
+Linux howth-bench.us-central1-a.c.preplanai.internal 6.14.0-1021-gcp #22~24.04.1-Ubuntu SMP Sat Nov 22 06:23:18 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+CPU(s):                                  8
+On-line CPU(s) list:                     0-7
+Model name:                              Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      4
+NUMA node0 CPU(s):                       0-7
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi       713Mi       7.6Gi       1.0Mi       7.6Gi        14Gi
+
+=== Versions ===
+howth: howth 0.1.0
+bun: 1.3.9
+esbuild: 0.27.3
+rolldown: rolldown v1.0.0-rc.3
+vite: vite/7.3.1 linux-x64 node-v22.22.0
+rspack: rspack/1.7.5 linux-x64 node-v22.22.0
+rsbuild: Rsbuild v1.7.3
+node: v22.22.0
+
+=== Running bench.mjs (warmup + 10 runs) ===
+Running benchmarks for: vite, rsbuild, rspack, rolldown, esbuild, bun, howth
+App: apps/10000
+
+Benchmark 1: rolldown-vite
+  Time (mean ± σ):     922.0 ms ±  16.8 ms    [User: 1686.0 ms, System: 599.2 ms]
+  Range (min … max):   890.4 ms … 944.5 ms    10 runs
+ 
+Benchmark 2: rsbuild
+  Time (mean ± σ):      2.176 s ±  0.013 s    [User: 4.759 s, System: 0.603 s]
+  Range (min … max):    2.154 s …  2.200 s    10 runs
+ 
+Benchmark 3: rspack
+  Time (mean ± σ):      2.067 s ±  0.017 s    [User: 4.259 s, System: 0.580 s]
+  Range (min … max):    2.038 s …  2.092 s    10 runs
+ 
+Benchmark 4: rolldown
+  Time (mean ± σ):     734.6 ms ±  17.3 ms    [User: 1287.8 ms, System: 644.4 ms]
+  Range (min … max):   700.6 ms … 755.7 ms    10 runs
+ 
+Benchmark 5: esbuild
+  Time (mean ± σ):     588.8 ms ±   5.3 ms    [User: 1259.0 ms, System: 532.7 ms]
+  Range (min … max):   579.5 ms … 596.5 ms    10 runs
+ 
+Benchmark 6: bun
+  Time (mean ± σ):     307.4 ms ±   2.0 ms    [User: 394.2 ms, System: 245.0 ms]
+  Range (min … max):   304.6 ms … 310.5 ms    10 runs
+ 
+Benchmark 7: howth
+  Time (mean ± σ):     275.5 ms ±   2.1 ms    [User: 434.2 ms, System: 215.7 ms]
+  Range (min … max):   272.6 ms … 279.1 ms    10 runs
+ 
+Summary
+  howth ran
+    1.12 ± 0.01 times faster than bun
+    2.14 ± 0.03 times faster than esbuild
+    2.67 ± 0.07 times faster than rolldown
+    3.35 ± 0.07 times faster than rolldown-vite
+    7.50 ± 0.09 times faster than rspack
+    7.90 ± 0.08 times faster than rsbuild
+
+Benchmark Results (sorted by time):
+| Tool          | Version    | Time (mean ± σ)           | Comparison | JS        | CSS       | Sourcemaps |
+| ------------- | ---------- | ------------------------: | ---------- | --------- | --------- | ---------- |
+| howth         | 0.1.0      |        275.45 ±   2.13 ms | 1.0x       | 3.44 MB   | not found | 3.32 MB    |
+| bun           | 1.3.9      |        307.42 ±   2.04 ms | 1.1x       | 844.12 KB | not found | 2.68 MB    |
+| esbuild       | 0.27.3     |        588.83 ±   5.27 ms | 2.1x       | 1.21 MB   | not found | 3.45 MB    |
+| rolldown      | 1.0.0-rc.3 |        734.57 ±  17.31 ms | 2.7x       | 824.03 KB | not found | 2.88 MB    |
+| rolldown-vite | 7.3.1      |        921.96 ±  16.85 ms | 3.3x       | 824.73 KB | not found | 2.91 MB    |
+| rspack        | 1.7.5      |       2067.08 ±  17.17 ms | 7.5x       | 823.62 KB | not found | 2.76 MB    |
+| rsbuild       | 1.7.3      |       2176.22 ±  13.46 ms | 7.9x       | 824.55 KB | not found | 2.69 MB    |
+
+=== Output sizes ===
+howth: 3604379 bytes JS
+bun: 864382 bytes JS
+esbuild: 1264495 bytes JS
+rolldown: 843805 bytes JS
+vite: 844520 bytes JS
+rspack: 843390 bytes JS
+rsbuild: 844343 bytes JS
+
+=== Benchmark complete Mon Feb  9 05:32:42 UTC 2026 ===

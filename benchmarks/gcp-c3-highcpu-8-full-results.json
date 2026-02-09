@@ -1,0 +1,67 @@
+{
+  "results": [
+    {
+      "tool": "howth",
+      "version": "0.1.0",
+      "time_ms": "275.45",
+      "stddev_ms": "2.13",
+      "js_size": "3.44 MB",
+      "css_size": "0 B",
+      "sourcemaps_size": "3.32 MB"
+    },
+    {
+      "tool": "bun",
+      "version": "1.3.9",
+      "time_ms": "307.42",
+      "stddev_ms": "2.04",
+      "js_size": "844.12 KB",
+      "css_size": "0 B",
+      "sourcemaps_size": "2.68 MB"
+    },
+    {
+      "tool": "esbuild",
+      "version": "0.27.3",
+      "time_ms": "588.83",
+      "stddev_ms": "5.27",
+      "js_size": "1.21 MB",
+      "css_size": "0 B",
+      "sourcemaps_size": "3.45 MB"
+    },
+    {
+      "tool": "rolldown",
+      "version": "1.0.0-rc.3",
+      "time_ms": "734.57",
+      "stddev_ms": "17.31",
+      "js_size": "824.03 KB",
+      "css_size": "0 B",
+      "sourcemaps_size": "2.88 MB"
+    },
+    {
+      "tool": "rolldown-vite",
+      "version": "7.3.1",
+      "time_ms": "921.96",
+      "stddev_ms": "16.85",
+      "js_size": "824.73 KB",
+      "css_size": "0 B",
+      "sourcemaps_size": "2.91 MB"
+    },
+    {
+      "tool": "rspack",
+      "version": "1.7.5",
+      "time_ms": "2067.08",
+      "stddev_ms": "17.17",
+      "js_size": "823.62 KB",
+      "css_size": "0 B",
+      "sourcemaps_size": "2.76 MB"
+    },
+    {
+      "tool": "rsbuild",
+      "version": "1.7.3",
+      "time_ms": "2176.22",
+      "stddev_ms": "13.46",
+      "js_size": "824.55 KB",
+      "css_size": "0 B",
+      "sourcemaps_size": "2.69 MB"
+    }
+  ]
+}
