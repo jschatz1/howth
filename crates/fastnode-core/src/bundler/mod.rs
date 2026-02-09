@@ -813,13 +813,31 @@ impl Bundler {
                                 path: Some(path_str.clone()),
                             })?
                     }
+                    // Fast path: TypeScript files use howth-parser (no SWC)
+                    "ts" | "mts" | "cts" => {
+                        crate::compiler::transform_ts(&plugin_transformed)
+                            .map_err(|e| BundleError {
+                                code: "BUNDLE_TRANSPILE_ERROR",
+                                message: e.message,
+                                path: Some(path_str.clone()),
+                            })?
+                    }
+                    // Fast path: TSX files use howth-parser (no SWC)
+                    "tsx" => {
+                        crate::compiler::transform_tsx(&plugin_transformed)
+                            .map_err(|e| BundleError {
+                                code: "BUNDLE_TRANSPILE_ERROR",
+                                message: e.message,
+                                path: Some(path_str.clone()),
+                            })?
+                    }
                     // Plain JS: no transformation needed, just extract imports
                     "js" | "mjs" | "cjs" => {
                         let path = std::path::PathBuf::from(path_str);
                         let imports = self.extract_imports(&plugin_transformed, &path)?;
                         (plugin_transformed.clone(), imports)
                     }
-                    // TypeScript/TSX files: still need SWC for type stripping + JSX
+                    // Fallback: use SWC for unknown extensions
                     _ => {
                         let backend = SwcBackend::new();
                         let spec = TranspileSpec::new(path_str, "");

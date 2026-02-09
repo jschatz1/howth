@@ -299,7 +299,18 @@ pub fn transform_jsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
         .map_err(|e| CompilerError::parse_error(e.to_string()))?;
 
     // Extract imports from the non-arena AST
-    let imports = extract_imports_from_ast(&ast);
+    let mut imports = extract_imports_from_ast(&ast);
+
+    // Add jsx runtime to dependency graph
+    imports.push(crate::bundler::Import {
+        specifier: "react/jsx-runtime".to_string(),
+        dynamic: false,
+        names: vec![
+            crate::bundler::ImportedName { imported: "jsx".to_string(), local: "_jsx".to_string() },
+            crate::bundler::ImportedName { imported: "jsxs".to_string(), local: "_jsxs".to_string() },
+            crate::bundler::ImportedName { imported: "Fragment".to_string(), local: "_Fragment".to_string() },
+        ],
+    });
 
     // Generate transformed JS with JSX→_jsx() calls
     let code = Codegen::new(&ast, CodegenOptions::default()).generate();
@@ -323,6 +334,10 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
     for stmt in &ast.stmts {
         match &stmt.kind {
             StmtKind::Import(import_decl) => {
+                // Skip type-only imports (TypeScript)
+                if import_decl.is_type_only {
+                    continue;
+                }
                 let mut names = Vec::new();
                 for spec in &import_decl.specifiers {
                     match spec {
@@ -338,7 +353,9 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
                                 local: local.clone(),
                             });
                         }
-                        ImportSpecifier::Named { imported, local, .. } => {
+                        ImportSpecifier::Named { imported, local, is_type, .. } => {
+                            // Skip type-only named imports
+                            if *is_type { continue; }
                             names.push(ImportedName {
                                 imported: imported.clone(),
                                 local: local.clone(),
@@ -477,6 +494,73 @@ fn extract_dynamic_imports_expr(expr: &howth_parser::Expr, imports: &mut Vec<cra
         ExprKind::Await(inner) => extract_dynamic_imports_expr(inner, imports),
         _ => {}
     }
+}
+
+/// Transform TypeScript source using howth-parser (no SWC needed).
+/// Returns (transformed_code, imports) in a single parse+codegen pass.
+pub fn transform_ts(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
+    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+
+    let parser_opts = ParserOptions {
+        module: true,
+        jsx: false,
+        typescript: true,
+        ..Default::default()
+    };
+
+    let ast = Parser::new(source, parser_opts)
+        .parse()
+        .map_err(|e| CompilerError::parse_error(e.to_string()))?;
+
+    // Extract imports from the non-arena AST
+    let imports = extract_imports_from_ast(&ast);
+
+    // Generate JS with types stripped
+    let code = Codegen::new(&ast, CodegenOptions::default()).generate();
+
+    Ok((code, imports))
+}
+
+/// Transform TSX source using howth-parser (no SWC needed).
+/// Returns (transformed_code, imports) in a single parse+codegen pass.
+pub fn transform_tsx(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
+    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+
+    let parser_opts = ParserOptions {
+        module: true,
+        jsx: true,
+        typescript: true,
+        ..Default::default()
+    };
+
+    let ast = Parser::new(source, parser_opts)
+        .parse()
+        .map_err(|e| CompilerError::parse_error(e.to_string()))?;
+
+    // Extract imports from the non-arena AST
+    let mut imports = extract_imports_from_ast(&ast);
+
+    // Add jsx runtime to dependency graph
+    imports.push(crate::bundler::Import {
+        specifier: "react/jsx-runtime".to_string(),
+        dynamic: false,
+        names: vec![
+            crate::bundler::ImportedName { imported: "jsx".to_string(), local: "_jsx".to_string() },
+            crate::bundler::ImportedName { imported: "jsxs".to_string(), local: "_jsxs".to_string() },
+            crate::bundler::ImportedName { imported: "Fragment".to_string(), local: "_Fragment".to_string() },
+        ],
+    });
+
+    // Generate transformed JS with types stripped and JSX→_jsx() calls
+    let code = Codegen::new(&ast, CodegenOptions::default()).generate();
+
+    // Prepend jsx runtime import
+    let code = format!(
+        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
+        code
+    );
+
+    Ok((code, imports))
 }
 
 /// Error during compilation.
@@ -637,5 +721,55 @@ mod tests {
         // Unsupported
         assert!(!backend.supports_extension("css"));
         assert!(!backend.supports_extension("json"));
+    }
+
+    #[test]
+    fn test_transform_jsx_includes_runtime_import() {
+        let source = r#"import { useState } from "react";
+const App = () => <div>hello</div>;
+export default App;"#;
+        let (code, imports) = transform_jsx(source).unwrap();
+        // Code should contain the jsx runtime import
+        assert!(code.contains("react/jsx-runtime"), "code should have jsx runtime import");
+        // Imports returned to bundler should include react/jsx-runtime for dependency tracking
+        assert!(
+            imports.iter().any(|i| i.specifier == "react/jsx-runtime"),
+            "imports should include react/jsx-runtime for dependency graph"
+        );
+        // Original import should also be present
+        assert!(
+            imports.iter().any(|i| i.specifier == "react"),
+            "imports should include react"
+        );
+    }
+
+    #[test]
+    fn test_transform_tsx_includes_runtime_import() {
+        let source = r#"import { useState } from "react";
+type Props = { name: string };
+const App = (props: Props) => <div>{props.name}</div>;
+export default App;"#;
+        let (_code, imports) = transform_tsx(source).unwrap();
+        assert!(
+            imports.iter().any(|i| i.specifier == "react/jsx-runtime"),
+            "TSX imports should include react/jsx-runtime for dependency graph"
+        );
+        assert!(
+            imports.iter().any(|i| i.specifier == "react"),
+            "TSX imports should include react"
+        );
+    }
+
+    #[test]
+    fn test_transform_ts_strips_types() {
+        let source = r#"import { type Foo, bar } from "./mod";
+interface Config { debug: boolean }
+const x: number = bar();
+export { x };"#;
+        let (code, imports) = transform_ts(source).unwrap();
+        assert!(!code.contains("interface"), "interface should be stripped");
+        assert!(!code.contains(": number"), "type annotation should be stripped");
+        assert!(code.contains("bar"), "runtime import preserved");
+        assert!(!imports.is_empty(), "should have imports");
     }
 }

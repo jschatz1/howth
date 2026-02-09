@@ -13,23 +13,34 @@ pub struct Lexer<'a> {
     /// Source code as bytes (for fast indexing).
     source: &'a [u8],
     /// Current byte position.
-    pos: usize,
+    pub(crate) pos: usize,
     /// Start position of the current token.
-    token_start: usize,
+    pub(crate) token_start: usize,
     /// Whether the previous token allows a regex to follow.
     /// This disambiguates `/regex/` vs `a / b`.
-    allow_regex: bool,
+    pub(crate) allow_regex: bool,
     /// Whether a newline was encountered while skipping whitespace before the current token.
-    had_newline: bool,
+    pub(crate) had_newline: bool,
 }
 
 impl<'a> Lexer<'a> {
     /// Create a new lexer for the given source code.
     pub fn new(source: &'a str) -> Self {
+        let bytes = source.as_bytes();
+        let mut pos = 0;
+        // Skip shebang line: #!/usr/bin/env ...
+        if bytes.len() >= 2 && bytes[0] == b'#' && bytes[1] == b'!' {
+            while pos < bytes.len() && bytes[pos] != b'\n' {
+                pos += 1;
+            }
+            if pos < bytes.len() {
+                pos += 1; // skip the newline
+            }
+        }
         Self {
-            source: source.as_bytes(),
-            pos: 0,
-            token_start: 0,
+            source: bytes,
+            pos,
+            token_start: pos,
             allow_regex: true, // At start of file, regex is allowed
             had_newline: false,
         }
@@ -259,15 +270,15 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        // Decimal integer part
-        while self.current().is_ascii_digit() {
+        // Decimal integer part (with numeric separator _)
+        while self.current().is_ascii_digit() || self.current() == b'_' {
             self.advance();
         }
 
         // Decimal part
         if self.current() == b'.' && self.peek_char().is_ascii_digit() {
             self.advance(); // Skip .
-            while self.current().is_ascii_digit() {
+            while self.current().is_ascii_digit() || self.current() == b'_' {
                 self.advance();
             }
         }
@@ -278,7 +289,7 @@ impl<'a> Lexer<'a> {
             if self.current() == b'+' || self.current() == b'-' {
                 self.advance();
             }
-            while self.current().is_ascii_digit() {
+            while self.current().is_ascii_digit() || self.current() == b'_' {
                 self.advance();
             }
         }
@@ -286,10 +297,10 @@ impl<'a> Lexer<'a> {
         // BigInt suffix
         if self.current() == b'n' {
             self.advance();
-            return TokenKind::BigInt(self.slice(start, self.pos - 1).to_string());
+            return TokenKind::BigInt(self.slice(start, self.pos - 1).replace('_', ""));
         }
 
-        let num_str = self.slice(start, self.pos);
+        let num_str = self.slice(start, self.pos).replace('_', "");
         TokenKind::Number(num_str.parse().unwrap_or(f64::NAN))
     }
 
@@ -297,17 +308,17 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.advance_n(2); // Skip 0x
 
-        while self.current().is_ascii_hexdigit() {
+        while self.current().is_ascii_hexdigit() || self.current() == b'_' {
             self.advance();
         }
 
         if self.current() == b'n' {
             self.advance();
-            return TokenKind::BigInt(self.slice(start, self.pos - 1).to_string());
+            return TokenKind::BigInt(self.slice(start, self.pos - 1).replace('_', ""));
         }
 
-        let hex_str = self.slice(start + 2, self.pos);
-        let value = u64::from_str_radix(hex_str, 16).unwrap_or(0) as f64;
+        let hex_str = self.slice(start + 2, self.pos).replace('_', "");
+        let value = u64::from_str_radix(&hex_str, 16).unwrap_or(0) as f64;
         TokenKind::Number(value)
     }
 
@@ -315,17 +326,17 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.advance_n(2); // Skip 0b
 
-        while self.current() == b'0' || self.current() == b'1' {
+        while self.current() == b'0' || self.current() == b'1' || self.current() == b'_' {
             self.advance();
         }
 
         if self.current() == b'n' {
             self.advance();
-            return TokenKind::BigInt(self.slice(start, self.pos - 1).to_string());
+            return TokenKind::BigInt(self.slice(start, self.pos - 1).replace('_', ""));
         }
 
-        let bin_str = self.slice(start + 2, self.pos);
-        let value = u64::from_str_radix(bin_str, 2).unwrap_or(0) as f64;
+        let bin_str = self.slice(start + 2, self.pos).replace('_', "");
+        let value = u64::from_str_radix(&bin_str, 2).unwrap_or(0) as f64;
         TokenKind::Number(value)
     }
 
@@ -333,17 +344,17 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.advance_n(2); // Skip 0o
 
-        while self.current() >= b'0' && self.current() <= b'7' {
+        while (self.current() >= b'0' && self.current() <= b'7') || self.current() == b'_' {
             self.advance();
         }
 
         if self.current() == b'n' {
             self.advance();
-            return TokenKind::BigInt(self.slice(start, self.pos - 1).to_string());
+            return TokenKind::BigInt(self.slice(start, self.pos - 1).replace('_', ""));
         }
 
-        let oct_str = self.slice(start + 2, self.pos);
-        let value = u64::from_str_radix(oct_str, 8).unwrap_or(0) as f64;
+        let oct_str = self.slice(start + 2, self.pos).replace('_', "");
+        let value = u64::from_str_radix(&oct_str, 8).unwrap_or(0) as f64;
         TokenKind::Number(value)
     }
 
@@ -606,13 +617,15 @@ impl<'a> Lexer<'a> {
 
     fn scan_slash(&mut self) -> TokenKind {
         self.advance();
-        match self.current() {
-            b'=' => { self.advance(); TokenKind::SlashEq }
-            _ if self.allow_regex => {
-                self.pos -= 1; // Back up
-                self.scan_regex()
+        if self.allow_regex {
+            // Regex context: `/=` starts a regex like `/=.../`, not SlashEq
+            self.pos -= 1; // Back up to start of regex pattern
+            self.scan_regex()
+        } else {
+            match self.current() {
+                b'=' => { self.advance(); TokenKind::SlashEq }
+                _ => TokenKind::Slash,
             }
-            _ => TokenKind::Slash,
         }
     }
 
