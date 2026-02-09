@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "fastnode-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "fastnode-util",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "fastnode-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "clap",
@@ -1256,11 +1256,11 @@ dependencies = [
 
 [[package]]
 name = "fastnode-compat"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "fastnode-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "fastnode-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dunce",
  "fastnode-core",
@@ -1320,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "fastnode-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1328,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "fastnode-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1380,7 +1380,7 @@ dependencies = [
 
 [[package]]
 name = "fastnode-util"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "tempfile",

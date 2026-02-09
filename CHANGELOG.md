@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.0 — Fastest JavaScript Bundler
+
+### Bundler Performance
+- **JSX fast path**: `.jsx` files skip SWC entirely, using howth-parser for single-pass parse + JSX transform + import extraction
+- **Parallel resolver**: import resolution runs inside rayon parallel closures with `RwLock<HashMap>` cache
+- **Directory listing cache**: eliminates per-extension `stat()` calls with a single directory read cached as `HashSet` lookups
+- **Replaced SWC minifier**: switched to `swc_ecma_minifier` with proper compress/mangle passes for correct minification
+- **Scope hoisting**: top-level declarations hoisted across modules for smaller output
+
+### Benchmark Results (apps/10000 — 19,014 modules)
+- **GCP c3-highcpu-8 (Linux x64)**: 275ms — 1.12x faster than Bun (307ms), 2.1x faster than esbuild
+- **macOS (Apple Silicon)**: 276ms — 1.27x faster than Bun (350ms), 2.6x faster than esbuild
+
+### Other
+- Dev server and runtime improvements
+- Worker, atomics, and vite-compat tests
+- New examples (cookies, data-pipeline, markdown-api, parallel-compute, real-time-game)
+
+---
+
 ## v1.8.0 — Rename to howth
 
 ### Changed
