@@ -426,10 +426,26 @@ impl<'a> Codegen<'a> {
             StmtKind::Export(decl) => {
                 self.emit_export(decl);
             }
+            // TypeScript: skip type-only declarations, emit runtime code for enums/namespaces
             #[cfg(feature = "typescript")]
-            _ => {
-                // TypeScript-specific statements
-                // TODO: Implement TypeScript code generation
+            StmtKind::TsTypeAlias(_) => {
+                // Type-only — emit nothing
+            }
+            #[cfg(feature = "typescript")]
+            StmtKind::TsInterface(_) => {
+                // Type-only — emit nothing
+            }
+            #[cfg(feature = "typescript")]
+            StmtKind::TsDeclare(_) => {
+                // Ambient declaration — emit nothing
+            }
+            #[cfg(feature = "typescript")]
+            StmtKind::TsEnum(en) => {
+                self.emit_ts_enum(en);
+            }
+            #[cfg(feature = "typescript")]
+            StmtKind::TsNamespace(ns) => {
+                self.emit_ts_namespace(ns);
             }
         }
     }
@@ -726,6 +742,12 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_import(&mut self, decl: &ImportDecl) {
+        // TypeScript: skip type-only imports entirely
+        #[cfg(feature = "typescript")]
+        if decl.is_type_only {
+            return;
+        }
+
         self.emit("import");
         self.emit(" ");
 
@@ -751,7 +773,10 @@ impl<'a> Codegen<'a> {
                     self.emit(local);
                     has_namespace = true;
                 }
-                ImportSpecifier::Named { imported, local, .. } => {
+                ImportSpecifier::Named { imported, local, #[cfg(feature = "typescript")] is_type, .. } => {
+                    // Skip type-only named imports
+                    #[cfg(feature = "typescript")]
+                    if *is_type { continue; }
                     named.push((imported, local));
                 }
             }
@@ -790,11 +815,31 @@ impl<'a> Codegen<'a> {
 
     fn emit_export(&mut self, decl: &ExportDecl) {
         match decl {
-            ExportDecl::Named { specifiers, source, .. } => {
+            ExportDecl::Named { specifiers, source, #[cfg(feature = "typescript")] is_type_only, .. } => {
+                // TypeScript: skip type-only exports entirely
+                #[cfg(feature = "typescript")]
+                if *is_type_only {
+                    return;
+                }
+
+                // Filter out type-only specifiers
+                let runtime_specs: Vec<&ExportSpecifier> = specifiers.iter()
+                    .filter(|s| {
+                        #[cfg(feature = "typescript")]
+                        { !s.is_type }
+                        #[cfg(not(feature = "typescript"))]
+                        { let _ = s; true }
+                    })
+                    .collect();
+
+                if runtime_specs.is_empty() && source.is_none() {
+                    return;
+                }
+
                 self.emit("export");
                 self.emit(" ");
                 self.emit("{");
-                for (i, spec) in specifiers.iter().enumerate() {
+                for (i, spec) in runtime_specs.iter().enumerate() {
                     if i > 0 {
                         self.emit(",");
                         self.emit_space();
@@ -1125,10 +1170,26 @@ impl<'a> Codegen<'a> {
             ExprKind::JsxFragment(frag) => {
                 self.emit_jsx_fragment(frag);
             }
+            // TypeScript: strip type expressions, emit inner expression only
             #[cfg(feature = "typescript")]
-            _ => {
-                // TypeScript-specific expressions
-                // TODO: Implement TypeScript code generation
+            ExprKind::TsAs { expr, .. } => {
+                // `expr as Type` → just emit `expr`
+                self.emit_expr_with_prec(expr, min_prec);
+            }
+            #[cfg(feature = "typescript")]
+            ExprKind::TsSatisfies { expr, .. } => {
+                // `expr satisfies Type` → just emit `expr`
+                self.emit_expr_with_prec(expr, min_prec);
+            }
+            #[cfg(feature = "typescript")]
+            ExprKind::TsNonNull(expr) => {
+                // `expr!` → just emit `expr`
+                self.emit_expr_with_prec(expr, min_prec);
+            }
+            #[cfg(feature = "typescript")]
+            ExprKind::TsTypeAssertion { expr, .. } => {
+                // `<Type>expr` → just emit `expr`
+                self.emit_expr_with_prec(expr, min_prec);
             }
         }
     }
@@ -1295,6 +1356,119 @@ impl<'a> Codegen<'a> {
                 format!("{}:{}", namespace, name)
             }
         }
+    }
+
+    // =========================================================================
+    // TypeScript Code Generation
+    // =========================================================================
+
+    /// Emit an enum as runtime IIFE:
+    /// `var Direction; (function(Direction) { Direction[Direction["Up"] = 0] = "Up"; ... })(Direction || (Direction = {}));`
+    #[cfg(feature = "typescript")]
+    fn emit_ts_enum(&mut self, en: &TsEnum) {
+        // var EnumName;
+        self.emit("var ");
+        self.emit(&en.name);
+        self.emit_semicolon();
+        self.emit_space_or_newline();
+
+        // (function(EnumName) { ... })(EnumName || (EnumName = {}));
+        self.emit("(function(");
+        self.emit(&en.name);
+        self.emit(")");
+        self.emit_space();
+        self.emit("{");
+        self.indent();
+
+        let mut auto_value: i64 = 0;
+        for member in &en.members {
+            self.emit_newline();
+            if let Some(init) = &member.init {
+                // EnumName["MemberName"] = init;
+                self.emit(&en.name);
+                self.emit("[\"");
+                self.emit(&member.name);
+                self.emit("\"]");
+                self.emit_space();
+                self.emit("=");
+                self.emit_space();
+                self.emit_expr(init);
+                self.emit_semicolon();
+                // Try to track numeric value for auto-increment
+                if let ExprKind::Number(n) = &init.kind {
+                    auto_value = (*n as i64) + 1;
+                }
+            } else {
+                // EnumName[EnumName["MemberName"] = 0] = "MemberName";
+                self.emit(&en.name);
+                self.emit("[");
+                self.emit(&en.name);
+                self.emit("[\"");
+                self.emit(&member.name);
+                self.emit("\"]");
+                self.emit_space();
+                self.emit("=");
+                self.emit_space();
+                self.emit(&auto_value.to_string());
+                self.emit("]");
+                self.emit_space();
+                self.emit("=");
+                self.emit_space();
+                self.emit("\"");
+                self.emit(&member.name);
+                self.emit("\"");
+                self.emit_semicolon();
+                auto_value += 1;
+            }
+        }
+
+        self.dedent();
+        self.emit_newline();
+        self.emit("})(");
+        self.emit(&en.name);
+        self.emit(" || (");
+        self.emit(&en.name);
+        self.emit_space();
+        self.emit("=");
+        self.emit_space();
+        self.emit("{}))");
+        self.emit_semicolon();
+    }
+
+    /// Emit a namespace as runtime IIFE:
+    /// `var Foo; (function(Foo) { ... })(Foo || (Foo = {}));`
+    #[cfg(feature = "typescript")]
+    fn emit_ts_namespace(&mut self, ns: &TsNamespace) {
+        // var NamespaceName;
+        self.emit("var ");
+        self.emit(&ns.name);
+        self.emit_semicolon();
+        self.emit_space_or_newline();
+
+        // (function(NamespaceName) { ... })(NamespaceName || (NamespaceName = {}));
+        self.emit("(function(");
+        self.emit(&ns.name);
+        self.emit(")");
+        self.emit_space();
+        self.emit("{");
+        self.indent();
+
+        for stmt in &ns.body {
+            self.emit_newline();
+            self.emit_stmt(stmt);
+        }
+
+        self.dedent();
+        self.emit_newline();
+        self.emit("})(");
+        self.emit(&ns.name);
+        self.emit(" || (");
+        self.emit(&ns.name);
+        self.emit_space();
+        self.emit("=");
+        self.emit_space();
+        self.emit("{}))");
+        self.emit_semicolon();
     }
 
     fn emit_object_property(&mut self, prop: &Property) {
@@ -1499,5 +1673,66 @@ mod tests {
         let ast = Parser::new("let x = 1;\nlet y = 2;", ParserOptions::default()).parse().unwrap();
         let output = Codegen::new(&ast, CodegenOptions { minify: true, ..Default::default() }).generate();
         assert!(!output.contains('\n'));
+    }
+
+    #[cfg(feature = "typescript")]
+    fn ts_strip(source: &str) -> String {
+        let opts = ParserOptions { module: true, typescript: true, ..Default::default() };
+        let ast = Parser::new(source, opts).parse().unwrap();
+        Codegen::new(&ast, CodegenOptions::default()).generate()
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_ts_type_stripping() {
+        // Type aliases and interfaces → stripped entirely
+        let out = ts_strip("type Foo = string;\ninterface Bar { x: number; }\nlet a = 1;");
+        assert!(!out.contains("type Foo"), "type alias should be stripped");
+        assert!(!out.contains("interface"), "interface should be stripped");
+        assert!(out.contains("let a = 1"), "runtime code preserved");
+
+        // Type annotations on functions → stripped
+        let out = ts_strip("function add(a: number, b: number): number { return a + b; }");
+        assert!(!out.contains(": number"), "type annotations stripped");
+        assert!(out.contains("function add(a, b)"), "params preserved without types");
+
+        // import type → stripped entirely
+        let out = ts_strip("import type { Foo } from './foo';\nimport { bar } from './bar';");
+        assert!(!out.contains("Foo"), "type-only import stripped");
+        assert!(out.contains("bar"), "runtime import preserved");
+
+        // Inline type specifiers → stripped
+        let out = ts_strip("import { type Foo, bar } from './mod';");
+        assert!(!out.contains("Foo"), "type specifier stripped");
+        assert!(out.contains("bar"), "runtime specifier preserved");
+
+        // as / satisfies / non-null → emit inner expr only
+        let out = ts_strip("let x = foo as string;");
+        assert!(!out.contains("as string"), "'as' stripped");
+        assert!(out.contains("let x = foo"), "inner expr preserved");
+
+        let out = ts_strip("let x = foo!;");
+        assert!(!out.contains("!"), "non-null stripped");
+        assert!(out.contains("let x = foo"), "inner expr preserved");
+
+        // declare → stripped
+        let out = ts_strip("declare const x: number;\nlet y = 1;");
+        assert!(!out.contains("declare"), "declare stripped");
+        assert!(out.contains("let y = 1"), "runtime code preserved");
+
+        // export type → stripped
+        let out = ts_strip("export type { Foo } from './foo';\nexport { bar } from './bar';");
+        assert!(!out.contains("Foo"), "type-only export stripped");
+        assert!(out.contains("bar"), "runtime export preserved");
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_ts_enum_codegen() {
+        let out = ts_strip("enum Color { Red, Green, Blue }");
+        assert!(out.contains("Color"), "enum name preserved");
+        assert!(out.contains("Red"), "enum member preserved");
+        assert!(out.contains("Green"), "enum member preserved");
+        assert!(out.contains("Blue"), "enum member preserved");
     }
 }

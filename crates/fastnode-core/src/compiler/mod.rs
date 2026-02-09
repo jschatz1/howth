@@ -323,6 +323,10 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
     for stmt in &ast.stmts {
         match &stmt.kind {
             StmtKind::Import(import_decl) => {
+                // Skip type-only imports (TypeScript)
+                if import_decl.is_type_only {
+                    continue;
+                }
                 let mut names = Vec::new();
                 for spec in &import_decl.specifiers {
                     match spec {
@@ -338,7 +342,9 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
                                 local: local.clone(),
                             });
                         }
-                        ImportSpecifier::Named { imported, local, .. } => {
+                        ImportSpecifier::Named { imported, local, is_type, .. } => {
+                            // Skip type-only named imports
+                            if *is_type { continue; }
                             names.push(ImportedName {
                                 imported: imported.clone(),
                                 local: local.clone(),
@@ -477,6 +483,62 @@ fn extract_dynamic_imports_expr(expr: &howth_parser::Expr, imports: &mut Vec<cra
         ExprKind::Await(inner) => extract_dynamic_imports_expr(inner, imports),
         _ => {}
     }
+}
+
+/// Transform TypeScript source using howth-parser (no SWC needed).
+/// Returns (transformed_code, imports) in a single parse+codegen pass.
+pub fn transform_ts(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
+    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+
+    let parser_opts = ParserOptions {
+        module: true,
+        jsx: false,
+        typescript: true,
+        ..Default::default()
+    };
+
+    let ast = Parser::new(source, parser_opts)
+        .parse()
+        .map_err(|e| CompilerError::parse_error(e.to_string()))?;
+
+    // Extract imports from the non-arena AST
+    let imports = extract_imports_from_ast(&ast);
+
+    // Generate JS with types stripped
+    let code = Codegen::new(&ast, CodegenOptions::default()).generate();
+
+    Ok((code, imports))
+}
+
+/// Transform TSX source using howth-parser (no SWC needed).
+/// Returns (transformed_code, imports) in a single parse+codegen pass.
+pub fn transform_tsx(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
+    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+
+    let parser_opts = ParserOptions {
+        module: true,
+        jsx: true,
+        typescript: true,
+        ..Default::default()
+    };
+
+    let ast = Parser::new(source, parser_opts)
+        .parse()
+        .map_err(|e| CompilerError::parse_error(e.to_string()))?;
+
+    // Extract imports from the non-arena AST
+    let imports = extract_imports_from_ast(&ast);
+
+    // Generate transformed JS with types stripped and JSX→_jsx() calls
+    let code = Codegen::new(&ast, CodegenOptions::default()).generate();
+
+    // Prepend jsx runtime import
+    let code = format!(
+        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
+        code
+    );
+
+    Ok((code, imports))
 }
 
 /// Error during compilation.

@@ -46,7 +46,7 @@ grass = "0.13"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 # Custom JS parser (arena-allocated, Bun-style speed)
-howth-parser = { path = "../howth-parser", features = ["jsx"] }
+howth-parser = { path = "../howth-parser", features = ["full"] }
 
 # Optional SWC integration for full transpilation support
 # NOTE: SWC has a known compatibility issue with serde 1.0.220+
