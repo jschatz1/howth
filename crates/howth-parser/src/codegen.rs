@@ -748,33 +748,21 @@ impl<'a> Codegen<'a> {
             return;
         }
 
-        self.emit("import");
-        self.emit(" ");
-
-        let mut has_default = false;
-        let mut has_namespace = false;
-        let mut named = Vec::new();
+        // Collect specifiers first so we can check if all were type-only
+        // before emitting anything
+        let mut default_local: Option<&str> = None;
+        let mut namespace_local: Option<&str> = None;
+        let mut named: Vec<(&str, &str)> = Vec::new();
 
         for spec in &decl.specifiers {
             match spec {
                 ImportSpecifier::Default { local, .. } => {
-                    self.emit(local);
-                    has_default = true;
+                    default_local = Some(local);
                 }
                 ImportSpecifier::Namespace { local, .. } => {
-                    if has_default {
-                        self.emit(",");
-                        self.emit_space();
-                    }
-                    self.emit("*");
-                    self.emit_space();
-                    self.emit("as");
-                    self.emit(" ");
-                    self.emit(local);
-                    has_namespace = true;
+                    namespace_local = Some(local);
                 }
                 ImportSpecifier::Named { imported, local, #[cfg(feature = "typescript")] is_type, .. } => {
-                    // Skip type-only named imports
                     #[cfg(feature = "typescript")]
                     if *is_type { continue; }
                     named.push((imported, local));
@@ -782,8 +770,36 @@ impl<'a> Codegen<'a> {
             }
         }
 
+        // If all specifiers were type-only, skip emitting the import entirely
+        // to avoid turning it into a side-effect import
+        #[cfg(feature = "typescript")]
+        if default_local.is_none() && namespace_local.is_none() && named.is_empty()
+            && !decl.specifiers.is_empty()
+        {
+            return;
+        }
+
+        self.emit("import");
+        self.emit(" ");
+
+        if let Some(local) = default_local {
+            self.emit(local);
+        }
+
+        if let Some(local) = namespace_local {
+            if default_local.is_some() {
+                self.emit(",");
+                self.emit_space();
+            }
+            self.emit("*");
+            self.emit_space();
+            self.emit("as");
+            self.emit(" ");
+            self.emit(local);
+        }
+
         if !named.is_empty() {
-            if has_default || has_namespace {
+            if default_local.is_some() || namespace_local.is_some() {
                 self.emit(",");
                 self.emit_space();
             }
@@ -804,7 +820,7 @@ impl<'a> Codegen<'a> {
             self.emit("}");
         }
 
-        if has_default || has_namespace || !named.is_empty() {
+        if default_local.is_some() || namespace_local.is_some() || !named.is_empty() {
             self.emit(" from ");
         }
         self.emit("\"");
@@ -832,7 +848,7 @@ impl<'a> Codegen<'a> {
                     })
                     .collect();
 
-                if runtime_specs.is_empty() && source.is_none() {
+                if runtime_specs.is_empty() {
                     return;
                 }
 
@@ -1734,5 +1750,45 @@ mod tests {
         assert!(out.contains("Red"), "enum member preserved");
         assert!(out.contains("Green"), "enum member preserved");
         assert!(out.contains("Blue"), "enum member preserved");
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_ts_type_only_import_not_side_effect() {
+        // import { type Foo } from "x" should be dropped entirely,
+        // not emitted as a side-effect `import "x"`
+        let out = ts_strip("import { type Foo } from './foo';");
+        assert!(!out.contains("import"), "type-only named import should not emit side-effect import");
+        assert!(!out.contains("foo"), "source should not appear");
+
+        // import { type Foo, type Bar } from "x" — all type-only
+        let out = ts_strip("import { type Foo, type Bar } from './mod';");
+        assert!(!out.contains("import"), "all-type-only named import should be dropped");
+
+        // import { type Foo, bar } from "x" — mixed: only bar remains
+        let out = ts_strip("import { type Foo, bar } from './mod';");
+        assert!(out.contains("import"), "mixed import should still emit");
+        assert!(out.contains("bar"), "runtime specifier preserved");
+        assert!(!out.contains("Foo"), "type specifier stripped");
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_ts_type_only_reexport_not_empty_export() {
+        // export { type Foo } from "x" should be dropped entirely,
+        // not emitted as `export {} from "x"`
+        let out = ts_strip("export { type Foo } from './foo';");
+        assert!(!out.contains("export"), "type-only re-export should be dropped");
+        assert!(!out.contains("foo"), "source should not appear");
+
+        // export { type Foo, type Bar } from "x" — all type-only
+        let out = ts_strip("export { type Foo, type Bar } from './mod';");
+        assert!(!out.contains("export"), "all-type-only re-export should be dropped");
+
+        // export { type Foo, bar } from "x" — mixed: only bar remains
+        let out = ts_strip("export { type Foo, bar } from './mod';");
+        assert!(out.contains("export"), "mixed re-export should still emit");
+        assert!(out.contains("bar"), "runtime specifier preserved");
+        assert!(!out.contains("Foo"), "type specifier stripped");
     }
 }
