@@ -13,7 +13,7 @@
 #![allow(clippy::unused_self)]
 #![allow(clippy::self_only_used_in_recursion)]
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -126,8 +126,8 @@ impl Resolver {
 
         // Cache miss: read directory
         let listing = std::fs::read_dir(dir).ok().map(|rd| {
-            let mut files = HashSet::new();
-            let mut subdirs = HashSet::new();
+            let mut files = HashSet::default();
+            let mut subdirs = HashSet::default();
             for entry in rd.filter_map(|e| e.ok()) {
                 let name = entry.file_name();
                 match entry.file_type() {
@@ -143,7 +143,10 @@ impl Resolver {
         });
 
         let result = listing.clone();
-        self.dir_cache.write().unwrap().insert(dir.to_path_buf(), listing);
+        self.dir_cache
+            .write()
+            .unwrap()
+            .insert(dir.to_path_buf(), listing);
         result
     }
 
@@ -156,7 +159,7 @@ impl Resolver {
             return false;
         };
         self.get_dir_listing(dir)
-            .map_or(false, |l| l.0.contains(name))
+            .is_some_and(|l| l.0.contains(name))
     }
 
     /// Check if a directory exists using the directory listing cache.
@@ -168,7 +171,7 @@ impl Resolver {
             return false;
         };
         self.get_dir_listing(parent)
-            .map_or(false, |l| l.1.contains(name))
+            .is_some_and(|l| l.1.contains(name))
     }
 
     fn resolve_uncached(

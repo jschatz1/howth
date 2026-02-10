@@ -16,7 +16,7 @@
 
 use super::graph::{ModuleGraph, ModuleId};
 use super::Import;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Unique identifier for a symbol.
 pub type SymbolId = usize;
@@ -107,12 +107,12 @@ impl ScopeHoistContext {
     pub fn new() -> Self {
         Self {
             symbols: Vec::new(),
-            module_symbols: HashMap::new(),
-            name_to_symbols: HashMap::new(),
-            symbol_links: HashMap::new(),
-            renames: HashMap::new(),
-            wrapped_modules: HashSet::new(),
-            module_exports: HashMap::new(),
+            module_symbols: HashMap::default(),
+            name_to_symbols: HashMap::default(),
+            symbol_links: HashMap::default(),
+            renames: HashMap::default(),
+            wrapped_modules: HashSet::default(),
+            module_exports: HashMap::default(),
         }
     }
 
@@ -162,7 +162,7 @@ impl ScopeHoistContext {
             // CommonJS patterns
             if trimmed.contains("require(")
                 && !trimmed.starts_with("//")
-                && !trimmed.starts_with("*")
+                && !trimmed.starts_with('*')
             {
                 // Check if it's not in a comment
                 if !is_in_comment(line, "require(") {
@@ -191,7 +191,7 @@ impl ScopeHoistContext {
         graph: &ModuleGraph,
     ) {
         let mut module_syms = Vec::new();
-        let mut exports: HashMap<String, SymbolId> = HashMap::new();
+        let mut exports: HashMap<String, SymbolId> = HashMap::default();
 
         // Collect import symbols
         for import in imports {
@@ -533,18 +533,20 @@ impl ScopeHoistContext {
     /// Get the symbol ID for a name in a specific module.
     pub fn find_symbol(&self, module_id: ModuleId, name: &str) -> Option<SymbolId> {
         self.module_symbols.get(&module_id).and_then(|syms| {
-            syms.iter().find(|&&sym_id| {
-                self.symbols
-                    .get(sym_id)
-                    .map(|s| s.name == name)
-                    .unwrap_or(false)
-            }).copied()
+            syms.iter()
+                .find(|&&sym_id| {
+                    self.symbols
+                        .get(sym_id)
+                        .map(|s| s.name == name)
+                        .unwrap_or(false)
+                })
+                .copied()
         })
     }
 
     /// Build a rename map for a specific module: original_name -> new_name.
     pub fn build_module_renames(&self, module_id: ModuleId) -> HashMap<String, String> {
-        let mut renames = HashMap::new();
+        let mut renames = HashMap::default();
 
         if let Some(sym_ids) = self.module_symbols.get(&module_id) {
             for &sym_id in sym_ids {
@@ -654,7 +656,10 @@ mod tests {
     #[test]
     fn test_extract_decl_name() {
         assert_eq!(extract_decl_name("foo = 1"), Some("foo".to_string()));
-        assert_eq!(extract_decl_name("bar: number = 1"), Some("bar".to_string()));
+        assert_eq!(
+            extract_decl_name("bar: number = 1"),
+            Some("bar".to_string())
+        );
         assert_eq!(extract_decl_name("baz;"), Some("baz".to_string()));
         assert_eq!(extract_decl_name("{ a, b } = obj"), None);
         assert_eq!(extract_decl_name("[x, y] = arr"), None);
@@ -760,14 +765,15 @@ mod tests {
 
         let id = graph.add(Module {
             path: "/multi.js".to_string(),
-            source: r#"
+            source: r"
 export const a = 1;
 export let b = 2;
 export var c = 3;
 export function d() {}
 export class E {}
 const internal = 42;
-"#.to_string(),
+"
+            .to_string(),
             imports: vec![],
             dependencies: vec![],
             dynamic_dependencies: vec![],
@@ -815,9 +821,15 @@ const internal = 42;
     #[test]
     fn test_extract_decl_name_edge_cases() {
         // TypeScript type annotations
-        assert_eq!(extract_decl_name("foo: string = 'bar'"), Some("foo".to_string()));
+        assert_eq!(
+            extract_decl_name("foo: string = 'bar'"),
+            Some("foo".to_string())
+        );
         // With type and initializer
-        assert_eq!(extract_decl_name("count: number = 0"), Some("count".to_string()));
+        assert_eq!(
+            extract_decl_name("count: number = 0"),
+            Some("count".to_string())
+        );
         // Just a name
         assert_eq!(extract_decl_name("x"), Some("x".to_string()));
         // Empty string
@@ -829,11 +841,20 @@ const internal = 42;
     #[test]
     fn test_extract_fn_name_edge_cases() {
         // Async function (the 'async' would be stripped before calling this)
-        assert_eq!(extract_fn_name("fetchData() { }"), Some("fetchData".to_string()));
+        assert_eq!(
+            extract_fn_name("fetchData() { }"),
+            Some("fetchData".to_string())
+        );
         // With parameters
-        assert_eq!(extract_fn_name("add(a, b) { return a + b; }"), Some("add".to_string()));
+        assert_eq!(
+            extract_fn_name("add(a, b) { return a + b; }"),
+            Some("add".to_string())
+        );
         // Generator
-        assert_eq!(extract_fn_name("*generator() { yield 1; }"), Some("generator".to_string()));
+        assert_eq!(
+            extract_fn_name("*generator() { yield 1; }"),
+            Some("generator".to_string())
+        );
         // No name (anonymous)
         assert_eq!(extract_fn_name("() { }"), None);
     }
@@ -890,15 +911,17 @@ const internal = 42;
         let mut graph = ModuleGraph::new();
 
         // Five modules all exporting 'name'
-        let ids: Vec<_> = (0..5).map(|i| {
-            graph.add(Module {
-                path: format!("/mod{}.js", i),
-                source: format!("export const name = {};", i),
-                imports: vec![],
-                dependencies: if i > 0 { vec![i - 1] } else { vec![] },
-                dynamic_dependencies: vec![],
+        let ids: Vec<_> = (0..5)
+            .map(|i| {
+                graph.add(Module {
+                    path: format!("/mod{}.js", i),
+                    source: format!("export const name = {};", i),
+                    imports: vec![],
+                    dependencies: if i > 0 { vec![i - 1] } else { vec![] },
+                    dynamic_dependencies: vec![],
+                })
             })
-        }).collect();
+            .collect();
 
         let ctx = ScopeHoistContext::analyze(&graph, &ids);
 
@@ -1069,8 +1092,8 @@ const internal = 42;
         assert!(is_valid_identifier("_$_"));
         assert!(is_valid_identifier("$0"));
         assert!(is_valid_identifier("_0"));
-        assert!(!is_valid_identifier("0$"));  // Can't start with digit
-        assert!(!is_valid_identifier(""));    // Empty is invalid
+        assert!(!is_valid_identifier("0$")); // Can't start with digit
+        assert!(!is_valid_identifier("")); // Empty is invalid
     }
 
     #[test]

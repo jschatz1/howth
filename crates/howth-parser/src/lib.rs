@@ -33,11 +33,11 @@
 
 #![allow(dead_code)] // During development
 
-mod token;
-mod lexer;
 mod ast;
+mod lexer;
 mod parser;
 mod span;
+mod token;
 
 // Arena allocation (Bun-style speed)
 mod arena;
@@ -54,12 +54,12 @@ mod jsx;
 mod codegen;
 
 // Re-exports
-pub use token::{Token, TokenKind};
-pub use lexer::Lexer;
 pub use ast::*;
-pub use parser::{Parser, ParserOptions, ParseError};
-pub use span::Span;
 pub use codegen::{Codegen, CodegenOptions};
+pub use lexer::Lexer;
+pub use parser::{ParseError, Parser, ParserOptions};
+pub use span::Span;
+pub use token::{Token, TokenKind};
 
 // Arena-based (fast) API
 pub use arena::Arena;
@@ -79,7 +79,7 @@ pub mod fast {
     //! ```
     pub use crate::arena::Arena;
     pub use crate::ast_arena::*;
-    pub use crate::parser_arena::{ArenaParser, ParserOptions, ParseError};
+    pub use crate::parser_arena::{ArenaParser, ParseError, ParserOptions};
 }
 
 /// Parse JavaScript/TypeScript source code into an AST.
@@ -88,7 +88,11 @@ pub fn parse(source: &str, options: ParserOptions) -> Result<Ast, ParseError> {
 }
 
 /// Parse and generate JavaScript output.
-pub fn transform(source: &str, parser_opts: ParserOptions, codegen_opts: CodegenOptions) -> Result<String, ParseError> {
+pub fn transform(
+    source: &str,
+    parser_opts: ParserOptions,
+    codegen_opts: CodegenOptions,
+) -> Result<String, ParseError> {
     let ast = parse(source, parser_opts)?;
     Ok(Codegen::new(&ast, codegen_opts).generate())
 }

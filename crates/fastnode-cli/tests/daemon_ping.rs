@@ -220,7 +220,7 @@ fn test_daemon_and_ping_json() {
     );
     assert_eq!(
         json["server_version"].as_str(),
-        Some("0.1.0"),
+        Some(env!("CARGO_PKG_VERSION")),
         "server_version should match"
     );
 }

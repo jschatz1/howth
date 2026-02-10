@@ -2,12 +2,12 @@
 //!
 //! This parser allocates all AST nodes in a bumpalo arena for ~2-3x speed improvement.
 
-use bumpalo::collections::CollectIn;
 use crate::arena::Arena;
 use crate::ast_arena::*;
 use crate::lexer::Lexer;
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
+use bumpalo::collections::CollectIn;
 
 /// Parser configuration options.
 #[derive(Debug, Clone, Default)]
@@ -24,13 +24,20 @@ pub struct ParseError {
 
 impl ParseError {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        Self { message: message.into(), span }
+        Self {
+            message: message.into(),
+            span,
+        }
     }
 }
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} at {}..{}", self.message, self.span.start, self.span.end)
+        write!(
+            f,
+            "{} at {}..{}",
+            self.message, self.span.start, self.span.end
+        )
     }
 }
 
@@ -49,7 +56,12 @@ impl<'a> ArenaParser<'a> {
     pub fn new(arena: &'a Arena, source: &'a str, _options: ParserOptions) -> Self {
         let mut lexer = Lexer::new(source);
         let current = lexer.next_token();
-        Self { arena, lexer, current, source }
+        Self {
+            arena,
+            lexer,
+            current,
+            source,
+        }
     }
 
     /// Parse the program.
@@ -62,7 +74,10 @@ impl<'a> ArenaParser<'a> {
         }
 
         let end = self.current.span.end;
-        let stmts_slice = stmts.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
+        let stmts_slice = stmts
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
         Ok(Program::new(stmts_slice, Span::new(start, end)))
     }
 
@@ -156,9 +171,18 @@ impl<'a> ArenaParser<'a> {
 
     fn parse_var_decl(&mut self) -> Result<StmtKind<'a>, ParseError> {
         let var_kind = match self.peek() {
-            TokenKind::Let => { self.advance(); VarKind::Let }
-            TokenKind::Const => { self.advance(); VarKind::Const }
-            TokenKind::Var => { self.advance(); VarKind::Var }
+            TokenKind::Let => {
+                self.advance();
+                VarKind::Let
+            }
+            TokenKind::Const => {
+                self.advance();
+                VarKind::Const
+            }
+            TokenKind::Var => {
+                self.advance();
+                VarKind::Var
+            }
             _ => return Err(ParseError::new("Expected var/let/const", self.current.span)),
         };
 
@@ -173,7 +197,11 @@ impl<'a> ArenaParser<'a> {
                 None
             };
             let end = self.current.span.end;
-            decls.push(VarDeclarator { binding, init, span: Span::new(start, end) });
+            decls.push(VarDeclarator {
+                binding,
+                init,
+                span: Span::new(start, end),
+            });
 
             if !self.eat(TokenKind::Comma) {
                 break;
@@ -181,8 +209,14 @@ impl<'a> ArenaParser<'a> {
         }
 
         self.eat(TokenKind::Semicolon);
-        let decls_slice = decls.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
-        Ok(StmtKind::Var { kind: var_kind, decls: decls_slice })
+        let decls_slice = decls
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
+        Ok(StmtKind::Var {
+            kind: var_kind,
+            decls: decls_slice,
+        })
     }
 
     fn parse_binding(&mut self) -> Result<Binding<'a>, ParseError> {
@@ -228,7 +262,11 @@ impl<'a> ArenaParser<'a> {
                 } else {
                     None
                 };
-                elements.push(Some(ArrayPatternElement { binding, default, rest }));
+                elements.push(Some(ArrayPatternElement {
+                    binding,
+                    default,
+                    rest,
+                }));
 
                 if !self.eat(TokenKind::Comma) {
                     break;
@@ -239,9 +277,14 @@ impl<'a> ArenaParser<'a> {
         self.expect(TokenKind::RBracket)?;
         let end = self.current.span.end;
 
-        let elements_slice = elements.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
+        let elements_slice = elements
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
         Ok(Binding::new(
-            BindingKind::Array { elements: elements_slice },
+            BindingKind::Array {
+                elements: elements_slice,
+            },
             Span::new(start, end),
         ))
     }
@@ -287,10 +330,12 @@ impl<'a> ArenaParser<'a> {
                     // Shorthand: `key` or `key = default`
                     let name = match key {
                         PropertyKey::Ident(n) => n,
-                        _ => return Err(ParseError::new(
-                            "Expected identifier in shorthand property",
-                            self.current.span,
-                        )),
+                        _ => {
+                            return Err(ParseError::new(
+                                "Expected identifier in shorthand property",
+                                self.current.span,
+                            ))
+                        }
                     };
                     let default = if self.eat(TokenKind::Eq) {
                         Some(self.parse_assignment()?)
@@ -316,9 +361,14 @@ impl<'a> ArenaParser<'a> {
         self.expect(TokenKind::RBrace)?;
         let end = self.current.span.end;
 
-        let props_slice = properties.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
+        let props_slice = properties
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
         Ok(Binding::new(
-            BindingKind::Object { properties: props_slice },
+            BindingKind::Object {
+                properties: props_slice,
+            },
             Span::new(start, end),
         ))
     }
@@ -384,14 +434,22 @@ impl<'a> ArenaParser<'a> {
                 None
             };
             let end = self.current.span.end;
-            params.push(Param { binding, default, rest, span: Span::new(start, end) });
+            params.push(Param {
+                binding,
+                default,
+                rest,
+                span: Span::new(start, end),
+            });
 
             if !self.eat(TokenKind::Comma) {
                 break;
             }
         }
 
-        Ok(params.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice())
+        Ok(params
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice())
     }
 
     fn parse_block_body(&mut self) -> Result<&'a [Stmt<'a>], ParseError> {
@@ -399,7 +457,10 @@ impl<'a> ArenaParser<'a> {
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
             stmts.push(self.parse_statement()?);
         }
-        Ok(stmts.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice())
+        Ok(stmts
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice())
     }
 
     fn parse_class_decl(&mut self) -> Result<StmtKind<'a>, ParseError> {
@@ -436,7 +497,10 @@ impl<'a> ArenaParser<'a> {
         Ok(Class {
             name,
             super_class,
-            body: members.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice(),
+            body: members
+                .into_iter()
+                .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+                .into_bump_slice(),
             span: Span::new(start, end),
         })
     }
@@ -533,7 +597,10 @@ impl<'a> ArenaParser<'a> {
 
     fn parse_return(&mut self) -> Result<StmtKind<'a>, ParseError> {
         self.expect(TokenKind::Return)?;
-        let arg = if !matches!(self.peek(), TokenKind::Semicolon | TokenKind::RBrace | TokenKind::Eof) {
+        let arg = if !matches!(
+            self.peek(),
+            TokenKind::Semicolon | TokenKind::RBrace | TokenKind::Eof
+        ) {
             Some(self.parse_expression()?)
         } else {
             None
@@ -557,7 +624,11 @@ impl<'a> ArenaParser<'a> {
             None
         };
 
-        Ok(StmtKind::If { test, consequent, alternate })
+        Ok(StmtKind::If {
+            test,
+            consequent,
+            alternate,
+        })
     }
 
     fn parse_while(&mut self) -> Result<StmtKind<'a>, ParseError> {
@@ -583,11 +654,23 @@ impl<'a> ArenaParser<'a> {
         }
 
         // Parse the left-hand side (could be var decl or expression)
-        if matches!(self.peek(), TokenKind::Var | TokenKind::Let | TokenKind::Const) {
+        if matches!(
+            self.peek(),
+            TokenKind::Var | TokenKind::Let | TokenKind::Const
+        ) {
             let var_kind = match self.peek() {
-                TokenKind::Var => { self.advance(); VarKind::Var }
-                TokenKind::Let => { self.advance(); VarKind::Let }
-                TokenKind::Const => { self.advance(); VarKind::Const }
+                TokenKind::Var => {
+                    self.advance();
+                    VarKind::Var
+                }
+                TokenKind::Let => {
+                    self.advance();
+                    VarKind::Let
+                }
+                TokenKind::Const => {
+                    self.advance();
+                    VarKind::Const
+                }
                 _ => unreachable!(),
             };
             let start = self.current.span.start;
@@ -597,11 +680,13 @@ impl<'a> ArenaParser<'a> {
             if self.eat(TokenKind::In) {
                 let left = ForInit::Var {
                     kind: var_kind,
-                    decls: self.arena.alloc_slice_from_iter(std::iter::once(VarDeclarator {
-                        binding,
-                        init: None,
-                        span: Span::new(start, self.current.span.end),
-                    })),
+                    decls: self
+                        .arena
+                        .alloc_slice_from_iter(std::iter::once(VarDeclarator {
+                            binding,
+                            init: None,
+                            span: Span::new(start, self.current.span.end),
+                        })),
                 };
                 let right = self.parse_expression()?;
                 self.expect(TokenKind::RParen)?;
@@ -613,16 +698,23 @@ impl<'a> ArenaParser<'a> {
                 self.advance(); // consume 'of'
                 let left = ForInit::Var {
                     kind: var_kind,
-                    decls: self.arena.alloc_slice_from_iter(std::iter::once(VarDeclarator {
-                        binding,
-                        init: None,
-                        span: Span::new(start, self.current.span.end),
-                    })),
+                    decls: self
+                        .arena
+                        .alloc_slice_from_iter(std::iter::once(VarDeclarator {
+                            binding,
+                            init: None,
+                            span: Span::new(start, self.current.span.end),
+                        })),
                 };
                 let right = self.parse_assignment()?;
                 self.expect(TokenKind::RParen)?;
                 let body = self.arena.alloc(self.parse_statement()?);
-                return Ok(StmtKind::ForOf { left, right, body, is_await });
+                return Ok(StmtKind::ForOf {
+                    left,
+                    right,
+                    body,
+                    is_await,
+                });
             }
 
             // Regular for loop with var decl
@@ -632,10 +724,17 @@ impl<'a> ArenaParser<'a> {
                 None
             };
             let end = self.current.span.end;
-            let decl = VarDeclarator { binding, init: init_val, span: Span::new(start, end) };
+            let decl = VarDeclarator {
+                binding,
+                init: init_val,
+                span: Span::new(start, end),
+            };
             self.expect(TokenKind::Semicolon)?;
             let slice = self.arena.alloc_slice_from_iter(std::iter::once(decl));
-            return self.parse_regular_for(Some(ForInit::Var { kind: var_kind, decls: slice }));
+            return self.parse_regular_for(Some(ForInit::Var {
+                kind: var_kind,
+                decls: slice,
+            }));
         }
 
         // Expression in for init
@@ -656,7 +755,12 @@ impl<'a> ArenaParser<'a> {
             let right = self.parse_assignment()?;
             self.expect(TokenKind::RParen)?;
             let body = self.arena.alloc(self.parse_statement()?);
-            return Ok(StmtKind::ForOf { left, right, body, is_await });
+            return Ok(StmtKind::ForOf {
+                left,
+                right,
+                body,
+                is_await,
+            });
         }
 
         // Regular for loop
@@ -682,7 +786,12 @@ impl<'a> ArenaParser<'a> {
         self.expect(TokenKind::RParen)?;
         let body = self.arena.alloc(self.parse_statement()?);
 
-        Ok(StmtKind::For { init, test, update, body })
+        Ok(StmtKind::For {
+            init,
+            test,
+            update,
+            body,
+        })
     }
 
     fn is_contextual_keyword(&self, keyword: &str) -> bool {
@@ -716,27 +825,42 @@ impl<'a> ArenaParser<'a> {
             } else if self.eat(TokenKind::Default) {
                 None
             } else {
-                return Err(ParseError::new("Expected 'case' or 'default'", self.current.span));
+                return Err(ParseError::new(
+                    "Expected 'case' or 'default'",
+                    self.current.span,
+                ));
             };
 
             self.expect(TokenKind::Colon)?;
 
             let mut consequent = self.arena.vec();
-            while !matches!(self.peek(), TokenKind::Case | TokenKind::Default | TokenKind::RBrace | TokenKind::Eof) {
+            while !matches!(
+                self.peek(),
+                TokenKind::Case | TokenKind::Default | TokenKind::RBrace | TokenKind::Eof
+            ) {
                 consequent.push(self.parse_statement()?);
             }
 
             let case_end = self.current.span.end;
             cases.push(SwitchCase {
                 test,
-                consequent: consequent.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice(),
+                consequent: consequent
+                    .into_iter()
+                    .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+                    .into_bump_slice(),
                 span: Span::new(case_start, case_end),
             });
         }
 
         self.expect(TokenKind::RBrace)?;
-        let cases_slice = cases.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
-        Ok(StmtKind::Switch { discriminant, cases: cases_slice })
+        let cases_slice = cases
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
+        Ok(StmtKind::Switch {
+            discriminant,
+            cases: cases_slice,
+        })
     }
 
     fn parse_do_while(&mut self) -> Result<StmtKind<'a>, ParseError> {
@@ -816,7 +940,11 @@ impl<'a> ArenaParser<'a> {
             None
         };
 
-        Ok(StmtKind::Try { block, handler, finalizer })
+        Ok(StmtKind::Try {
+            block,
+            handler,
+            finalizer,
+        })
     }
 
     /// Check if there was a line terminator before the current token.
@@ -867,7 +995,10 @@ impl<'a> ArenaParser<'a> {
                 let source = self.parse_string_literal()?;
                 self.eat(TokenKind::Semicolon);
                 let end = self.current.span.end;
-                let specs = specifiers.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
+                let specs = specifiers
+                    .into_iter()
+                    .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+                    .into_bump_slice();
                 let import = ImportDecl {
                     specifiers: specs,
                     source,
@@ -918,7 +1049,10 @@ impl<'a> ArenaParser<'a> {
         self.eat(TokenKind::Semicolon);
         let end = self.current.span.end;
 
-        let specs = specifiers.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
+        let specs = specifiers
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
         let import = ImportDecl {
             specifiers: specs,
             source,
@@ -997,7 +1131,10 @@ impl<'a> ArenaParser<'a> {
             self.eat(TokenKind::Semicolon);
             let end = self.current.span.end;
 
-            let specs = specifiers.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
+            let specs = specifiers
+                .into_iter()
+                .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+                .into_bump_slice();
             let export = ExportDecl::Named {
                 specifiers: specs,
                 source,
@@ -1024,7 +1161,10 @@ impl<'a> ArenaParser<'a> {
             let s = &s[1..s.len() - 1];
             Ok(self.arena.alloc_str(s))
         } else {
-            Err(ParseError::new("Expected string literal", self.current.span))
+            Err(ParseError::new(
+                "Expected string literal",
+                self.current.span,
+            ))
         }
     }
 
@@ -1087,12 +1227,7 @@ impl<'a> ArenaParser<'a> {
     fn parse_binary(&mut self, min_prec: u8) -> Result<Expr<'a>, ParseError> {
         let mut left = self.parse_unary()?;
 
-        loop {
-            let (op, prec) = match self.binary_op() {
-                Some(x) => x,
-                None => break,
-            };
-
+        while let Some((op, prec)) = self.binary_op() {
             if prec < min_prec {
                 break;
             }
@@ -1157,7 +1292,10 @@ impl<'a> ArenaParser<'a> {
             let arg = self.parse_unary()?;
             let span = Span::new(start, arg.span.end);
             return Ok(Expr::new(
-                ExprKind::Unary { op, arg: self.arena.alloc(arg) },
+                ExprKind::Unary {
+                    op,
+                    arg: self.arena.alloc(arg),
+                },
                 span,
             ));
         }
@@ -1173,7 +1311,11 @@ impl<'a> ArenaParser<'a> {
             let arg = self.parse_unary()?;
             let span = Span::new(start, arg.span.end);
             return Ok(Expr::new(
-                ExprKind::Update { op, prefix: true, arg: self.arena.alloc(arg) },
+                ExprKind::Update {
+                    op,
+                    prefix: true,
+                    arg: self.arena.alloc(arg),
+                },
                 span,
             ));
         }
@@ -1194,7 +1336,11 @@ impl<'a> ArenaParser<'a> {
             let end = self.advance().span.end;
             let span = Span::new(expr.span.start, end);
             expr = Expr::new(
-                ExprKind::Update { op, prefix: false, arg: self.arena.alloc(expr) },
+                ExprKind::Update {
+                    op,
+                    prefix: false,
+                    arg: self.arena.alloc(expr),
+                },
                 span,
             );
         }
@@ -1205,23 +1351,18 @@ impl<'a> ArenaParser<'a> {
     fn parse_call(&mut self) -> Result<Expr<'a>, ParseError> {
         let mut expr = self.parse_member()?;
 
-        loop {
-            match self.peek() {
-                TokenKind::LParen => {
-                    self.advance();
-                    let args = self.parse_arguments()?;
-                    let end = self.expect(TokenKind::RParen)?.span.end;
-                    let span = Span::new(expr.span.start, end);
-                    expr = Expr::new(
-                        ExprKind::Call {
-                            callee: self.arena.alloc(expr),
-                            args,
-                        },
-                        span,
-                    );
-                }
-                _ => break,
-            }
+        while let TokenKind::LParen = self.peek() {
+            self.advance();
+            let args = self.parse_arguments()?;
+            let end = self.expect(TokenKind::RParen)?.span.end;
+            let span = Span::new(expr.span.start, end);
+            expr = Expr::new(
+                ExprKind::Call {
+                    callee: self.arena.alloc(expr),
+                    args,
+                },
+                span,
+            );
         }
 
         Ok(expr)
@@ -1245,7 +1386,10 @@ impl<'a> ArenaParser<'a> {
             }
         }
 
-        Ok(args.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice())
+        Ok(args
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice())
     }
 
     fn parse_member(&mut self) -> Result<Expr<'a>, ParseError> {
@@ -1368,7 +1512,12 @@ impl<'a> ArenaParser<'a> {
                     }
                 }
                 self.expect(TokenKind::RBracket)?;
-                ExprKind::Array(elements.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice())
+                ExprKind::Array(
+                    elements
+                        .into_iter()
+                        .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+                        .into_bump_slice(),
+                )
             }
             TokenKind::LBrace => {
                 self.advance();
@@ -1397,7 +1546,12 @@ impl<'a> ArenaParser<'a> {
                     }
                 }
                 self.expect(TokenKind::RBrace)?;
-                ExprKind::Object(props.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice())
+                ExprKind::Object(
+                    props
+                        .into_iter()
+                        .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+                        .into_bump_slice(),
+                )
             }
             TokenKind::Function => {
                 let func = self.parse_function()?;
@@ -1410,7 +1564,10 @@ impl<'a> ArenaParser<'a> {
                 let arg = self.parse_assignment()?;
                 self.expect(TokenKind::RParen)?;
                 let end = self.current.span.end;
-                return Ok(Expr::new(ExprKind::Import(self.arena.alloc(arg)), Span::new(start, end)));
+                return Ok(Expr::new(
+                    ExprKind::Import(self.arena.alloc(arg)),
+                    Span::new(start, end),
+                ));
             }
             TokenKind::TemplateNoSub(_) => {
                 return self.parse_template_literal();
@@ -1440,9 +1597,20 @@ impl<'a> ArenaParser<'a> {
             // Shorthand property
             let name = match key {
                 PropertyKey::Ident(s) => s,
-                _ => return Err(ParseError::new("Invalid shorthand property", self.current.span)),
+                _ => {
+                    return Err(ParseError::new(
+                        "Invalid shorthand property",
+                        self.current.span,
+                    ))
+                }
             };
-            (Expr::new(ExprKind::Ident(name), Span::new(start, self.current.span.end)), true)
+            (
+                Expr::new(
+                    ExprKind::Ident(name),
+                    Span::new(start, self.current.span.end),
+                ),
+                true,
+            )
         };
 
         let end = self.current.span.end;
@@ -1543,7 +1711,10 @@ impl<'a> ArenaParser<'a> {
             span: Span::new(start, end),
         };
 
-        Ok(Expr::new(ExprKind::Arrow(self.arena.alloc(arrow)), Span::new(start, end)))
+        Ok(Expr::new(
+            ExprKind::Arrow(self.arena.alloc(arrow)),
+            Span::new(start, end),
+        ))
     }
 
     // =========================================================================
@@ -1639,16 +1810,24 @@ impl<'a> ArenaParser<'a> {
                     self.current = self.lexer.next_token();
                     break;
                 }
-                _ => return Err(ParseError::new(
-                    format!("Expected template middle or tail, got {:?}", cont_kind),
-                    Span::new(cont_start, cont_end),
-                )),
+                _ => {
+                    return Err(ParseError::new(
+                        format!("Expected template middle or tail, got {:?}", cont_kind),
+                        Span::new(cont_start, cont_end),
+                    ))
+                }
             }
         }
 
         let end = self.current.span.end;
-        let quasis_slice = quasis.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
-        let exprs_slice = exprs.into_iter().collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump()).into_bump_slice();
+        let quasis_slice = quasis
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
+        let exprs_slice = exprs
+            .into_iter()
+            .collect_in::<bumpalo::collections::Vec<_>>(self.arena.bump())
+            .into_bump_slice();
 
         Ok(Expr::new(
             ExprKind::Template {
@@ -1667,7 +1846,8 @@ trait ArenaExt {
 
 impl ArenaExt for Arena {
     fn alloc_slice_from_iter<T, I: Iterator<Item = T> + ExactSizeIterator>(&self, iter: I) -> &[T] {
-        iter.collect_in::<bumpalo::collections::Vec<T>>(self.bump()).into_bump_slice()
+        iter.collect_in::<bumpalo::collections::Vec<T>>(self.bump())
+            .into_bump_slice()
     }
 }
 
@@ -1745,7 +1925,8 @@ mod tests {
     #[test]
     fn test_arena_class() {
         let arena = Arena::new();
-        let source = "class Counter { constructor() { this.count = 0; } increment() { this.count++; } }";
+        let source =
+            "class Counter { constructor() { this.count = 0; } increment() { this.count++; } }";
         let parser = ArenaParser::new(&arena, source, ParserOptions::default());
         let program = parser.parse().unwrap();
         assert_eq!(program.stmts.len(), 1);

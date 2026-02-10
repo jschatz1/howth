@@ -50,8 +50,9 @@ mod treeshake;
 
 pub use assets::{Asset, AssetCollection, AssetType};
 pub use chunks::{Chunk, ChunkGraph, ChunkId, ChunkManifest};
-pub use emit::{emit_bundle, emit_bundle_with_entry, emit_scope_hoisted, BundleFormat, BundleOutput};
-pub use scope::{ScopeHoistContext, Symbol, SymbolId, SymbolKind};
+pub use emit::{
+    emit_bundle, emit_bundle_with_entry, emit_scope_hoisted, BundleFormat, BundleOutput,
+};
 pub use graph::{Module, ModuleGraph, ModuleId};
 pub use plugin::{
     AliasPlugin,
@@ -77,6 +78,7 @@ pub use plugin::{
     VirtualPlugin,
 };
 pub use resolve::{ResolveError, ResolveResult, Resolver};
+pub use scope::{ScopeHoistContext, Symbol, SymbolId, SymbolKind};
 pub use treeshake::UsedExports;
 
 use rayon::prelude::*;
@@ -113,8 +115,8 @@ impl Default for BundleOptions {
             sourcemap: false,
             external: Vec::new(),
             target: crate::compiler::Target::ES2020,
-            treeshake: true,   // Enable by default
-            splitting: false,  // Disabled by default
+            treeshake: true,    // Enable by default
+            splitting: false,   // Disabled by default
             scope_hoist: false, // Disabled by default for backwards compatibility
         }
     }
@@ -487,7 +489,8 @@ impl Bundler {
         graph: &mut ModuleGraph,
         options: &BundleOptions,
     ) -> Result<ModuleId, BundleError> {
-        use std::collections::{HashMap, HashSet, VecDeque};
+        use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+        use std::collections::VecDeque;
 
         let entry_path = if entry.is_absolute() {
             entry.to_path_buf()
@@ -502,10 +505,10 @@ impl Bundler {
         })?;
 
         // Track dependency info for each module: (specifier, resolved_path, is_dynamic)
-        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::default();
         // Track external modules (resolved by plugins) - for future use in warnings/manifest
         #[allow(unused_mut)]
-        let mut externals: HashSet<String> = HashSet::new();
+        let mut externals: HashSet<String> = HashSet::default();
 
         let mut queue: VecDeque<std::path::PathBuf> = VecDeque::new();
         queue.push_back(entry_path.clone());
@@ -694,8 +697,7 @@ impl Bundler {
         graph: &mut ModuleGraph,
         options: &BundleOptions,
     ) -> Result<ModuleId, BundleError> {
-        use std::collections::{HashMap, HashSet};
-
+        use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
         let entry_path = if entry.is_absolute() {
             entry.to_path_buf()
@@ -711,8 +713,8 @@ impl Bundler {
 
         // Phase 1: Parallel discovery - process files level by level
         // Each level is processed in parallel for both reading and import extraction
-        let mut file_contents: HashMap<String, String> = HashMap::new();
-        let mut path_set: HashSet<String> = HashSet::new();
+        let mut file_contents: HashMap<String, String> = HashMap::default();
+        let mut path_set: HashSet<String> = HashSet::default();
         let mut ordered_paths: Vec<String> = Vec::new();
 
         // Start with entry file
@@ -724,33 +726,35 @@ impl Bundler {
 
         while !current_level.is_empty() {
             // Read all files in current level in parallel, resolve imports in parallel too
-            let level_results: Vec<(String, String, Vec<Import>, Vec<std::path::PathBuf>)> = current_level
-                .par_iter()
-                .filter_map(|path| {
-                    let path_str = path.display().to_string();
-                    let source = std::fs::read_to_string(path).ok()?;
-                    let imports = self.extract_imports(&source, path).unwrap_or_default();
+            let level_results: Vec<(String, String, Vec<Import>, Vec<std::path::PathBuf>)> =
+                current_level
+                    .par_iter()
+                    .filter_map(|path| {
+                        let path_str = path.display().to_string();
+                        let source = std::fs::read_to_string(path).ok()?;
+                        let imports = self.extract_imports(&source, path).unwrap_or_default();
 
-                    // Resolve imports in parallel (resolver uses RwLock cache)
-                    let mut resolved_deps = Vec::new();
-                    for import in &imports {
-                        if externals.iter().any(|e| import.specifier.starts_with(e)) {
-                            continue;
-                        }
-                        if let Ok(ResolveResult::Found(dep_path)) =
-                            self.resolver.resolve(&import.specifier, path, cwd)
-                        {
-                            let ext = dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            if AssetType::is_css(ext) || AssetType::is_asset(ext) {
+                        // Resolve imports in parallel (resolver uses RwLock cache)
+                        let mut resolved_deps = Vec::new();
+                        for import in &imports {
+                            if externals.iter().any(|e| import.specifier.starts_with(e)) {
                                 continue;
                             }
-                            resolved_deps.push(dep_path);
+                            if let Ok(ResolveResult::Found(dep_path)) =
+                                self.resolver.resolve(&import.specifier, path, cwd)
+                            {
+                                let ext =
+                                    dep_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                if AssetType::is_css(ext) || AssetType::is_asset(ext) {
+                                    continue;
+                                }
+                                resolved_deps.push(dep_path);
+                            }
                         }
-                    }
 
-                    Some((path_str, source, imports, resolved_deps))
-                })
-                .collect();
+                        Some((path_str, source, imports, resolved_deps))
+                    })
+                    .collect();
 
             // Collect next level of files to process (sequential dedup only)
             let mut next_level: Vec<std::path::PathBuf> = Vec::new();
@@ -780,75 +784,62 @@ impl Bundler {
 
         let has_plugins = self.plugins.has_plugins();
 
-        // Use SWC backend for transpilation (shared across threads - SWC is thread-safe)
-        use crate::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
-
         // Phase 2: Transform all files AND resolve imports in parallel
         // Each worker: plugin transform → transpile → extract imports → resolve deps
         let externals = &options.external;
 
-        let processed: Vec<Result<(String, String, Vec<Import>, Vec<(String, String, bool)>), BundleError>> = paths_and_sources
+        let processed: Vec<
+            Result<(String, String, Vec<Import>, Vec<(String, String, bool)>), BundleError>,
+        > = paths_and_sources
             .par_iter()
             .map(|(path_str, source)| {
                 // First apply plugin transforms if any
                 let plugin_transformed = if has_plugins {
-                    self.plugins.transform(source, path_str).map_err(|e| BundleError {
-                        code: "PLUGIN_ERROR",
-                        message: e.to_string(),
-                        path: Some(path_str.clone()),
-                    })?
+                    self.plugins
+                        .transform(source, path_str)
+                        .map_err(|e| BundleError {
+                            code: "PLUGIN_ERROR",
+                            message: e.to_string(),
+                            path: Some(path_str.clone()),
+                        })?
                 } else {
                     source.clone()
                 };
 
-                let ext = Path::new(path_str).extension().and_then(|e| e.to_str()).unwrap_or("");
+                let ext = Path::new(path_str)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
 
                 let (transpiled_code, imports) = match ext {
                     // Fast path: JSX files use howth-parser (no SWC)
-                    "jsx" => {
-                        crate::compiler::transform_jsx(&plugin_transformed)
-                            .map_err(|e| BundleError {
-                                code: "BUNDLE_TRANSPILE_ERROR",
-                                message: e.message,
-                                path: Some(path_str.clone()),
-                            })?
-                    }
-                    // Fast path: TypeScript files use howth-parser (no SWC)
-                    "ts" | "mts" | "cts" => {
-                        crate::compiler::transform_ts(&plugin_transformed)
-                            .map_err(|e| BundleError {
-                                code: "BUNDLE_TRANSPILE_ERROR",
-                                message: e.message,
-                                path: Some(path_str.clone()),
-                            })?
-                    }
-                    // Fast path: TSX files use howth-parser (no SWC)
-                    "tsx" => {
-                        crate::compiler::transform_tsx(&plugin_transformed)
-                            .map_err(|e| BundleError {
-                                code: "BUNDLE_TRANSPILE_ERROR",
-                                message: e.message,
-                                path: Some(path_str.clone()),
-                            })?
-                    }
-                    // Plain JS: no transformation needed, just extract imports
-                    "js" | "mjs" | "cjs" => {
-                        let path = std::path::PathBuf::from(path_str);
-                        let imports = self.extract_imports(&plugin_transformed, &path)?;
-                        (plugin_transformed.clone(), imports)
-                    }
-                    // Fallback: use SWC for unknown extensions
-                    _ => {
-                        let backend = SwcBackend::new();
-                        let spec = TranspileSpec::new(path_str, "");
-                        let transpiled = backend.transpile(&spec, &plugin_transformed).map_err(|e| BundleError {
+                    "jsx" => crate::compiler::transform_jsx(&plugin_transformed).map_err(|e| {
+                        BundleError {
                             code: "BUNDLE_TRANSPILE_ERROR",
                             message: e.message,
                             path: Some(path_str.clone()),
-                        })?;
+                        }
+                    })?,
+                    // Fast path: TypeScript files use howth-parser (no SWC)
+                    "ts" | "mts" | "cts" => crate::compiler::transform_ts(&plugin_transformed)
+                        .map_err(|e| BundleError {
+                            code: "BUNDLE_TRANSPILE_ERROR",
+                            message: e.message,
+                            path: Some(path_str.clone()),
+                        })?,
+                    // Fast path: TSX files use howth-parser (no SWC)
+                    "tsx" => crate::compiler::transform_tsx(&plugin_transformed).map_err(|e| {
+                        BundleError {
+                            code: "BUNDLE_TRANSPILE_ERROR",
+                            message: e.message,
+                            path: Some(path_str.clone()),
+                        }
+                    })?,
+                    // Plain JS or fallback: no transformation needed, just extract imports
+                    _ => {
                         let path = std::path::PathBuf::from(path_str);
-                        let imports = self.extract_imports(&transpiled.code, &path)?;
-                        (transpiled.code, imports)
+                        let imports = self.extract_imports(&plugin_transformed, &path)?;
+                        (plugin_transformed.clone(), imports)
                     }
                 };
 
@@ -878,7 +869,7 @@ impl Bundler {
             .collect();
 
         // Phase 3: Build the graph from processed results (just assembly, no I/O)
-        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::default();
 
         for result in processed {
             let (path_str, source, imports, module_deps) = result?;

@@ -4,7 +4,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
 /// Asset types that can be imported.
@@ -224,8 +224,8 @@ pub fn process_sass(content: &str, path: &Path) -> Result<String, String> {
     };
 
     // Compile Sass to CSS
-    let css = compile_sass(content, &options)
-        .map_err(|e| format!("Sass compilation error: {}", e))?;
+    let css =
+        compile_sass(content, &options).map_err(|e| format!("Sass compilation error: {}", e))?;
 
     // Apply lightningcss processing
     Ok(process_css(&css))

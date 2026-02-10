@@ -22,7 +22,10 @@ impl Span {
     /// Create an empty span at a position.
     #[inline]
     pub const fn empty(pos: u32) -> Self {
-        Self { start: pos, end: pos }
+        Self {
+            start: pos,
+            end: pos,
+        }
     }
 
     /// Length of the span in bytes.
@@ -41,8 +44,16 @@ impl Span {
     #[inline]
     pub const fn merge(self, other: Span) -> Span {
         Span {
-            start: if self.start < other.start { self.start } else { other.start },
-            end: if self.end > other.end { self.end } else { other.end },
+            start: if self.start < other.start {
+                self.start
+            } else {
+                other.start
+            },
+            end: if self.end > other.end {
+                self.end
+            } else {
+                other.end
+            },
         }
     }
 
@@ -98,7 +109,8 @@ impl LineIndex {
 
     /// Convert a byte offset to line and column (both 0-indexed).
     pub fn line_col(&self, offset: u32) -> (u32, u32) {
-        let line = self.line_starts
+        let line = self
+            .line_starts
             .binary_search(&offset)
             .unwrap_or_else(|i| i.saturating_sub(1));
         let col = offset - self.line_starts[line];
@@ -132,9 +144,9 @@ mod tests {
         let source = "line1\nline2\nline3";
         let index = LineIndex::new(source);
 
-        assert_eq!(index.line_col(0), (0, 0));  // 'l' of line1
-        assert_eq!(index.line_col(5), (0, 5));  // '\n' after line1
-        assert_eq!(index.line_col(6), (1, 0));  // 'l' of line2
+        assert_eq!(index.line_col(0), (0, 0)); // 'l' of line1
+        assert_eq!(index.line_col(5), (0, 5)); // '\n' after line1
+        assert_eq!(index.line_col(6), (1, 0)); // 'l' of line2
         assert_eq!(index.line_col(12), (2, 0)); // 'l' of line3
     }
 }

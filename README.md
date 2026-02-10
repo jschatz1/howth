@@ -19,7 +19,7 @@ The playground includes examples for:
 
 A complete JavaScript/TypeScript toolchain — runtime, build system, bundler, test runner, package manager, and dev server — written in Rust.
 
-> `howth` is the new name of the project formerly known as `fastnode`.
+> **Note:** This project is a work in progress. APIs and features may change.
 
 ## What is howth?
 

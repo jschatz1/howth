@@ -3,7 +3,7 @@
 //! Splits the module graph into chunks based on dynamic import boundaries.
 
 use super::graph::{ModuleGraph, ModuleId};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// A chunk is a group of modules that are loaded together.
 #[derive(Debug, Clone)]
@@ -41,8 +41,8 @@ impl ChunkGraph {
     pub fn from_module_graph(graph: &ModuleGraph, entry_id: ModuleId) -> Self {
         let mut chunk_graph = ChunkGraph {
             chunks: Vec::new(),
-            module_to_chunk: HashMap::new(),
-            shared_modules: HashSet::new(),
+            module_to_chunk: HashMap::default(),
+            shared_modules: HashSet::default(),
         };
 
         // Find all dynamic import boundaries (split points)
@@ -103,7 +103,7 @@ impl ChunkGraph {
         chunk_id: ChunkId,
         split_points: &HashSet<ModuleId>,
     ) {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let mut stack = vec![start];
 
         while let Some(module_id) = stack.pop() {
@@ -135,7 +135,7 @@ impl ChunkGraph {
     /// Identify modules that are shared between multiple chunks.
     fn identify_shared_modules(&mut self, graph: &ModuleGraph) {
         // Count how many chunks reference each module
-        let mut module_usage: HashMap<ModuleId, HashSet<ChunkId>> = HashMap::new();
+        let mut module_usage: HashMap<ModuleId, HashSet<ChunkId>> = HashMap::default();
 
         for chunk in &self.chunks {
             // Get all modules reachable from this chunk
@@ -213,7 +213,7 @@ impl ChunkGraph {
 
 /// Find all split points (targets of dynamic imports).
 fn find_split_points(graph: &ModuleGraph) -> HashSet<ModuleId> {
-    let mut split_points = HashSet::new();
+    let mut split_points = HashSet::default();
 
     for (_, module) in graph.iter() {
         for &dynamic_dep in &module.dynamic_dependencies {
@@ -226,7 +226,7 @@ fn find_split_points(graph: &ModuleGraph) -> HashSet<ModuleId> {
 
 /// Get all static dependencies of a module recursively.
 fn get_all_dependencies(graph: &ModuleGraph, start: ModuleId) -> HashSet<ModuleId> {
-    let mut deps = HashSet::new();
+    let mut deps = HashSet::default();
     let mut stack = vec![start];
 
     while let Some(module_id) = stack.pop() {

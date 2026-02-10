@@ -28,7 +28,7 @@
 #![allow(clippy::needless_lifetimes)]
 #![allow(clippy::unnecessary_literal_bound)]
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -74,7 +74,7 @@ impl PluginContext {
             cwd,
             env: std::env::vars().collect(),
             watch: false,
-            meta: HashMap::new(),
+            meta: HashMap::default(),
         }
     }
 
@@ -193,7 +193,7 @@ impl Default for DevConfig {
             port: 3000,
             host: "localhost".to_string(),
             base: "/".to_string(),
-            define: HashMap::new(),
+            define: HashMap::default(),
         }
     }
 }
@@ -597,7 +597,7 @@ impl ReplacePlugin {
     /// Create a new replace plugin.
     pub fn new() -> Self {
         Self {
-            replacements: HashMap::new(),
+            replacements: HashMap::default(),
         }
     }
 
@@ -668,7 +668,7 @@ impl VirtualPlugin {
     /// Create a new virtual plugin.
     pub fn new() -> Self {
         Self {
-            modules: HashMap::new(),
+            modules: HashMap::default(),
         }
     }
 

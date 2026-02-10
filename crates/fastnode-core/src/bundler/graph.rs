@@ -3,7 +3,7 @@
 //! Tracks modules and their dependencies for bundling.
 
 use super::Import;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::Path;
 
 /// Unique identifier for a module in the graph.
@@ -84,10 +84,7 @@ impl ModuleGraph {
     }
 
     /// Set dependencies from a map of module path -> (specifier, resolved_path, is_dynamic) tuples.
-    pub fn set_dependencies(
-        &mut self,
-        dep_info: &std::collections::HashMap<String, Vec<(String, String, bool)>>,
-    ) {
+    pub fn set_dependencies(&mut self, dep_info: &HashMap<String, Vec<(String, String, bool)>>) {
         for module in &mut self.modules {
             if let Some(deps) = dep_info.get(&module.path) {
                 // Static dependencies

@@ -31,12 +31,11 @@ use axum::{
     routing::get,
     Router,
 };
-use fastnode_core::dev::config::ProxyConfig;
-use tower_http::cors::{Any, CorsLayer};
 use fastnode_core::bundler::{
     plugins::ReactRefreshPlugin, AliasPlugin, BundleFormat, BundleOptions, Bundler, DevConfig,
     PluginContainer, ReplacePlugin,
 };
+use fastnode_core::dev::config::ProxyConfig;
 use fastnode_core::dev::{
     client_env_replacements, extract_import_urls, is_self_accepting_module, load_config,
     load_env_files, HmrEngine, ModuleTransformer, PreBundler,
@@ -48,6 +47,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
+use tower_http::cors::{Any, CorsLayer};
 
 /// Dev server action.
 #[derive(Debug, Clone)]
@@ -654,7 +654,7 @@ async fn handle_proxy(
     let mut proxy_req = state.http_client.request(method.clone(), &target_url);
 
     // Forward headers (except Host if changeOrigin is set)
-    for (key, value) in headers.iter() {
+    for (key, value) in &headers {
         if config.change_origin && key == header::HOST {
             continue; // Skip Host header, reqwest will set it from the URL
         }
@@ -704,9 +704,10 @@ async fn handle_proxy(
             };
 
             // Build response with forwarded headers
-            let mut response = Response::builder().status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
+            let mut response = Response::builder()
+                .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
 
-            for (key, value) in resp_headers.iter() {
+            for (key, value) in &resp_headers {
                 // Skip hop-by-hop headers
                 if key == header::CONNECTION
                     || key == header::TRANSFER_ENCODING

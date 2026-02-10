@@ -30,7 +30,10 @@ pub fn should_parse_jsx(prev_token: Option<&TokenKind>) -> bool {
         // After assignment operators
         Some(k) if k.is_assignment() => true,
         // After logical/ternary operators
-        Some(TokenKind::AmpAmp) | Some(TokenKind::PipePipe) | Some(TokenKind::QuestionQuestion) | Some(TokenKind::Question) => true,
+        Some(TokenKind::AmpAmp)
+        | Some(TokenKind::PipePipe)
+        | Some(TokenKind::QuestionQuestion)
+        | Some(TokenKind::Question) => true,
         // Otherwise, likely comparison
         _ => false,
     }
@@ -38,7 +41,10 @@ pub fn should_parse_jsx(prev_token: Option<&TokenKind>) -> bool {
 
 /// Check if a tag name is an intrinsic element (lowercase) or component (uppercase).
 pub fn is_intrinsic_element(name: &str) -> bool {
-    name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
+    name.chars()
+        .next()
+        .map(|c| c.is_lowercase())
+        .unwrap_or(false)
 }
 
 // =============================================================================
@@ -187,10 +193,7 @@ impl<'a> Parser<'a> {
 
         loop {
             // Stop at `>`, `/>`, or EOF
-            if self.check(&TokenKind::Gt)
-                || self.check(&TokenKind::Slash)
-                || self.is_eof()
-            {
+            if self.check(&TokenKind::Gt) || self.check(&TokenKind::Slash) || self.is_eof() {
                 break;
             }
 
@@ -291,7 +294,10 @@ impl<'a> Parser<'a> {
 
         loop {
             if self.is_eof() {
-                return Err(ParseError::new("Unterminated JSX element", self.current.span));
+                return Err(ParseError::new(
+                    "Unterminated JSX element",
+                    self.current.span,
+                ));
             }
 
             // Check for closing tag or end of fragment
@@ -334,12 +340,10 @@ impl<'a> Parser<'a> {
             let mut found_text = false;
 
             // Consume tokens as text until we hit JSX-significant tokens
-            while !self.is_eof()
-                && !self.check(&TokenKind::Lt)
-                && !self.check(&TokenKind::LBrace)
-            {
+            while !self.is_eof() && !self.check(&TokenKind::Lt) && !self.check(&TokenKind::LBrace) {
                 // Get the source text for this token
-                let token_text = &self.source[self.current.span.start as usize..self.current.span.end as usize];
+                let token_text =
+                    &self.source[self.current.span.start as usize..self.current.span.end as usize];
                 text.push_str(token_text);
                 found_text = true;
                 self.advance();
@@ -365,7 +369,7 @@ impl<'a> Parser<'a> {
         // Consume `<`
         if !self.check(&TokenKind::Lt) {
             return Err(ParseError::new(
-                format!("Expected closing tag for JSX element"),
+                "Expected closing tag for JSX element".to_string(),
                 self.current.span,
             ));
         }
@@ -386,7 +390,7 @@ impl<'a> Parser<'a> {
         let close_name = self.parse_jsx_element_name()?;
         if close_name != *expected_name {
             return Err(ParseError::new(
-                format!("Mismatched closing tag"),
+                "Mismatched closing tag".to_string(),
                 self.current.span,
             ));
         }
@@ -407,7 +411,10 @@ impl<'a> Parser<'a> {
     fn expect_jsx_close_fragment(&mut self) -> Result<(), ParseError> {
         // Consume `<`
         if !self.check(&TokenKind::Lt) {
-            return Err(ParseError::new("Expected '<' for closing fragment", self.current.span));
+            return Err(ParseError::new(
+                "Expected '<' for closing fragment",
+                self.current.span,
+            ));
         }
         // Tell the lexer that `/` in `</>` is not a regex
         self.lexer.set_no_regex();
@@ -415,13 +422,19 @@ impl<'a> Parser<'a> {
 
         // Consume `/`
         if !self.check(&TokenKind::Slash) {
-            return Err(ParseError::new("Expected '/' in closing fragment", self.current.span));
+            return Err(ParseError::new(
+                "Expected '/' in closing fragment",
+                self.current.span,
+            ));
         }
         self.advance();
 
         // Consume `>`
         if !self.check(&TokenKind::Gt) {
-            return Err(ParseError::new("Expected '>' in closing fragment", self.current.span));
+            return Err(ParseError::new(
+                "Expected '>' in closing fragment",
+                self.current.span,
+            ));
         }
         self.advance();
 
@@ -502,7 +515,12 @@ pub fn emit_jsx_element(element: &JsxElement, out: &mut String) {
     out.push_str(", ");
 
     // Props object
-    emit_jsx_props(&element.opening.attributes, &element.children, has_multiple_children, out);
+    emit_jsx_props(
+        &element.opening.attributes,
+        &element.children,
+        has_multiple_children,
+        out,
+    );
 
     out.push(')');
 }
@@ -537,7 +555,9 @@ fn emit_jsx_props(
     for attr in attributes {
         match attr {
             JsxAttribute::Attribute { name, value, .. } => {
-                if !first { out.push_str(", "); }
+                if !first {
+                    out.push_str(", ");
+                }
                 first = false;
                 emit_jsx_attr_name(name, out);
                 out.push_str(": ");
@@ -565,7 +585,9 @@ fn emit_jsx_props(
             }
             JsxAttribute::SpreadAttribute { .. } => {
                 // Spread attributes need special handling
-                if !first { out.push_str(", "); }
+                if !first {
+                    out.push_str(", ");
+                }
                 first = false;
                 out.push_str("...__JSX_SPREAD__");
             }
@@ -574,12 +596,16 @@ fn emit_jsx_props(
 
     // Emit children
     if !children.is_empty() {
-        if !first { out.push_str(", "); }
+        if !first {
+            out.push_str(", ");
+        }
         out.push_str("children: ");
         if multiple_children {
             out.push('[');
             for (i, child) in children.iter().enumerate() {
-                if i > 0 { out.push_str(", "); }
+                if i > 0 {
+                    out.push_str(", ");
+                }
                 emit_jsx_child(child, out);
             }
             out.push(']');

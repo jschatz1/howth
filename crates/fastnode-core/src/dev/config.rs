@@ -1504,7 +1504,7 @@ mod tests {
 
     #[test]
     fn test_parse_proxy_string_shorthand() {
-        let source = r#"
+        let source = r"
             export default {
                 server: {
                     port: 3000,
@@ -1513,7 +1513,7 @@ mod tests {
                     }
                 }
             };
-        "#;
+        ";
         let config = parse_config_object(source).unwrap();
         assert!(config.server.proxy.contains_key("/api"));
         let proxy = config.server.proxy.get("/api").unwrap();
@@ -1523,7 +1523,7 @@ mod tests {
 
     #[test]
     fn test_parse_proxy_object_config() {
-        let source = r#"
+        let source = r"
             export default {
                 server: {
                     proxy: {
@@ -1535,7 +1535,7 @@ mod tests {
                     }
                 }
             };
-        "#;
+        ";
         let config = parse_config_object(source).unwrap();
         let proxy = config.server.proxy.get("/api").unwrap();
         assert_eq!(proxy.target, "https://api.example.com");
@@ -1545,7 +1545,7 @@ mod tests {
 
     #[test]
     fn test_parse_proxy_multiple_paths() {
-        let source = r#"
+        let source = r"
             export default {
                 server: {
                     proxy: {
@@ -1557,7 +1557,7 @@ mod tests {
                     }
                 }
             };
-        "#;
+        ";
         let config = parse_config_object(source).unwrap();
         assert_eq!(config.server.proxy.len(), 2);
         assert!(config.server.proxy.contains_key("/api"));
@@ -1566,7 +1566,7 @@ mod tests {
 
     #[test]
     fn test_parse_proxy_with_rewrite() {
-        let source = r#"
+        let source = r"
             export default {
                 server: {
                     proxy: {
@@ -1577,7 +1577,7 @@ mod tests {
                     }
                 }
             };
-        "#;
+        ";
         let config = parse_config_object(source).unwrap();
         let proxy = config.server.proxy.get("/api").unwrap();
         // Static parser uses the path prefix as rewrite hint

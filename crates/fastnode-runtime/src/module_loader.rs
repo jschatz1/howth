@@ -662,18 +662,18 @@ export default __howth_result__;
         declarations
     }
 
-    /// Transpile TypeScript/JSX to JavaScript using SWC.
+    /// Transpile TypeScript/JSX to JavaScript using howth-parser.
     fn transpile(&self, source: &str, path: &Path) -> Result<String, AnyError> {
-        use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-        let backend = SwcBackend::new();
-        let spec = TranspileSpec::new(path, "");
+        let (code, _imports) = match ext.to_lowercase().as_str() {
+            "tsx" => fastnode_core::compiler::transform_tsx(source),
+            "jsx" => fastnode_core::compiler::transform_jsx(source),
+            _ => fastnode_core::compiler::transform_ts(source),
+        }
+        .map_err(|e| AnyError::msg(format!("Transpilation failed: {}", e.message)))?;
 
-        let output = backend
-            .transpile(&spec, source)
-            .map_err(|e| AnyError::msg(format!("Transpilation failed: {}", e.message)))?;
-
-        Ok(output.code)
+        Ok(code)
     }
 }
 

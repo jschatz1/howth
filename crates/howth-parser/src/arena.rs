@@ -15,9 +15,7 @@ pub struct Arena {
 impl Arena {
     /// Create a new arena with default capacity.
     pub fn new() -> Self {
-        Self {
-            bump: Bump::new(),
-        }
+        Self { bump: Bump::new() }
     }
 
     /// Create a new arena with the specified capacity in bytes.

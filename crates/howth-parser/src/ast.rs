@@ -87,10 +87,7 @@ pub enum ExprKind {
 
     // === Operations ===
     /// Unary operation: `!x`, `-x`, `typeof x`
-    Unary {
-        op: UnaryOp,
-        arg: Box<Expr>,
-    },
+    Unary { op: UnaryOp, arg: Box<Expr> },
     /// Binary operation: `a + b`, `a && b`
     Binary {
         op: BinaryOp,
@@ -134,25 +131,13 @@ pub enum ExprKind {
 
     // === Calls ===
     /// Function call: `f(a, b)`
-    Call {
-        callee: Box<Expr>,
-        args: Vec<Expr>,
-    },
+    Call { callee: Box<Expr>, args: Vec<Expr> },
     /// Optional call: `f?.(a, b)`
-    OptionalCall {
-        callee: Box<Expr>,
-        args: Vec<Expr>,
-    },
+    OptionalCall { callee: Box<Expr>, args: Vec<Expr> },
     /// New expression: `new Foo(a, b)`
-    New {
-        callee: Box<Expr>,
-        args: Vec<Expr>,
-    },
+    New { callee: Box<Expr>, args: Vec<Expr> },
     /// Tagged template: `` tag`template` ``
-    TaggedTemplate {
-        tag: Box<Expr>,
-        quasi: Box<Expr>,
-    },
+    TaggedTemplate { tag: Box<Expr>, quasi: Box<Expr> },
 
     // === Special ===
     /// Spread element: `...arr`
@@ -177,22 +162,13 @@ pub enum ExprKind {
 
     // === TypeScript (when feature enabled) ===
     #[cfg(feature = "typescript")]
-    TsAs {
-        expr: Box<Expr>,
-        ty: Box<TsType>,
-    },
+    TsAs { expr: Box<Expr>, ty: Box<TsType> },
     #[cfg(feature = "typescript")]
-    TsSatisfies {
-        expr: Box<Expr>,
-        ty: Box<TsType>,
-    },
+    TsSatisfies { expr: Box<Expr>, ty: Box<TsType> },
     #[cfg(feature = "typescript")]
     TsNonNull(Box<Expr>),
     #[cfg(feature = "typescript")]
-    TsTypeAssertion {
-        ty: Box<TsType>,
-        expr: Box<Expr>,
-    },
+    TsTypeAssertion { ty: Box<TsType>, expr: Box<Expr> },
 }
 
 // =============================================================================
@@ -375,72 +351,72 @@ pub struct ObjectPatternProperty {
 /// Unary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    Minus,    // -
-    Plus,     // +
-    Not,      // !
-    BitNot,   // ~
-    Typeof,   // typeof
-    Void,     // void
-    Delete,   // delete
+    Minus,  // -
+    Plus,   // +
+    Not,    // !
+    BitNot, // ~
+    Typeof, // typeof
+    Void,   // void
+    Delete, // delete
 }
 
 /// Binary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     // Arithmetic
-    Add,      // +
-    Sub,      // -
-    Mul,      // *
-    Div,      // /
-    Mod,      // %
-    Pow,      // **
+    Add, // +
+    Sub, // -
+    Mul, // *
+    Div, // /
+    Mod, // %
+    Pow, // **
 
     // Comparison
-    Eq,       // ==
-    NotEq,    // !=
-    StrictEq, // ===
+    Eq,          // ==
+    NotEq,       // !=
+    StrictEq,    // ===
     StrictNotEq, // !==
-    Lt,       // <
-    LtEq,     // <=
-    Gt,       // >
-    GtEq,     // >=
+    Lt,          // <
+    LtEq,        // <=
+    Gt,          // >
+    GtEq,        // >=
 
     // Bitwise
-    BitOr,    // |
-    BitXor,   // ^
-    BitAnd,   // &
-    Shl,      // <<
-    Shr,      // >>
-    UShr,     // >>>
+    BitOr,  // |
+    BitXor, // ^
+    BitAnd, // &
+    Shl,    // <<
+    Shr,    // >>
+    UShr,   // >>>
 
     // Logical
-    And,      // &&
-    Or,       // ||
+    And,             // &&
+    Or,              // ||
     NullishCoalesce, // ??
 
     // Other
-    In,       // in
+    In,         // in
     Instanceof, // instanceof
 }
 
 /// Assignment operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignOp {
-    Assign,    // =
-    AddAssign, // +=
-    SubAssign, // -=
-    MulAssign, // *=
-    DivAssign, // /=
-    ModAssign, // %=
-    PowAssign, // **=
-    ShlAssign, // <<=
-    ShrAssign, // >>=
-    UShrAssign, // >>>=
-    BitOrAssign, // |=
-    BitXorAssign, // ^=
-    BitAndAssign, // &=
-    AndAssign, // &&=
-    OrAssign,  // ||=
+    Assign,        // =
+    AddAssign,     // +=
+    SubAssign,     // -=
+    MulAssign,     // *=
+    DivAssign,     // /=
+    ModAssign,     // %=
+    PowAssign,     // **=
+    ShlAssign,     // <<=
+    ShrAssign,     // >>=
+    UShrAssign,    // >>>=
+    BitOrAssign,   // |=
+    BitXorAssign,  // ^=
+    BitAndAssign,  // &=
+    AndAssign,     // &&=
+    OrAssign,      // ||=
     NullishAssign, // ??=
 }
 
@@ -515,7 +491,10 @@ pub struct CatchClause {
 /// For loop initializer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForInit {
-    Var { kind: VarKind, decls: Vec<VarDeclarator> },
+    Var {
+        kind: VarKind,
+        decls: Vec<VarDeclarator>,
+    },
     Expr(Expr),
 }
 
@@ -829,8 +808,14 @@ pub enum TsTypeKind {
     LitString(String),
 
     // Reference types
-    Reference { name: String, type_args: Option<Vec<TsType>> },
-    Qualified { left: Box<TsType>, right: String },
+    Reference {
+        name: String,
+        type_args: Option<Vec<TsType>>,
+    },
+    Qualified {
+        left: Box<TsType>,
+        right: String,
+    },
 
     // Compound types
     Array(Box<TsType>),
@@ -842,7 +827,10 @@ pub enum TsTypeKind {
     // Object types
     TypeLiteral(Vec<TsTypeMember>),
     Mapped(Box<TsMappedType>),
-    Indexed { object: Box<TsType>, index: Box<TsType> },
+    Indexed {
+        object: Box<TsType>,
+        index: Box<TsType>,
+    },
 
     // Function types
     Function(Box<TsFunctionType>),
@@ -855,15 +843,27 @@ pub enum TsTypeKind {
         true_type: Box<TsType>,
         false_type: Box<TsType>,
     },
-    Infer { param: TsTypeParam },
+    Infer {
+        param: TsTypeParam,
+    },
 
     // Other
     Keyof(Box<TsType>),
     Typeof(Box<Expr>),
     This,
-    TypePredicate { param: String, ty: Box<TsType>, asserts: bool },
-    Import { qualifier: String, type_args: Option<Vec<TsType>> },
-    Template { quasis: Vec<String>, types: Vec<TsType> },
+    TypePredicate {
+        param: String,
+        ty: Box<TsType>,
+        asserts: bool,
+    },
+    Import {
+        qualifier: String,
+        type_args: Option<Vec<TsType>>,
+    },
+    Template {
+        quasis: Vec<String>,
+        types: Vec<TsType>,
+    },
 }
 
 #[cfg(feature = "typescript")]

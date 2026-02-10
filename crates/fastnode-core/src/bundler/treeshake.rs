@@ -21,7 +21,8 @@
 
 use super::graph::{ModuleGraph, ModuleId};
 use super::Import;
-use std::collections::{HashMap, HashSet, VecDeque};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::VecDeque;
 
 /// Tracks which exports from each module are actually used.
 #[derive(Debug, Default)]
@@ -53,7 +54,7 @@ impl UsedExports {
 
         // BFS traversal to mark used exports
         let mut queue: VecDeque<ModuleId> = VecDeque::new();
-        let mut visited: HashSet<ModuleId> = HashSet::new();
+        let mut visited: HashSet<ModuleId> = HashSet::default();
 
         queue.push_back(entry_id);
         visited.insert(entry_id);
@@ -118,7 +119,7 @@ impl UsedExports {
         let entry = self
             .used
             .entry(module_id)
-            .or_insert_with(|| Some(HashSet::new()));
+            .or_insert_with(|| Some(HashSet::default()));
         if let Some(set) = entry {
             for name in names {
                 set.insert(name.clone());
@@ -157,7 +158,7 @@ impl UsedExports {
         let entry = self
             .used
             .entry(module_id)
-            .or_insert_with(|| Some(HashSet::new()));
+            .or_insert_with(|| Some(HashSet::default()));
         if let Some(set) = entry {
             set.insert(export_name.to_string());
         }
@@ -601,7 +602,7 @@ export const unused = 2;
 export function usedFn() { return 1; }
 export function unusedFn() { return 2; }";
 
-        let mut used = HashSet::new();
+        let mut used = HashSet::default();
         used.insert("used".to_string());
         used.insert("usedFn".to_string());
 
@@ -617,7 +618,7 @@ export function unusedFn() { return 2; }";
         let source = "export async function used() { return 1; }
 export async function unused() { return 2; }";
 
-        let mut used = HashSet::new();
+        let mut used = HashSet::default();
         used.insert("used".to_string());
 
         let filtered = filter_unused_exports(source, Some(&used));

@@ -1,7 +1,7 @@
 //! `fastnode run` command implementation.
 #![allow(clippy::too_many_arguments)]
 
-use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
+use fastnode_core::compiler;
 use fastnode_core::config::Channel;
 use fastnode_core::paths;
 use fastnode_core::{build_run_plan, runplan_codes, RunPlanInput, RunPlanOutput, VERSION};
@@ -409,12 +409,19 @@ fn execute_plan(plan: &RunPlanOutput, cwd: &Path, json: bool) -> Result<()> {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-/// Transpile a TypeScript/JSX file to JavaScript using SWC.
+/// Transpile a TypeScript/JSX file to JavaScript using howth-parser.
 fn transpile_file(path: &Path) -> Result<(String, std::path::PathBuf)> {
     let source =
         std::fs::read_to_string(path).map_err(|e| miette::miette!("Failed to read file: {}", e))?;
 
-    let backend = SwcBackend::new();
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    let (code, _imports) = match ext.to_lowercase().as_str() {
+        "tsx" => compiler::transform_tsx(&source),
+        "jsx" => compiler::transform_jsx(&source),
+        _ => compiler::transform_ts(&source),
+    }
+    .map_err(|e| miette::miette!("Transpilation failed: {}", e.message))?;
 
     // Create output path in temp directory
     let file_name = path
@@ -424,13 +431,7 @@ fn transpile_file(path: &Path) -> Result<(String, std::path::PathBuf)> {
     let temp_dir = std::env::temp_dir();
     let output_path = temp_dir.join(format!("howth-{}-{}.mjs", file_name, std::process::id()));
 
-    let spec = TranspileSpec::new(path, &output_path);
-
-    let output = backend
-        .transpile(&spec, &source)
-        .map_err(|e| miette::miette!("Transpilation failed: {}", e))?;
-
-    Ok((output.code, output_path))
+    Ok((code, output_path))
 }
 
 /// Generate execution plan via daemon, and optionally execute.

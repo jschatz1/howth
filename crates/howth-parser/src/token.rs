@@ -17,13 +17,21 @@ impl Token {
     /// Create a new token.
     #[inline]
     pub const fn new(kind: TokenKind, span: Span) -> Self {
-        Self { kind, span, had_newline_before: false }
+        Self {
+            kind,
+            span,
+            had_newline_before: false,
+        }
     }
 
     /// Create a new token with newline tracking.
     #[inline]
     pub const fn with_newline(kind: TokenKind, span: Span, had_newline_before: bool) -> Self {
-        Self { kind, span, had_newline_before }
+        Self {
+            kind,
+            span,
+            had_newline_before,
+        }
     }
 }
 
@@ -40,7 +48,10 @@ pub enum TokenKind {
     /// BigInt literal: `42n`
     BigInt(String),
     /// Regular expression: `/pattern/flags`
-    Regex { pattern: String, flags: String },
+    Regex {
+        pattern: String,
+        flags: String,
+    },
     /// Template literal part (no substitutions)
     TemplateNoSub(String),
     /// Template head: `` `hello ${``
@@ -161,57 +172,57 @@ pub enum TokenKind {
 
     // === Punctuation ===
     // Brackets
-    LParen,     // (
-    RParen,     // )
-    LBrace,     // {
-    RBrace,     // }
-    LBracket,   // [
-    RBracket,   // ]
+    LParen,   // (
+    RParen,   // )
+    LBrace,   // {
+    RBrace,   // }
+    LBracket, // [
+    RBracket, // ]
 
     // Delimiters
-    Semicolon,  // ;
-    Comma,      // ,
-    Colon,      // :
-    Dot,        // .
-    Question,   // ?
-    At,         // @ (decorators)
-    Hash,       // # (private fields)
+    Semicolon, // ;
+    Comma,     // ,
+    Colon,     // :
+    Dot,       // .
+    Question,  // ?
+    At,        // @ (decorators)
+    Hash,      // # (private fields)
 
     // Arrows and spreads
-    Arrow,      // =>
-    Spread,     // ...
+    Arrow,  // =>
+    Spread, // ...
 
     // Optional chaining
     QuestionDot, // ?.
 
     // === Operators ===
     // Assignment
-    Eq,         // =
-    PlusEq,     // +=
-    MinusEq,    // -=
-    StarEq,     // *=
-    SlashEq,    // /=
-    PercentEq,  // %=
-    StarStarEq, // **=
-    AmpEq,      // &=
-    PipeEq,     // |=
-    CaretEq,    // ^=
-    LtLtEq,     // <<=
-    GtGtEq,     // >>=
-    GtGtGtEq,   // >>>=
-    AmpAmpEq,   // &&=
-    PipePipeEq, // ||=
+    Eq,                 // =
+    PlusEq,             // +=
+    MinusEq,            // -=
+    StarEq,             // *=
+    SlashEq,            // /=
+    PercentEq,          // %=
+    StarStarEq,         // **=
+    AmpEq,              // &=
+    PipeEq,             // |=
+    CaretEq,            // ^=
+    LtLtEq,             // <<=
+    GtGtEq,             // >>=
+    GtGtGtEq,           // >>>=
+    AmpAmpEq,           // &&=
+    PipePipeEq,         // ||=
     QuestionQuestionEq, // ??=
 
     // Comparison
-    EqEq,       // ==
-    EqEqEq,     // ===
-    BangEq,     // !=
-    BangEqEq,   // !==
-    Lt,         // <
-    LtEq,       // <=
-    Gt,         // >
-    GtEq,       // >=
+    EqEq,     // ==
+    EqEqEq,   // ===
+    BangEq,   // !=
+    BangEqEq, // !==
+    Lt,       // <
+    LtEq,     // <=
+    Gt,       // >
+    GtEq,     // >=
 
     // Arithmetic
     Plus,       // +
@@ -224,31 +235,31 @@ pub enum TokenKind {
     MinusMinus, // --
 
     // Bitwise
-    Amp,        // &
-    Pipe,       // |
-    Caret,      // ^
-    Tilde,      // ~
-    LtLt,       // <<
-    GtGt,       // >>
-    GtGtGt,     // >>>
+    Amp,    // &
+    Pipe,   // |
+    Caret,  // ^
+    Tilde,  // ~
+    LtLt,   // <<
+    GtGt,   // >>
+    GtGtGt, // >>>
 
     // Logical
-    AmpAmp,     // &&
-    PipePipe,   // ||
-    Bang,       // !
+    AmpAmp,           // &&
+    PipePipe,         // ||
+    Bang,             // !
     QuestionQuestion, // ??
 
     // === JSX (when feature enabled) ===
     #[cfg(feature = "jsx")]
     JsxText(String),
     #[cfg(feature = "jsx")]
-    JsxTagStart,    // < in JSX context
+    JsxTagStart, // < in JSX context
     #[cfg(feature = "jsx")]
-    JsxTagEnd,      // > in JSX context
+    JsxTagEnd, // > in JSX context
     #[cfg(feature = "jsx")]
-    JsxSelfClose,   // />
+    JsxSelfClose, // />
     #[cfg(feature = "jsx")]
-    JsxCloseTag,    // </
+    JsxCloseTag, // </
 
     // === Special ===
     /// End of file
@@ -381,9 +392,15 @@ impl TokenKind {
             TokenKind::Pipe => Some(4),
             TokenKind::Caret => Some(5),
             TokenKind::Amp => Some(6),
-            TokenKind::EqEq | TokenKind::EqEqEq | TokenKind::BangEq | TokenKind::BangEqEq => Some(7),
-            TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq
-            | TokenKind::In | TokenKind::Instanceof => Some(8),
+            TokenKind::EqEq | TokenKind::EqEqEq | TokenKind::BangEq | TokenKind::BangEqEq => {
+                Some(7)
+            }
+            TokenKind::Lt
+            | TokenKind::LtEq
+            | TokenKind::Gt
+            | TokenKind::GtEq
+            | TokenKind::In
+            | TokenKind::Instanceof => Some(8),
             TokenKind::LtLt | TokenKind::GtGt | TokenKind::GtGtGt => Some(9),
             TokenKind::Plus | TokenKind::Minus => Some(10),
             TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some(11),

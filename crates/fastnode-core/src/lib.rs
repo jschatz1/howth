@@ -3,6 +3,7 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::too_many_lines)]
+#![allow(clippy::type_complexity)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::return_self_not_must_use)]

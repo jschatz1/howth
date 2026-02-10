@@ -1,26 +1,25 @@
 //! Compiler backend abstraction for transpilation.
 //!
 //! This module provides a trait-based abstraction over JavaScript/TypeScript
-//! compilers like SWC. The design allows for swappable backends without
-//! changing the rest of the build system.
+//! compilers. The default backend uses howth-parser for all transpilation.
 //!
 //! ## Design Goals
 //!
 //! 1. **Fast in-process transpilation** - No shell subprocess, direct library call
 //! 2. **Deterministic** - `TranspileSpec` captures all options for reproducible builds
-//! 3. **Swappable backend** - Rest of howth never calls SWC directly
+//! 3. **Swappable backend** - Rest of howth uses the `CompilerBackend` trait
 //! 4. **Fits existing cache model** - Input hash + output fingerprint
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
+//! use fastnode_core::compiler::{CompilerBackend, HowthBackend, TranspileSpec};
 //!
-//! let backend = SwcBackend::new();
+//! let backend = HowthBackend::new();
 //! let spec = TranspileSpec::new("src/App.tsx", "dist/App.js")
 //!     .with_jsx_runtime(JsxRuntime::Automatic);
 //!
-//! let output = backend.transpile(&spec)?;
+//! let output = backend.transpile(&spec, source)?;
 //! println!("{}", output.code);
 //! ```
 
@@ -30,14 +29,17 @@
 #![allow(clippy::manual_strip)]
 
 pub mod ast_parser;
+pub mod backend;
 pub mod spec;
-pub mod swc;
 
+pub use backend::HowthBackend;
 pub use spec::{
     Diagnostic, DiagnosticSeverity, EsTarget, JsxRuntime, ModuleKind, SourceMapKind,
     TranspileOutput, TranspileSpec,
 };
-pub use swc::SwcBackend;
+
+/// Backward-compatible alias for `HowthBackend`.
+pub type SwcBackend = HowthBackend;
 
 use std::fmt;
 use std::path::Path;
@@ -286,7 +288,7 @@ fn extract_string_literal(s: &str) -> Option<String> {
 /// Transform JSX source using howth-parser (no SWC needed).
 /// Returns (transformed_code, imports) in a single parse+codegen pass.
 pub fn transform_jsx(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
-    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+    use howth_parser::{Codegen, CodegenOptions, Parser, ParserOptions};
 
     let parser_opts = ParserOptions {
         module: true,
@@ -306,9 +308,18 @@ pub fn transform_jsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
         specifier: "react/jsx-runtime".to_string(),
         dynamic: false,
         names: vec![
-            crate::bundler::ImportedName { imported: "jsx".to_string(), local: "_jsx".to_string() },
-            crate::bundler::ImportedName { imported: "jsxs".to_string(), local: "_jsxs".to_string() },
-            crate::bundler::ImportedName { imported: "Fragment".to_string(), local: "_Fragment".to_string() },
+            crate::bundler::ImportedName {
+                imported: "jsx".to_string(),
+                local: "_jsx".to_string(),
+            },
+            crate::bundler::ImportedName {
+                imported: "jsxs".to_string(),
+                local: "_jsxs".to_string(),
+            },
+            crate::bundler::ImportedName {
+                imported: "Fragment".to_string(),
+                local: "_Fragment".to_string(),
+            },
         ],
     });
 
@@ -317,8 +328,7 @@ pub fn transform_jsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
 
     // Prepend jsx runtime import
     let code = format!(
-        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
-        code
+        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{code}"
     );
 
     Ok((code, imports))
@@ -326,8 +336,8 @@ pub fn transform_jsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
 
 /// Extract imports from a non-arena `Ast` (used by `transform_jsx` to avoid re-parsing).
 fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Import> {
-    use howth_parser::{StmtKind, ExportDecl, ImportSpecifier};
     use crate::bundler::{Import, ImportedName};
+    use howth_parser::{ExportDecl, ImportSpecifier, StmtKind};
 
     let mut imports = Vec::new();
 
@@ -353,9 +363,16 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
                                 local: local.clone(),
                             });
                         }
-                        ImportSpecifier::Named { imported, local, is_type, .. } => {
+                        ImportSpecifier::Named {
+                            imported,
+                            local,
+                            is_type,
+                            ..
+                        } => {
                             // Skip type-only named imports
-                            if *is_type { continue; }
+                            if *is_type {
+                                continue;
+                            }
                             names.push(ImportedName {
                                 imported: imported.clone(),
                                 local: local.clone(),
@@ -369,35 +386,37 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
                     names,
                 });
             }
-            StmtKind::Export(export_decl) => {
-                match export_decl.as_ref() {
-                    ExportDecl::All { source, .. } => {
-                        imports.push(Import {
-                            specifier: source.clone(),
-                            dynamic: false,
-                            names: vec![ImportedName {
-                                imported: "*".to_string(),
-                                local: "*".to_string(),
-                            }],
-                        });
-                    }
-                    ExportDecl::Named { source: Some(source), specifiers, .. } => {
-                        let names = specifiers
-                            .iter()
-                            .map(|s| ImportedName {
-                                imported: s.local.clone(),
-                                local: s.exported.clone(),
-                            })
-                            .collect();
-                        imports.push(Import {
-                            specifier: source.clone(),
-                            dynamic: false,
-                            names,
-                        });
-                    }
-                    _ => {}
+            StmtKind::Export(export_decl) => match export_decl.as_ref() {
+                ExportDecl::All { source, .. } => {
+                    imports.push(Import {
+                        specifier: source.clone(),
+                        dynamic: false,
+                        names: vec![ImportedName {
+                            imported: "*".to_string(),
+                            local: "*".to_string(),
+                        }],
+                    });
                 }
-            }
+                ExportDecl::Named {
+                    source: Some(source),
+                    specifiers,
+                    ..
+                } => {
+                    let names = specifiers
+                        .iter()
+                        .map(|s| ImportedName {
+                            imported: s.local.clone(),
+                            local: s.exported.clone(),
+                        })
+                        .collect();
+                    imports.push(Import {
+                        specifier: source.clone(),
+                        dynamic: false,
+                        names,
+                    });
+                }
+                _ => {}
+            },
             StmtKind::Expr(expr) => {
                 extract_dynamic_imports_expr(expr, &mut imports);
             }
@@ -414,7 +433,11 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
             StmtKind::Block(stmts) => {
                 extract_dynamic_imports_stmts(stmts, &mut imports);
             }
-            StmtKind::If { consequent, alternate, .. } => {
+            StmtKind::If {
+                consequent,
+                alternate,
+                ..
+            } => {
                 extract_dynamic_imports_stmt(consequent, &mut imports);
                 if let Some(alt) = alternate {
                     extract_dynamic_imports_stmt(alt, &mut imports);
@@ -427,13 +450,20 @@ fn extract_imports_from_ast(ast: &howth_parser::Ast) -> Vec<crate::bundler::Impo
     imports
 }
 
-fn extract_dynamic_imports_stmts(stmts: &[howth_parser::Stmt], imports: &mut Vec<crate::bundler::Import>) {
+fn extract_dynamic_imports_stmts(
+    stmts: &[howth_parser::Stmt],
+    imports: &mut Vec<crate::bundler::Import>,
+) {
     for stmt in stmts {
         extract_dynamic_imports_stmt(stmt, imports);
     }
 }
 
-fn extract_dynamic_imports_stmt(stmt: &howth_parser::Stmt, imports: &mut Vec<crate::bundler::Import>) {
+#[allow(clippy::match_same_arms)]
+fn extract_dynamic_imports_stmt(
+    stmt: &howth_parser::Stmt,
+    imports: &mut Vec<crate::bundler::Import>,
+) {
     use howth_parser::StmtKind;
     match &stmt.kind {
         StmtKind::Expr(expr) => extract_dynamic_imports_expr(expr, imports),
@@ -446,7 +476,11 @@ fn extract_dynamic_imports_stmt(stmt: &howth_parser::Stmt, imports: &mut Vec<cra
         }
         StmtKind::Function(func) => extract_dynamic_imports_stmts(&func.body, imports),
         StmtKind::Block(stmts) => extract_dynamic_imports_stmts(stmts, imports),
-        StmtKind::If { consequent, alternate, .. } => {
+        StmtKind::If {
+            consequent,
+            alternate,
+            ..
+        } => {
             extract_dynamic_imports_stmt(consequent, imports);
             if let Some(alt) = alternate {
                 extract_dynamic_imports_stmt(alt, imports);
@@ -457,9 +491,12 @@ fn extract_dynamic_imports_stmt(stmt: &howth_parser::Stmt, imports: &mut Vec<cra
     }
 }
 
-fn extract_dynamic_imports_expr(expr: &howth_parser::Expr, imports: &mut Vec<crate::bundler::Import>) {
-    use howth_parser::ExprKind;
+fn extract_dynamic_imports_expr(
+    expr: &howth_parser::Expr,
+    imports: &mut Vec<crate::bundler::Import>,
+) {
     use crate::bundler::Import;
+    use howth_parser::ExprKind;
 
     match &expr.kind {
         ExprKind::Import(source_expr) => {
@@ -481,7 +518,12 @@ fn extract_dynamic_imports_expr(expr: &howth_parser::Expr, imports: &mut Vec<cra
             extract_dynamic_imports_expr(left, imports);
             extract_dynamic_imports_expr(right, imports);
         }
-        ExprKind::Conditional { test, consequent, alternate, .. } => {
+        ExprKind::Conditional {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
             extract_dynamic_imports_expr(test, imports);
             extract_dynamic_imports_expr(consequent, imports);
             extract_dynamic_imports_expr(alternate, imports);
@@ -499,13 +541,12 @@ fn extract_dynamic_imports_expr(expr: &howth_parser::Expr, imports: &mut Vec<cra
 /// Transform TypeScript source using howth-parser (no SWC needed).
 /// Returns (transformed_code, imports) in a single parse+codegen pass.
 pub fn transform_ts(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
-    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+    use howth_parser::{Codegen, CodegenOptions, Parser, ParserOptions};
 
     let parser_opts = ParserOptions {
         module: true,
         jsx: false,
         typescript: true,
-        ..Default::default()
     };
 
     let ast = Parser::new(source, parser_opts)
@@ -524,13 +565,12 @@ pub fn transform_ts(source: &str) -> Result<(String, Vec<crate::bundler::Import>
 /// Transform TSX source using howth-parser (no SWC needed).
 /// Returns (transformed_code, imports) in a single parse+codegen pass.
 pub fn transform_tsx(source: &str) -> Result<(String, Vec<crate::bundler::Import>), CompilerError> {
-    use howth_parser::{Parser, ParserOptions, Codegen, CodegenOptions};
+    use howth_parser::{Codegen, CodegenOptions, Parser, ParserOptions};
 
     let parser_opts = ParserOptions {
         module: true,
         jsx: true,
         typescript: true,
-        ..Default::default()
     };
 
     let ast = Parser::new(source, parser_opts)
@@ -545,9 +585,18 @@ pub fn transform_tsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
         specifier: "react/jsx-runtime".to_string(),
         dynamic: false,
         names: vec![
-            crate::bundler::ImportedName { imported: "jsx".to_string(), local: "_jsx".to_string() },
-            crate::bundler::ImportedName { imported: "jsxs".to_string(), local: "_jsxs".to_string() },
-            crate::bundler::ImportedName { imported: "Fragment".to_string(), local: "_Fragment".to_string() },
+            crate::bundler::ImportedName {
+                imported: "jsx".to_string(),
+                local: "_jsx".to_string(),
+            },
+            crate::bundler::ImportedName {
+                imported: "jsxs".to_string(),
+                local: "_jsxs".to_string(),
+            },
+            crate::bundler::ImportedName {
+                imported: "Fragment".to_string(),
+                local: "_Fragment".to_string(),
+            },
         ],
     });
 
@@ -556,8 +605,7 @@ pub fn transform_tsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
 
     // Prepend jsx runtime import
     let code = format!(
-        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
-        code
+        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{code}"
     );
 
     Ok((code, imports))
@@ -639,7 +687,7 @@ impl std::error::Error for CompilerError {}
 ///
 /// ## Implementations
 ///
-/// - `SwcBackend` - Uses SWC for fast JavaScript/TypeScript transpilation
+/// - `HowthBackend` - Uses howth-parser for fast JavaScript/TypeScript transpilation
 pub trait CompilerBackend: Send + Sync {
     /// Get the backend name (e.g., "swc", "oxc").
     fn name(&self) -> &'static str;
@@ -730,7 +778,10 @@ const App = () => <div>hello</div>;
 export default App;"#;
         let (code, imports) = transform_jsx(source).unwrap();
         // Code should contain the jsx runtime import
-        assert!(code.contains("react/jsx-runtime"), "code should have jsx runtime import");
+        assert!(
+            code.contains("react/jsx-runtime"),
+            "code should have jsx runtime import"
+        );
         // Imports returned to bundler should include react/jsx-runtime for dependency tracking
         assert!(
             imports.iter().any(|i| i.specifier == "react/jsx-runtime"),
@@ -768,7 +819,10 @@ const x: number = bar();
 export { x };"#;
         let (code, imports) = transform_ts(source).unwrap();
         assert!(!code.contains("interface"), "interface should be stripped");
-        assert!(!code.contains(": number"), "type annotation should be stripped");
+        assert!(
+            !code.contains(": number"),
+            "type annotation should be stripped"
+        );
         assert!(code.contains("bar"), "runtime import preserved");
         assert!(!imports.is_empty(), "should have imports");
     }

@@ -90,7 +90,11 @@ export { greet, processUser, safeParse };
 
             // Walk the AST
             for (i, stmt) in program.stmts.iter().enumerate() {
-                println!("  Statement {}: {:?}", i + 1, std::mem::discriminant(&stmt.kind));
+                println!(
+                    "  Statement {}: {:?}",
+                    i + 1,
+                    std::mem::discriminant(&stmt.kind)
+                );
             }
         }
         Err(e) => println!("Parse error: {:?}", e),

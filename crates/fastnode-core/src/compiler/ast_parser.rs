@@ -12,13 +12,13 @@ use crate::bundler::{Import, ImportedName};
 ///
 /// This is much more accurate than regex-based parsing and handles
 /// all edge cases (template literals, comments, etc.).
+#[must_use]
 pub fn extract_imports_ast(source: &str) -> Vec<Import> {
     let arena = Arena::new();
     let parser = ArenaParser::new(&arena, source, ParserOptions::default());
 
-    let program = match parser.parse() {
-        Ok(p) => p,
-        Err(_) => return Vec::new(), // Fall back to empty on parse error
+    let Ok(program) = parser.parse() else {
+        return Vec::new(); // Fall back to empty on parse error
     };
 
     let mut imports = Vec::new();
@@ -42,7 +42,9 @@ pub fn extract_imports_ast(source: &str) -> Vec<Import> {
                                 local: local.to_string(),
                             });
                         }
-                        ImportSpecifier::Named { imported, local, .. } => {
+                        ImportSpecifier::Named {
+                            imported, local, ..
+                        } => {
                             names.push(ImportedName {
                                 imported: imported.to_string(),
                                 local: local.to_string(),
@@ -70,7 +72,11 @@ pub fn extract_imports_ast(source: &str) -> Vec<Import> {
                             }],
                         });
                     }
-                    ExportDecl::Named { source: Some(source), specifiers, .. } => {
+                    ExportDecl::Named {
+                        source: Some(source),
+                        specifiers,
+                        ..
+                    } => {
                         // export { x, y } from 'module'
                         let names = specifiers
                             .iter()
@@ -96,7 +102,7 @@ pub fn extract_imports_ast(source: &str) -> Vec<Import> {
             }
             StmtKind::Var { decls, .. } => {
                 // Check variable initializers for dynamic imports
-                for decl in decls.iter() {
+                for decl in decls {
                     if let Some(init) = &decl.init {
                         extract_dynamic_imports_from_expr(init, &mut imports);
                     }
@@ -109,7 +115,11 @@ pub fn extract_imports_ast(source: &str) -> Vec<Import> {
             StmtKind::Block(stmts) => {
                 extract_dynamic_imports_from_stmts(stmts, &mut imports);
             }
-            StmtKind::If { consequent, alternate, .. } => {
+            StmtKind::If {
+                consequent,
+                alternate,
+                ..
+            } => {
                 extract_dynamic_imports_from_stmt(consequent, &mut imports);
                 if let Some(alt) = alternate {
                     extract_dynamic_imports_from_stmt(alt, &mut imports);
@@ -130,13 +140,14 @@ fn extract_dynamic_imports_from_stmts(stmts: &[Stmt<'_>], imports: &mut Vec<Impo
 }
 
 /// Extract dynamic imports from a single statement.
+#[allow(clippy::match_same_arms)]
 fn extract_dynamic_imports_from_stmt(stmt: &Stmt<'_>, imports: &mut Vec<Import>) {
     match &stmt.kind {
         StmtKind::Expr(expr) => {
             extract_dynamic_imports_from_expr(expr, imports);
         }
         StmtKind::Var { decls, .. } => {
-            for decl in decls.iter() {
+            for decl in *decls {
                 if let Some(init) = &decl.init {
                     extract_dynamic_imports_from_expr(init, imports);
                 }
@@ -148,7 +159,11 @@ fn extract_dynamic_imports_from_stmt(stmt: &Stmt<'_>, imports: &mut Vec<Import>)
         StmtKind::Block(stmts) => {
             extract_dynamic_imports_from_stmts(stmts, imports);
         }
-        StmtKind::If { consequent, alternate, .. } => {
+        StmtKind::If {
+            consequent,
+            alternate,
+            ..
+        } => {
             extract_dynamic_imports_from_stmt(consequent, imports);
             if let Some(alt) = alternate {
                 extract_dynamic_imports_from_stmt(alt, imports);
@@ -162,6 +177,7 @@ fn extract_dynamic_imports_from_stmt(stmt: &Stmt<'_>, imports: &mut Vec<Import>)
 }
 
 /// Recursively extract dynamic imports from expressions.
+#[allow(clippy::match_same_arms)]
 fn extract_dynamic_imports_from_expr(
     expr: &howth_parser::fast::Expr<'_>,
     imports: &mut Vec<Import>,
@@ -190,7 +206,12 @@ fn extract_dynamic_imports_from_expr(
             extract_dynamic_imports_from_expr(left, imports);
             extract_dynamic_imports_from_expr(right, imports);
         }
-        ExprKind::Conditional { test, consequent, alternate, .. } => {
+        ExprKind::Conditional {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
             extract_dynamic_imports_from_expr(test, imports);
             extract_dynamic_imports_from_expr(consequent, imports);
             extract_dynamic_imports_from_expr(alternate, imports);
@@ -216,11 +237,11 @@ mod tests {
 
     #[test]
     fn test_extract_static_imports() {
-        let source = r#"
+        let source = r"
             import foo from 'foo';
             import { bar, baz as qux } from 'bar';
             import * as utils from './utils';
-        "#;
+        ";
 
         let imports = extract_imports_ast(source);
         assert_eq!(imports.len(), 3);
@@ -239,10 +260,10 @@ mod tests {
 
     #[test]
     fn test_extract_reexports() {
-        let source = r#"
+        let source = r"
             export { x, y } from 'module';
             export * from 'other';
-        "#;
+        ";
 
         let imports = extract_imports_ast(source);
         assert_eq!(imports.len(), 2);
@@ -253,10 +274,10 @@ mod tests {
 
     #[test]
     fn test_extract_dynamic_imports() {
-        let source = r#"
+        let source = r"
             const mod = await import('./dynamic');
             const lazy = () => import('lazy-module');
-        "#;
+        ";
 
         let imports = extract_imports_ast(source);
         assert_eq!(imports.len(), 2);

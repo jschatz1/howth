@@ -20,7 +20,9 @@ pub struct SassOptions {
 /// Supports both `.scss` (Sassy CSS) and `.sass` (indented syntax).
 pub fn compile_sass(source: &str, options: &SassOptions) -> Result<String, SassError> {
     let filename = options.filename.as_deref().unwrap_or("input.scss");
-    let is_indented = filename.ends_with(".sass");
+    let is_indented = std::path::Path::new(filename)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("sass"));
 
     // Set up grass options
     let mut grass_options = grass::Options::default();
@@ -53,7 +55,7 @@ pub fn compile_sass(source: &str, options: &SassOptions) -> Result<String, SassE
         grass::from_string(source.to_string(), &grass_options)
     };
 
-    result.map_err(|e| SassError::Compile(format!("{}", e)))
+    result.map_err(|e| SassError::Compile(format!("{e}")))
 }
 
 /// Compile a Sass/SCSS file to CSS.
@@ -71,11 +73,11 @@ pub fn compile_sass_file(path: &Path, minify: bool) -> Result<String, SassError>
 }
 
 /// Check if a file is a Sass/SCSS file.
+#[must_use]
 pub fn is_sass_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e == "scss" || e == "sass")
-        .unwrap_or(false)
+        .is_some_and(|e| e == "scss" || e == "sass")
 }
 
 /// Sass compilation error.
@@ -90,8 +92,8 @@ pub enum SassError {
 impl std::fmt::Display for SassError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SassError::Io(msg) => write!(f, "Sass IO error: {}", msg),
-            SassError::Compile(msg) => write!(f, "Sass compile error: {}", msg),
+            SassError::Io(msg) => write!(f, "Sass IO error: {msg}"),
+            SassError::Compile(msg) => write!(f, "Sass compile error: {msg}"),
         }
     }
 }
@@ -104,12 +106,12 @@ mod tests {
 
     #[test]
     fn test_basic_scss() {
-        let scss = r#"
+        let scss = r"
             $primary: blue;
             .button {
                 color: $primary;
             }
-        "#;
+        ";
         let options = SassOptions::default();
         let result = compile_sass(scss, &options).unwrap();
         assert!(result.contains("color: blue"));
@@ -117,13 +119,13 @@ mod tests {
 
     #[test]
     fn test_scss_nesting() {
-        let scss = r#"
+        let scss = r"
             .parent {
                 .child {
                     color: red;
                 }
             }
-        "#;
+        ";
         let options = SassOptions::default();
         let result = compile_sass(scss, &options).unwrap();
         assert!(result.contains(".parent .child"));
@@ -131,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_scss_mixins() {
-        let scss = r#"
+        let scss = r"
             @mixin flex-center {
                 display: flex;
                 align-items: center;
@@ -140,7 +142,7 @@ mod tests {
             .container {
                 @include flex-center;
             }
-        "#;
+        ";
         let options = SassOptions::default();
         let result = compile_sass(scss, &options).unwrap();
         assert!(result.contains("display: flex"));
@@ -161,14 +163,14 @@ mod tests {
 
     #[test]
     fn test_scss_variables() {
-        let scss = r#"
+        let scss = r"
             $font-size: 16px;
             $line-height: 1.5;
             body {
                 font-size: $font-size;
                 line-height: $line-height;
             }
-        "#;
+        ";
         let options = SassOptions::default();
         let result = compile_sass(scss, &options).unwrap();
         assert!(result.contains("font-size: 16px"));
@@ -177,12 +179,12 @@ mod tests {
 
     #[test]
     fn test_scss_functions() {
-        let scss = r#"
+        let scss = r"
             .box {
                 width: 100px + 50px;
                 opacity: 0.5 * 2;
             }
-        "#;
+        ";
         let options = SassOptions::default();
         let result = compile_sass(scss, &options).unwrap();
         assert!(result.contains("width: 150px"));

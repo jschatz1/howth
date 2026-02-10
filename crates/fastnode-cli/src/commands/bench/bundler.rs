@@ -1,6 +1,4 @@
-use fastnode_core::bench::{
-    run_bundler_bench, BundlerBenchParams, BundlerBenchReport, Severity,
-};
+use fastnode_core::bench::{run_bundler_bench, BundlerBenchParams, BundlerBenchReport, Severity};
 use miette::{IntoDiagnostic, Result};
 use std::io::{self, Write};
 
@@ -89,12 +87,8 @@ fn print_human(report: &BundlerBenchReport) -> Result<()> {
     // Results
     for result in &report.results {
         if !result.available {
-            writeln!(
-                out,
-                "\x1b[90m{:<12} (not available)\x1b[0m",
-                result.name
-            )
-            .into_diagnostic()?;
+            writeln!(out, "\x1b[90m{:<12} (not available)\x1b[0m", result.name)
+                .into_diagnostic()?;
             continue;
         }
 
