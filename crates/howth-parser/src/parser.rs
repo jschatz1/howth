@@ -488,9 +488,9 @@ impl<'a> Parser<'a> {
                 ))
             }
             // TypeScript contextual keywords as binding names
+            // (these are valid JS identifiers even when not in TS mode)
             #[cfg(feature = "typescript")]
-            _ if self.options.typescript
-                && crate::typescript::is_ts_contextual_keyword(self.peek()) =>
+            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) =>
             {
                 let name = self.expect_ts_identifier()?;
                 let end = self.current.span.start;
@@ -727,8 +727,7 @@ impl<'a> Parser<'a> {
                 Some(n)
             }
             #[cfg(feature = "typescript")]
-            _ if self.options.typescript
-                && crate::typescript::is_ts_contextual_keyword(self.peek()) =>
+            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) =>
             {
                 Some(self.expect_ts_identifier().unwrap_or_default())
             }
@@ -2660,7 +2659,7 @@ impl<'a> Parser<'a> {
         } else {
             // TypeScript contextual keywords
             #[cfg(feature = "typescript")]
-            if self.options.typescript && crate::typescript::is_ts_contextual_keyword(self.peek()) {
+            if crate::typescript::is_ts_contextual_keyword(self.peek()) {
                 let name = self.expect_ts_identifier()?;
                 return Ok(Expr::new(
                     ExprKind::Ident(name),
@@ -2972,9 +2971,9 @@ impl<'a> Parser<'a> {
             }
 
             // TypeScript contextual keywords used as identifiers
+            // (these are valid JS identifiers even when not in TS mode)
             #[cfg(feature = "typescript")]
-            _ if self.options.typescript
-                && crate::typescript::is_ts_contextual_keyword(self.peek()) =>
+            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) =>
             {
                 let name = self.expect_ts_identifier()?;
                 Ok(Expr::new(

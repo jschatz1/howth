@@ -24,6 +24,8 @@ pub struct BundleAction {
     pub format: BundleFormat,
     /// Minify output.
     pub minify: bool,
+    /// Mangle variable names (shorten local variables).
+    pub mangle: bool,
     /// Generate source maps.
     pub sourcemap: bool,
     /// External packages (don't bundle).
@@ -107,6 +109,7 @@ pub fn run(action: BundleAction, json: bool) -> Result<()> {
     let options = BundleOptions {
         format: action.format,
         minify: action.minify,
+        mangle: action.mangle,
         sourcemap: action.sourcemap,
         external: action.external.clone(),
         treeshake: action.treeshake,

@@ -1587,4 +1587,23 @@ function test() {
         // Should produce something like: let a = 'x'; let { [a]: b } = obj;
         assert!(result.contains("[a]"));
     }
+
+    #[test]
+    fn test_bundle_wrapper_pattern() {
+        // Bundle wrappers use function(mod, exp, req) — params should be mangled
+        // even with top_level: false
+        let opts = ParserOptions { module: false, ..Default::default() };
+        let mut ast = Parser::new(
+            r#"var __modules = {};
+__modules[1] = function(mod, exp, req) {
+    var longVariableName = 42;
+    mod.exports = longVariableName;
+};"#,
+            opts,
+        ).parse().unwrap();
+        mangle(&mut ast, &MangleOptions::default());
+        let result = crate::Codegen::new(&ast, crate::CodegenOptions::default()).generate();
+        // Function params should be mangled (they're in function scope, not top-level)
+        assert!(!result.contains("longVariableName"));
+    }
 }

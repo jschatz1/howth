@@ -694,7 +694,10 @@ fn rewrite_import(line: &str, module_path: &str, graph: &ModuleGraph) -> String 
             let spec_part = &trimmed[from_idx + 6..].trim();
             let spec = spec_part.trim_matches(|c| c == '\'' || c == '"' || c == ';');
 
-            return format!("const {} = {};", imports_part, resolve_require(spec));
+            // Convert import-style `as` to destructuring-style `:`
+            // e.g. `{ jsx as _jsx }` → `{ jsx: _jsx }`
+            let destructure_part = imports_part.replace(" as ", ": ");
+            return format!("const {} = {};", destructure_part, resolve_require(spec));
         }
     }
 

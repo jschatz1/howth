@@ -187,9 +187,13 @@ enum Commands {
         #[arg(long, default_value = "esm")]
         format: String,
 
-        /// Minify output
+        /// Minify output (includes variable name mangling by default)
         #[arg(long)]
         minify: bool,
+
+        /// Disable variable name mangling (only effective with --minify)
+        #[arg(long)]
+        no_mangle: bool,
 
         /// Generate source maps
         #[arg(long)]
@@ -928,6 +932,7 @@ fn main() -> Result<()> {
         outfile,
         format,
         minify,
+        no_mangle,
         sourcemap,
         external,
         treeshake,
@@ -949,6 +954,7 @@ fn main() -> Result<()> {
             outfile: outfile.clone(),
             format: bundle_format,
             minify: *minify,
+            mangle: *minify && !*no_mangle,
             sourcemap: *sourcemap,
             external: external.clone(),
             treeshake: *treeshake && !*no_treeshake,
