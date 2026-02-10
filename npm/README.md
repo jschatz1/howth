@@ -21,7 +21,7 @@ howth --help
 If npm installation fails, you can install manually:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jschatz1/howth/main/install.sh | sh
+curl -fsSL https://howth.run/install.sh | sh
 ```
 
 ## Documentation

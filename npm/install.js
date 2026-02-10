@@ -143,7 +143,7 @@ async function main() {
     console.error(`  ${url}`);
     console.error("");
     console.error("Or use the shell installer:");
-    console.error("  curl -fsSL https://raw.githubusercontent.com/jschatz1/howth/main/install.sh | sh");
+    console.error("  curl -fsSL https://howth.run/install.sh | sh");
     process.exit(1);
   }
 }
