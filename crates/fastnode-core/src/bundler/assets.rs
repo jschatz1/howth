@@ -4,7 +4,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
 /// Asset types that can be imported.

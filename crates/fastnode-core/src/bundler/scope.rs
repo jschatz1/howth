@@ -16,7 +16,7 @@
 
 use super::graph::{ModuleGraph, ModuleId};
 use super::Import;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// Unique identifier for a symbol.
 pub type SymbolId = usize;
@@ -107,12 +107,12 @@ impl ScopeHoistContext {
     pub fn new() -> Self {
         Self {
             symbols: Vec::new(),
-            module_symbols: HashMap::new(),
-            name_to_symbols: HashMap::new(),
-            symbol_links: HashMap::new(),
-            renames: HashMap::new(),
-            wrapped_modules: HashSet::new(),
-            module_exports: HashMap::new(),
+            module_symbols: HashMap::default(),
+            name_to_symbols: HashMap::default(),
+            symbol_links: HashMap::default(),
+            renames: HashMap::default(),
+            wrapped_modules: HashSet::default(),
+            module_exports: HashMap::default(),
         }
     }
 
@@ -191,7 +191,7 @@ impl ScopeHoistContext {
         graph: &ModuleGraph,
     ) {
         let mut module_syms = Vec::new();
-        let mut exports: HashMap<String, SymbolId> = HashMap::new();
+        let mut exports: HashMap<String, SymbolId> = HashMap::default();
 
         // Collect import symbols
         for import in imports {
@@ -544,7 +544,7 @@ impl ScopeHoistContext {
 
     /// Build a rename map for a specific module: original_name -> new_name.
     pub fn build_module_renames(&self, module_id: ModuleId) -> HashMap<String, String> {
-        let mut renames = HashMap::new();
+        let mut renames = HashMap::default();
 
         if let Some(sym_ids) = self.module_symbols.get(&module_id) {
             for &sym_id in sym_ids {
