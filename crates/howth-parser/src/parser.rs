@@ -259,9 +259,13 @@ impl<'a> Parser<'a> {
             TokenKind::Declare => self.parse_ts_declare(),
             #[cfg(feature = "typescript")]
             TokenKind::Abstract => {
-                // abstract class
-                self.advance();
-                self.parse_class_decl()
+                if self.options.typescript && matches!(self.lexer.peek().kind, TokenKind::Class) {
+                    // abstract class
+                    self.advance();
+                    self.parse_class_decl()
+                } else {
+                    self.parse_expr_stmt()
+                }
             }
 
             // Async function (lookahead required)
@@ -769,8 +773,10 @@ impl<'a> Parser<'a> {
             #[cfg(feature = "typescript")]
             if self.options.typescript {
                 self.try_parse_accessibility();
-                // Also consume readonly
-                self.eat(&TokenKind::Readonly);
+                // Also consume readonly — but only as modifier, not property name
+                if self.check(&TokenKind::Readonly) && !self.is_ts_modifier_used_as_property() {
+                    self.eat(&TokenKind::Readonly);
+                }
             }
 
             let rest = self.eat(&TokenKind::Spread);
@@ -822,7 +828,9 @@ impl<'a> Parser<'a> {
             #[cfg(feature = "typescript")]
             if self.options.typescript {
                 self.try_parse_accessibility();
-                self.eat(&TokenKind::Readonly);
+                if self.check(&TokenKind::Readonly) && !self.is_ts_modifier_used_as_property() {
+                    self.eat(&TokenKind::Readonly);
+                }
             }
             let rest = self.eat(&TokenKind::Spread);
             let binding = self.parse_binding()?;
@@ -939,6 +947,8 @@ impl<'a> Parser<'a> {
         }
 
         // TypeScript modifiers: accessibility, abstract, readonly, override
+        // Only consume these as modifiers when NOT followed by `:`, `=`, `;`, `?`, `!`, `(`
+        // which would indicate the keyword is being used as a property name.
         #[cfg(feature = "typescript")]
         let accessibility = if self.options.typescript {
             self.try_parse_accessibility()
@@ -946,24 +956,24 @@ impl<'a> Parser<'a> {
             None
         };
         #[cfg(feature = "typescript")]
-        let is_abstract = self.options.typescript && self.eat(&TokenKind::Abstract);
+        let is_abstract = self.options.typescript && self.check(&TokenKind::Abstract) && !self.is_ts_modifier_used_as_property() && self.eat(&TokenKind::Abstract);
         #[cfg(feature = "typescript")]
-        let is_readonly = self.options.typescript && self.eat(&TokenKind::Readonly);
+        let is_readonly = self.options.typescript && self.check(&TokenKind::Readonly) && !self.is_ts_modifier_used_as_property() && self.eat(&TokenKind::Readonly);
         #[cfg(feature = "typescript")]
-        let is_override = self.options.typescript && self.eat(&TokenKind::Override);
+        let is_override = self.options.typescript && self.check(&TokenKind::Override) && !self.is_ts_modifier_used_as_property() && self.eat(&TokenKind::Override);
         #[cfg(feature = "typescript")]
-        let _is_declare = self.options.typescript && self.eat(&TokenKind::Declare);
+        let _is_declare = self.options.typescript && self.check(&TokenKind::Declare) && !self.is_ts_modifier_used_as_property() && self.eat(&TokenKind::Declare);
 
-        // Check for static
-        let is_static = self.eat(&TokenKind::Static);
+        // Check for static — same disambiguation needed
+        let is_static = self.check(&TokenKind::Static) && !self.is_ts_modifier_used_as_property() && self.eat(&TokenKind::Static);
 
         // Consume modifiers that may appear after `static`
         #[cfg(feature = "typescript")]
         if self.options.typescript {
             // These can appear before or after `static`
-            if !is_abstract { self.eat(&TokenKind::Abstract); }
-            if !is_readonly { self.eat(&TokenKind::Readonly); }
-            if !is_override { self.eat(&TokenKind::Override); }
+            if !is_abstract && self.check(&TokenKind::Abstract) && !self.is_ts_modifier_used_as_property() { self.eat(&TokenKind::Abstract); }
+            if !is_readonly && self.check(&TokenKind::Readonly) && !self.is_ts_modifier_used_as_property() { self.eat(&TokenKind::Readonly); }
+            if !is_override && self.check(&TokenKind::Override) && !self.is_ts_modifier_used_as_property() { self.eat(&TokenKind::Override); }
         }
 
         // Static block

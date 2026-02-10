@@ -996,8 +996,8 @@ impl<'a> Parser<'a> {
             false
         };
 
-        // Check for readonly
-        let readonly = self.eat(&TokenKind::Readonly);
+        // Check for readonly — but only consume as modifier, not as property name
+        let readonly = self.check(&TokenKind::Readonly) && !self.is_ts_modifier_used_as_property() && self.eat(&TokenKind::Readonly);
 
         // `[...]` — index signature, mapped type, or computed property key
         if self.check(&TokenKind::LBracket) {
@@ -1007,12 +1007,24 @@ impl<'a> Parser<'a> {
             // - Index signature: `[key: Type]: Value` or `[key?: Type]: Value`
             // - Mapped type: `[K in Type]: Value`
             // - Computed property: `[expr]: Type` or `[expr](): Type`
-            let is_index_or_mapped = match self.peek() {
-                TokenKind::Identifier(_) => {
+            let is_index_or_mapped = {
+                let could_be_ident = matches!(self.peek(),
+                    TokenKind::Identifier(_)
+                    | TokenKind::Type | TokenKind::Readonly | TokenKind::Interface
+                    | TokenKind::Namespace | TokenKind::Module | TokenKind::Declare
+                    | TokenKind::Abstract | TokenKind::Override | TokenKind::Any
+                    | TokenKind::Unknown | TokenKind::Never | TokenKind::Is
+                    | TokenKind::Asserts | TokenKind::Satisfies | TokenKind::Keyof
+                    | TokenKind::Infer | TokenKind::Enum | TokenKind::Async
+                    | TokenKind::From | TokenKind::Get | TokenKind::Set
+                    | TokenKind::As | TokenKind::Static
+                );
+                if could_be_ident {
                     let next = self.lexer.peek();
                     matches!(next.kind, TokenKind::Colon | TokenKind::Question | TokenKind::In)
+                } else {
+                    false
                 }
-                _ => false,
             };
 
             if is_index_or_mapped {
@@ -1574,7 +1586,21 @@ impl<'a> Parser<'a> {
 
     /// Try to consume TypeScript accessibility modifier (public/private/protected).
     /// Returns the accessibility if found.
+    /// Check if the current token (a TS modifier keyword) is actually being used as a
+    /// property name rather than a modifier. True when the next token is `:`, `=`, `;`,
+    /// `?`, `!`, or `(` — all of which indicate the keyword IS the property/method name.
+    pub(crate) fn is_ts_modifier_used_as_property(&mut self) -> bool {
+        matches!(self.lexer.peek().kind,
+            TokenKind::Colon | TokenKind::Eq | TokenKind::Semicolon
+            | TokenKind::Question | TokenKind::Bang | TokenKind::LParen
+        ) || self.lexer.peek().had_newline_before
+    }
+
     pub(crate) fn try_parse_accessibility(&mut self) -> Option<Accessibility> {
+        let is_access = matches!(self.peek(), TokenKind::Public | TokenKind::Protected | TokenKind::Private);
+        if !is_access || self.is_ts_modifier_used_as_property() {
+            return None;
+        }
         match self.peek() {
             TokenKind::Public => { self.advance(); Some(Accessibility::Public) }
             TokenKind::Protected => { self.advance(); Some(Accessibility::Protected) }
