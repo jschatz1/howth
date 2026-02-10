@@ -1227,12 +1227,7 @@ impl<'a> ArenaParser<'a> {
     fn parse_binary(&mut self, min_prec: u8) -> Result<Expr<'a>, ParseError> {
         let mut left = self.parse_unary()?;
 
-        loop {
-            let (op, prec) = match self.binary_op() {
-                Some(x) => x,
-                None => break,
-            };
-
+        while let Some((op, prec)) = self.binary_op() {
             if prec < min_prec {
                 break;
             }
@@ -1356,23 +1351,18 @@ impl<'a> ArenaParser<'a> {
     fn parse_call(&mut self) -> Result<Expr<'a>, ParseError> {
         let mut expr = self.parse_member()?;
 
-        loop {
-            match self.peek() {
-                TokenKind::LParen => {
-                    self.advance();
-                    let args = self.parse_arguments()?;
-                    let end = self.expect(TokenKind::RParen)?.span.end;
-                    let span = Span::new(expr.span.start, end);
-                    expr = Expr::new(
-                        ExprKind::Call {
-                            callee: self.arena.alloc(expr),
-                            args,
-                        },
-                        span,
-                    );
-                }
-                _ => break,
-            }
+        while let TokenKind::LParen = self.peek() {
+            self.advance();
+            let args = self.parse_arguments()?;
+            let end = self.expect(TokenKind::RParen)?.span.end;
+            let span = Span::new(expr.span.start, end);
+            expr = Expr::new(
+                ExprKind::Call {
+                    callee: self.arena.alloc(expr),
+                    args,
+                },
+                span,
+            );
         }
 
         Ok(expr)

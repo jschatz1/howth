@@ -29,15 +29,13 @@ impl HowthBackend {
     fn is_typescript(path: &std::path::Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| matches!(ext.to_lowercase().as_str(), "ts" | "tsx" | "mts" | "cts"))
-            .unwrap_or(false)
+            .is_some_and(|ext| matches!(ext.to_lowercase().as_str(), "ts" | "tsx" | "mts" | "cts"))
     }
 
     fn is_jsx(path: &std::path::Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| matches!(ext.to_lowercase().as_str(), "jsx" | "tsx"))
-            .unwrap_or(false)
+            .is_some_and(|ext| matches!(ext.to_lowercase().as_str(), "jsx" | "tsx"))
     }
 }
 
@@ -51,6 +49,8 @@ impl CompilerBackend for HowthBackend {
         spec: &TranspileSpec,
         source: &str,
     ) -> Result<TranspileOutput, CompilerError> {
+        use howth_parser::{Codegen, CodegenOptions, Parser, ParserOptions};
+
         if source.is_empty() {
             return Ok(TranspileOutput::new(""));
         }
@@ -58,13 +58,10 @@ impl CompilerBackend for HowthBackend {
         let is_ts = Self::is_typescript(&spec.input_path);
         let is_jsx = Self::is_jsx(&spec.input_path);
 
-        use howth_parser::{Codegen, CodegenOptions, Parser, ParserOptions};
-
         let parser_opts = ParserOptions {
             module: true,
             jsx: is_jsx,
             typescript: is_ts,
-            ..Default::default()
         };
 
         let ast = Parser::new(source, parser_opts)
@@ -80,8 +77,7 @@ impl CompilerBackend for HowthBackend {
         // Prepend JSX runtime import for JSX/TSX files (automatic mode only)
         if is_jsx && spec.jsx_runtime == JsxRuntime::Automatic {
             code = format!(
-                "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
-                code
+                "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{code}"
             );
         }
 
@@ -200,14 +196,14 @@ mod tests {
         let spec = TranspileSpec::new("src/App.tsx", "dist/App.js")
             .with_jsx_runtime(JsxRuntime::Automatic);
 
-        let source = r#"
+        let source = r"
             interface Props {
                 name: string;
             }
             function Greeting({ name }: Props) {
                 return <h1>Hello, {name}!</h1>;
             }
-        "#;
+        ";
 
         let output = backend.transpile(&spec, source).unwrap();
         assert!(!output.code.contains("interface"));

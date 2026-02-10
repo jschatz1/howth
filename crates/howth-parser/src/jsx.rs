@@ -369,7 +369,7 @@ impl<'a> Parser<'a> {
         // Consume `<`
         if !self.check(&TokenKind::Lt) {
             return Err(ParseError::new(
-                format!("Expected closing tag for JSX element"),
+                "Expected closing tag for JSX element".to_string(),
                 self.current.span,
             ));
         }
@@ -390,7 +390,7 @@ impl<'a> Parser<'a> {
         let close_name = self.parse_jsx_element_name()?;
         if close_name != *expected_name {
             return Err(ParseError::new(
-                format!("Mismatched closing tag"),
+                "Mismatched closing tag".to_string(),
                 self.current.span,
             ));
         }

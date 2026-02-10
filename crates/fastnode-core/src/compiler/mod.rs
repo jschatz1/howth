@@ -328,8 +328,7 @@ pub fn transform_jsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
 
     // Prepend jsx runtime import
     let code = format!(
-        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
-        code
+        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{code}"
     );
 
     Ok((code, imports))
@@ -460,6 +459,7 @@ fn extract_dynamic_imports_stmts(
     }
 }
 
+#[allow(clippy::match_same_arms)]
 fn extract_dynamic_imports_stmt(
     stmt: &howth_parser::Stmt,
     imports: &mut Vec<crate::bundler::Import>,
@@ -547,7 +547,6 @@ pub fn transform_ts(source: &str) -> Result<(String, Vec<crate::bundler::Import>
         module: true,
         jsx: false,
         typescript: true,
-        ..Default::default()
     };
 
     let ast = Parser::new(source, parser_opts)
@@ -572,7 +571,6 @@ pub fn transform_tsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
         module: true,
         jsx: true,
         typescript: true,
-        ..Default::default()
     };
 
     let ast = Parser::new(source, parser_opts)
@@ -607,8 +605,7 @@ pub fn transform_tsx(source: &str) -> Result<(String, Vec<crate::bundler::Import
 
     // Prepend jsx runtime import
     let code = format!(
-        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
-        code
+        "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{code}"
     );
 
     Ok((code, imports))

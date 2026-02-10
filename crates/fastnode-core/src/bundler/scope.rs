@@ -162,7 +162,7 @@ impl ScopeHoistContext {
             // CommonJS patterns
             if trimmed.contains("require(")
                 && !trimmed.starts_with("//")
-                && !trimmed.starts_with("*")
+                && !trimmed.starts_with('*')
             {
                 // Check if it's not in a comment
                 if !is_in_comment(line, "require(") {
@@ -765,14 +765,14 @@ mod tests {
 
         let id = graph.add(Module {
             path: "/multi.js".to_string(),
-            source: r#"
+            source: r"
 export const a = 1;
 export let b = 2;
 export var c = 3;
 export function d() {}
 export class E {}
 const internal = 42;
-"#
+"
             .to_string(),
             imports: vec![],
             dependencies: vec![],

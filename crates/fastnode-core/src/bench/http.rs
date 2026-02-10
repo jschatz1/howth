@@ -161,14 +161,14 @@ console.log(`READY:${port}`);
 
     // Howth static server (pure Rust, no JS callback - theoretical max performance)
     // Note: serveStatic prints READY internally
-    let howth_static_server = r#"
+    let howth_static_server = r"
 const port = parseInt(process.argv[2] || '3000', 10);
 
 const server = await Howth.serveStatic({ port, hostname: '127.0.0.1' }, 'Hello World\n');
 
 // Keep the process running indefinitely using setInterval
 setInterval(() => {}, 60000);
-"#;
+";
     fs::write(dir.join("server-howth-static.ts"), howth_static_server)
         .expect("Failed to write howth static server");
 

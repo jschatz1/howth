@@ -49,11 +49,12 @@ fn minify_bundle(code: &str) -> Result<String, BundleError> {
 /// VLQ-encode a signed integer and append to output string.
 fn vlq_encode(value: i64, out: &mut String) {
     const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut v = if value < 0 {
+    #[allow(clippy::cast_sign_loss)]
+    let mut v = (if value < 0 {
         ((-value) << 1) | 1
     } else {
         value << 1
-    } as u64;
+    }) as u64;
     loop {
         let mut digit = (v & 0x1f) as u8;
         v >>= 5;
@@ -123,14 +124,14 @@ impl SourceMapBuilder {
             // (We only emit one segment per line, so this rarely triggers)
 
             // Encode: output_col (relative), source_idx (relative), source_line (relative), source_col (relative)
-            vlq_encode(output_col as i64, &mut mappings_str);
-            vlq_encode(source_idx as i64 - prev_source, &mut mappings_str);
-            vlq_encode(source_line as i64 - prev_source_line, &mut mappings_str);
-            vlq_encode(source_col as i64 - prev_source_col, &mut mappings_str);
+            vlq_encode(i64::from(output_col), &mut mappings_str);
+            vlq_encode(i64::from(source_idx) - prev_source, &mut mappings_str);
+            vlq_encode(i64::from(source_line) - prev_source_line, &mut mappings_str);
+            vlq_encode(i64::from(source_col) - prev_source_col, &mut mappings_str);
 
-            prev_source = source_idx as i64;
-            prev_source_line = source_line as i64;
-            prev_source_col = source_col as i64;
+            prev_source = i64::from(source_idx);
+            prev_source_line = i64::from(source_line);
+            prev_source_col = i64::from(source_col);
         }
 
         // Build JSON manually (avoid serde dependency for this small structure)
@@ -391,10 +392,10 @@ fn emit_esm(
 
     // Entry point execution
     if let Some(entry) = entry_id {
-        if !options.minify {
-            output.push_str(&format!("\n// Entry point\n__require({});\n", entry));
-        } else {
+        if options.minify {
             output.push_str(&format!("__require({});", entry));
+        } else {
+            output.push_str(&format!("\n// Entry point\n__require({});\n", entry));
         }
     }
 
@@ -1089,18 +1090,13 @@ fn emit_hoisted_module_ast(
     for stmt in &ast.stmts {
         match &stmt.kind {
             // Skip import statements
-            howth_parser::StmtKind::Import(_) => continue,
+            howth_parser::StmtKind::Import(_) => {}
             // Transform export statements
             howth_parser::StmtKind::Export(export) => {
                 match export.as_ref() {
-                    // export { a, b } - skip (names already in scope)
-                    howth_parser::ExportDecl::Named { source: None, .. } => continue,
-                    // export { a } from './mod' - skip (re-exports handled separately)
-                    howth_parser::ExportDecl::Named {
-                        source: Some(_), ..
-                    } => continue,
-                    // export * from './mod' - skip
-                    howth_parser::ExportDecl::All { .. } => continue,
+                    // export { a, b } / export { a } from './mod' / export * from './mod' - skip
+                    howth_parser::ExportDecl::Named { .. }
+                    | howth_parser::ExportDecl::All { .. } => {}
                     // export default expr - keep as variable
                     howth_parser::ExportDecl::Default { .. } => {
                         // For default exports, we'd need to transform to var _default = ...
@@ -1566,11 +1562,11 @@ console.log(add(1, 2));
         // entry.js: imports from both
         let entry_id = graph.add(Module {
             path: "/entry.js".to_string(),
-            source: r#"
+            source: r"
 import { x as a } from './a';
 import { x as b } from './b';
 console.log(a + b);
-"#
+"
             .to_string(),
             imports: vec![
                 Import {
@@ -1883,7 +1879,7 @@ console.log(a + b);
         // Module with various code structures
         let id = graph.add(Module {
             path: "/complex.js".to_string(),
-            source: r#"
+            source: r"
 export const CONFIG = { debug: true };
 export function init() {
     if (CONFIG.debug) {
@@ -1891,7 +1887,7 @@ export function init() {
     }
 }
 const internal = 42;
-"#
+"
             .to_string(),
             imports: vec![],
             dependencies: vec![],
@@ -2046,10 +2042,10 @@ const internal = 42;
     #[test]
     fn test_ast_based_renaming_preserves_object_keys() {
         // Test that AST-based renaming correctly handles object properties
-        let source = r#"
+        let source = r"
 const foo = 1;
 const obj = { foo: foo, bar: foo };
-"#;
+";
         let mut renames = HashMap::default();
         renames.insert("foo".to_string(), "foo$1".to_string());
 
@@ -2066,12 +2062,12 @@ const obj = { foo: foo, bar: foo };
 
     #[test]
     fn test_ast_based_renaming_function_and_class() {
-        let source = r#"
+        let source = r"
 function myFunc() { return 1; }
 class MyClass { constructor() {} }
 const x = myFunc();
 const y = new MyClass();
-"#;
+";
         let mut renames = HashMap::default();
         renames.insert("myFunc".to_string(), "myFunc$1".to_string());
         renames.insert("MyClass".to_string(), "MyClass$1".to_string());
@@ -2090,11 +2086,11 @@ const y = new MyClass();
 
     #[test]
     fn test_ast_based_renaming_import_removal() {
-        let source = r#"
+        let source = r"
 import { foo } from './other';
 import bar from './bar';
 const x = foo + bar;
-"#;
+";
         let renames = HashMap::default();
 
         let result = emit_hoisted_module_ast(source, &renames);
@@ -2109,11 +2105,11 @@ const x = foo + bar;
 
     #[test]
     fn test_ast_based_renaming_export_removal() {
-        let source = r#"
+        let source = r"
 export const foo = 1;
 export function bar() { return 2; }
 export class Baz {}
-"#;
+";
         let renames = HashMap::default();
 
         let result = emit_hoisted_module_ast(source, &renames);

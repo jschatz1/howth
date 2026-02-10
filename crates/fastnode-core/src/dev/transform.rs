@@ -91,15 +91,14 @@ impl ModuleTransformer {
                 let is_css_module = file_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n.ends_with(".module.css"))
-                    .unwrap_or(false);
+                    .is_some_and(|n| n.ends_with(".module.css"));
 
                 let css_result = crate::css::process_css_file(
                     &source, &file_path, false, // Don't minify in dev
                     true,  // Enable autoprefixer
                 )
                 .map_err(|e| ModuleTransformError {
-                    message: format!("CSS processing error: {}", e),
+                    message: format!("CSS processing error: {e}"),
                     file: Some(file_path_str.clone()),
                 })?;
 
@@ -125,7 +124,7 @@ impl ModuleTransformer {
 
                 let compiled_css =
                     compile_sass(&source, &sass_options).map_err(|e| ModuleTransformError {
-                        message: format!("Sass compile error: {}", e),
+                        message: format!("Sass compile error: {e}"),
                         file: Some(file_path_str.clone()),
                     })?;
 
@@ -133,8 +132,7 @@ impl ModuleTransformer {
                 let is_css_module = file_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .map(|n| n.contains(".module."))
-                    .unwrap_or(false);
+                    .is_some_and(|n| n.contains(".module."));
 
                 // Process the compiled CSS with lightningcss
                 let css_result = crate::css::process_css_file(
@@ -144,7 +142,7 @@ impl ModuleTransformer {
                     true,  // Enable autoprefixer
                 )
                 .map_err(|e| ModuleTransformError {
-                    message: format!("CSS processing error: {}", e),
+                    message: format!("CSS processing error: {e}"),
                     file: Some(file_path_str.clone()),
                 })?;
 

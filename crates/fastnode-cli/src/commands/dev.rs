@@ -654,7 +654,7 @@ async fn handle_proxy(
     let mut proxy_req = state.http_client.request(method.clone(), &target_url);
 
     // Forward headers (except Host if changeOrigin is set)
-    for (key, value) in headers.iter() {
+    for (key, value) in &headers {
         if config.change_origin && key == header::HOST {
             continue; // Skip Host header, reqwest will set it from the URL
         }
@@ -707,7 +707,7 @@ async fn handle_proxy(
             let mut response = Response::builder()
                 .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK));
 
-            for (key, value) in resp_headers.iter() {
+            for (key, value) in &resp_headers {
                 // Skip hop-by-hop headers
                 if key == header::CONNECTION
                     || key == header::TRANSFER_ENCODING

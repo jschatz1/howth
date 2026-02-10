@@ -9,7 +9,6 @@ fn main() {
         module: true,
         jsx: is_tsx,
         typescript: true,
-        ..Default::default()
     };
     match Parser::new(source, opts).parse() {
         Ok(_) => println!("PASS"),

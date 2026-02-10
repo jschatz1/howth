@@ -1332,6 +1332,7 @@ impl SharedMemoryBuffer {
     }
 
     /// Set bytes from a slice
+    #[allow(clippy::wrong_self_convention)]
     fn from_slice(&self, data: &[u8]) {
         for (i, byte) in data.iter().enumerate() {
             if i < self.data.len() {
@@ -3458,7 +3459,7 @@ async fn op_howth_http_serve_fast(
                                     body_total.fetch_add(body_time, Ordering::Relaxed);
                                     js_total.fetch_add(js_time, Ordering::Relaxed);
 
-                                    if c % 50000 == 0 {
+                                    if c.is_multiple_of(50000) {
                                         let avg_e2e = total.load(Ordering::Relaxed) / c;
                                         let avg_parse = parse_total.load(Ordering::Relaxed) / c;
                                         let avg_body = body_total.load(Ordering::Relaxed) / c;
@@ -5009,8 +5010,8 @@ async fn op_howth_tls_connect(
     #[string] host: String,
     port: u16,
     #[string] servername: Option<String>,
-    #[string] alpn: Option<String>,
-    reject_unauthorized: Option<bool>,
+    #[string] _alpn: Option<String>,
+    _reject_unauthorized: Option<bool>,
 ) -> Result<TlsConnectResult, deno_core::error::AnyError> {
     let addr = format!("{}:{}", host, port);
 

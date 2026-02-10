@@ -67,7 +67,7 @@ pub fn process_css(source: &str, options: &CssOptions) -> Result<CssResult, CssE
     if options.css_modules {
         parser_options.css_modules = Some(lightningcss::css_modules::Config {
             pattern: lightningcss::css_modules::Pattern::parse("[hash]_[local]")
-                .map_err(|e| CssError::Parse(format!("CSS Modules pattern error: {}", e)))?,
+                .map_err(|e| CssError::Parse(format!("CSS Modules pattern error: {e}")))?,
             dashed_idents: false,
             animation: Default::default(),
             grid: Default::default(),
@@ -79,7 +79,7 @@ pub fn process_css(source: &str, options: &CssOptions) -> Result<CssResult, CssE
 
     // Parse the stylesheet
     let mut stylesheet = StyleSheet::parse(source, parser_options)
-        .map_err(|e| CssError::Parse(format!("CSS parse error in {}: {}", filename, e)))?;
+        .map_err(|e| CssError::Parse(format!("CSS parse error in {filename}: {e}")))?;
 
     // Set up browser targets for autoprefixer
     let targets = if options.autoprefixer {
@@ -95,7 +95,7 @@ pub fn process_css(source: &str, options: &CssOptions) -> Result<CssResult, CssE
                 targets: Targets::from(targets),
                 ..Default::default()
             })
-            .map_err(|e| CssError::Transform(format!("CSS minify error: {}", e)))?;
+            .map_err(|e| CssError::Transform(format!("CSS minify error: {e}")))?;
     }
 
     // Set up printer options
@@ -108,7 +108,7 @@ pub fn process_css(source: &str, options: &CssOptions) -> Result<CssResult, CssE
     // Generate output
     let output = stylesheet
         .to_css(printer_options)
-        .map_err(|e| CssError::Print(format!("CSS print error: {}", e)))?;
+        .map_err(|e| CssError::Print(format!("CSS print error: {e}")))?;
 
     // Extract CSS Modules exports
     let exports = if options.css_modules {
@@ -116,7 +116,7 @@ pub fn process_css(source: &str, options: &CssOptions) -> Result<CssResult, CssE
             .exports
             .map(|exp| {
                 exp.iter()
-                    .map(|(k, v)| (k.to_string(), v.name.to_string()))
+                    .map(|(k, v)| (k.clone(), v.name.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -143,8 +143,7 @@ pub fn process_css_file(
     let is_module = path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(".module.css"))
-        .unwrap_or(false);
+        .is_some_and(|n| n.ends_with(".module.css"));
 
     let options = CssOptions {
         minify,
@@ -177,7 +176,11 @@ fn default_browser_targets() -> Browsers {
 /// Creates a JS module that:
 /// 1. Injects the CSS as a <style> tag
 /// 2. Exports the class name mappings
-pub fn generate_css_module_js(css: &str, exports: &HashMap<String, String>) -> String {
+#[must_use]
+pub fn generate_css_module_js(
+    css: &str,
+    exports: &std::collections::HashMap<String, String, impl std::hash::BuildHasher>,
+) -> String {
     let escaped_css = css
         .replace('\\', "\\\\")
         .replace('`', "\\`")
@@ -185,12 +188,12 @@ pub fn generate_css_module_js(css: &str, exports: &HashMap<String, String>) -> S
 
     let exports_obj: String = exports
         .iter()
-        .map(|(k, v)| format!("  \"{}\": \"{}\"", k, v))
+        .map(|(k, v)| format!("  \"{k}\": \"{v}\""))
         .collect::<Vec<_>>()
         .join(",\n");
 
     format!(
-        r#"const css = `{escaped_css}`;
+        r"const css = `{escaped_css}`;
 const style = document.createElement('style');
 style.setAttribute('data-howth-css-module', '');
 style.textContent = css;
@@ -209,7 +212,7 @@ if (import.meta.hot) {{
 }}
 
 export default classes;
-"#
+"
     )
 }
 
@@ -227,9 +230,9 @@ pub enum CssError {
 impl std::fmt::Display for CssError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CssError::Parse(msg) => write!(f, "CSS parse error: {}", msg),
-            CssError::Transform(msg) => write!(f, "CSS transform error: {}", msg),
-            CssError::Print(msg) => write!(f, "CSS print error: {}", msg),
+            CssError::Parse(msg) => write!(f, "CSS parse error: {msg}"),
+            CssError::Transform(msg) => write!(f, "CSS transform error: {msg}"),
+            CssError::Print(msg) => write!(f, "CSS print error: {msg}"),
         }
     }
 }

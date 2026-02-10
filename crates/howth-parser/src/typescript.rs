@@ -758,7 +758,7 @@ impl<'a> Parser<'a> {
                 )
             }
             // Keywords used as parameter names: `(from: Type, to: Type) => void`
-            ref k if k.is_keyword() || is_ts_contextual_keyword(k) => {
+            k if k.is_keyword() || is_ts_contextual_keyword(k) => {
                 let next = self.lexer.peek();
                 matches!(next.kind, TokenKind::Colon | TokenKind::Question)
             }
@@ -1175,11 +1175,10 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(&TokenKind::RBracket)?;
                     // Optional `?`, `-?`, or `+?` modifier
-                    if self.eat(&TokenKind::Minus) || self.eat(&TokenKind::Plus) {
-                        self.eat(&TokenKind::Question);
-                    } else {
-                        self.eat(&TokenKind::Question);
+                    if !self.eat(&TokenKind::Minus) {
+                        self.eat(&TokenKind::Plus);
                     }
+                    self.eat(&TokenKind::Question);
                     self.expect(&TokenKind::Colon)?;
                     let type_ann = self.parse_ts_type_impl()?;
                     let end = self.current.span.start;

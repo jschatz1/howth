@@ -111,12 +111,11 @@ fn main() {
         // Strip UTF-8 BOM if present
         let source = source.strip_prefix('\u{feff}').unwrap_or(&source);
 
-        let is_tsx = path.extension().map_or(false, |e| e == "tsx");
+        let is_tsx = path.extension().is_some_and(|e| e == "tsx");
         let opts = ParserOptions {
             module: true,
             jsx: is_tsx,
             typescript: true,
-            ..Default::default()
         };
 
         match Parser::new(source, opts).parse() {

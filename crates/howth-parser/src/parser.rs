@@ -99,8 +99,7 @@ impl<'a> Parser<'a> {
 
     /// Advance to the next token and return the previous.
     pub(crate) fn advance(&mut self) -> Token {
-        let prev = std::mem::replace(&mut self.current, self.lexer.next_token());
-        prev
+        std::mem::replace(&mut self.current, self.lexer.next_token())
     }
 
     /// Check if the current token matches the given kind.
@@ -2911,11 +2910,9 @@ impl<'a> Parser<'a> {
                 if self.eat(&TokenKind::LParen) {
                     let arg = self.parse_assign_expr()?;
                     // Consume optional second argument (import options)
-                    if self.eat(&TokenKind::Comma) {
-                        if !self.check(&TokenKind::RParen) {
-                            let _ = self.parse_assign_expr()?;
-                            self.eat(&TokenKind::Comma); // trailing comma
-                        }
+                    if self.eat(&TokenKind::Comma) && !self.check(&TokenKind::RParen) {
+                        let _ = self.parse_assign_expr()?;
+                        self.eat(&TokenKind::Comma); // trailing comma
                     }
                     self.expect(&TokenKind::RParen)?;
                     let end = self.current.span.start;

@@ -835,13 +835,7 @@ impl Bundler {
                             path: Some(path_str.clone()),
                         }
                     })?,
-                    // Plain JS: no transformation needed, just extract imports
-                    "js" | "mjs" | "cjs" => {
-                        let path = std::path::PathBuf::from(path_str);
-                        let imports = self.extract_imports(&plugin_transformed, &path)?;
-                        (plugin_transformed.clone(), imports)
-                    }
-                    // Fallback: treat as JS, just extract imports
+                    // Plain JS or fallback: no transformation needed, just extract imports
                     _ => {
                         let path = std::path::PathBuf::from(path_str);
                         let imports = self.extract_imports(&plugin_transformed, &path)?;

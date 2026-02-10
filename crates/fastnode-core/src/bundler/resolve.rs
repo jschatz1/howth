@@ -159,7 +159,7 @@ impl Resolver {
             return false;
         };
         self.get_dir_listing(dir)
-            .map_or(false, |l| l.0.contains(name))
+            .is_some_and(|l| l.0.contains(name))
     }
 
     /// Check if a directory exists using the directory listing cache.
@@ -171,7 +171,7 @@ impl Resolver {
             return false;
         };
         self.get_dir_listing(parent)
-            .map_or(false, |l| l.1.contains(name))
+            .is_some_and(|l| l.1.contains(name))
     }
 
     fn resolve_uncached(
