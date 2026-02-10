@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.5.0 — Variable Name Mangling
+
+### Minification
+- **Variable name mangling**: shortens local variable names (`myVariable` → `a`) for smaller bundles
+- Three-phase approach: scope collection, name assignment, AST rename
+- Handles `var` hoisting, `let`/`const` block scoping, destructuring (array + object with computed keys), shorthand expansion (`{ foo }` → `{ foo: a }`)
+- Covers arrow functions, function expressions, class declarations, catch clauses, for/for-in/for-of loops, imports, and named exports
+- Bails out safely on `eval()` and `with` statements
+- Configurable: `MangleOptions { reserved, top_level }` to preserve specific names
+- Enable with `BundleOptions { mangle: true }` (requires `minify: true`)
+
+---
+
+## v0.4.0 — Remove SWC
+
+### Breaking Changes
+- **Removed SWC dependency entirely** — howth-parser now handles all transpilation (JS, JSX, TS, TSX)
+- Replaced `FxHashMap`/`FxHashSet` usage from SWC with `rustc-hash` crate directly
+
+### Bug Fixes
+- Fixed `is_multiple_of` usage for stable Rust compatibility
+
+---
+
 ## v0.3.0 — TypeScript Parser
 
 ### TypeScript Support
