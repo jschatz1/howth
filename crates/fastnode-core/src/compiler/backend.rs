@@ -88,15 +88,17 @@ impl CompilerBackend for HowthBackend {
         let mut output = TranspileOutput::new(code);
 
         // Generate placeholder source map if requested
-        if matches!(spec.sourcemaps, SourceMapKind::Inline | SourceMapKind::External) {
+        if matches!(
+            spec.sourcemaps,
+            SourceMapKind::Inline | SourceMapKind::External
+        ) {
             let filename = spec
                 .input_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
-            let map = format!(
-                r#"{{"version":3,"sources":["{filename}"],"names":[],"mappings":"AAAA"}}"#
-            );
+            let map =
+                format!(r#"{{"version":3,"sources":["{filename}"],"names":[],"mappings":"AAAA"}}"#);
             output = output.with_source_map(map);
         }
 
@@ -106,8 +108,8 @@ impl CompilerBackend for HowthBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::spec::{JsxRuntime, SourceMapKind};
+    use super::*;
     use std::path::PathBuf;
 
     #[test]
@@ -217,8 +219,8 @@ mod tests {
     #[test]
     fn test_transpile_with_sourcemap() {
         let backend = HowthBackend::new();
-        let spec = TranspileSpec::new("src/app.js", "dist/app.js")
-            .with_sourcemaps(SourceMapKind::Inline);
+        let spec =
+            TranspileSpec::new("src/app.js", "dist/app.js").with_sourcemaps(SourceMapKind::Inline);
 
         let source = "const x = 1;";
         let output = backend.transpile(&spec, source).unwrap();

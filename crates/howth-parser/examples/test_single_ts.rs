@@ -5,9 +5,17 @@ fn main() {
     let source = fs::read_to_string(&path).expect("cannot read file");
     let source = source.strip_prefix('\u{feff}').unwrap_or(&source);
     let is_tsx = path.ends_with(".tsx");
-    let opts = ParserOptions { module: true, jsx: is_tsx, typescript: true, ..Default::default() };
+    let opts = ParserOptions {
+        module: true,
+        jsx: is_tsx,
+        typescript: true,
+        ..Default::default()
+    };
     match Parser::new(source, opts).parse() {
         Ok(_) => println!("PASS"),
-        Err(e) => { eprintln!("FAIL: {}", e); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("FAIL: {}", e);
+            std::process::exit(1);
+        }
     }
 }

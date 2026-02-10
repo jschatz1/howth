@@ -39,11 +39,13 @@ fn test_bundle_rolldown_bench_1000() {
 
         match result {
             Ok(r) => {
-                println!("Run {}: {:.2}ms ({} modules, {:.2} KB JS)",
+                println!(
+                    "Run {}: {:.2}ms ({} modules, {:.2} KB JS)",
                     i + 1,
                     elapsed.as_secs_f64() * 1000.0,
                     r.modules.len(),
-                    r.code.len() as f64 / 1024.0);
+                    r.code.len() as f64 / 1024.0
+                );
                 last_result = Some(r);
             }
             Err(e) => panic!("Bundle failed: {}", e),
@@ -68,7 +70,10 @@ fn test_bundle_rolldown_bench_1000() {
         println!("Output written to {}", out_dir.display());
         println!("  JS: {:.2} MB", r.code.len() as f64 / (1024.0 * 1024.0));
         if let Some(ref map) = r.map {
-            println!("  Sourcemap: {:.2} MB", map.len() as f64 / (1024.0 * 1024.0));
+            println!(
+                "  Sourcemap: {:.2} MB",
+                map.len() as f64 / (1024.0 * 1024.0)
+            );
         }
         assert!(r.modules.len() > 100);
     }

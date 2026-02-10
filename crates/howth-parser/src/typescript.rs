@@ -172,27 +172,45 @@ impl<'a> Parser<'a> {
             // Keyword types
             TokenKind::Any => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::Any, span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::Any,
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::Unknown => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::Unknown, span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::Unknown,
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::Never => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::Never, span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::Never,
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::Void => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::Void, span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::Void,
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::Null => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::Null, span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::Null,
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::This => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::This, span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::This,
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::Typeof => {
                 self.advance();
@@ -200,21 +218,31 @@ impl<'a> Parser<'a> {
                 if self.check(&TokenKind::Import) {
                     let import_type = self.parse_ts_primary_type()?;
                     let end = self.current.span.start;
-                    return Ok(TsType { kind: TsTypeKind::Typeof(Box::new(
-                        Expr::new(ExprKind::Ident("import".to_string()), import_type.span)
-                    )), span: Span::new(start, end) });
+                    return Ok(TsType {
+                        kind: TsTypeKind::Typeof(Box::new(Expr::new(
+                            ExprKind::Ident("import".to_string()),
+                            import_type.span,
+                        ))),
+                        span: Span::new(start, end),
+                    });
                 }
                 // Parse a qualified name: `Foo.bar.baz` — NOT full expressions
                 // This prevents `typeof X[K]` from being parsed as computed member access
                 let expr = self.parse_ts_typeof_operand()?;
                 let end = self.current.span.start;
-                Ok(TsType { kind: TsTypeKind::Typeof(Box::new(expr)), span: Span::new(start, end) })
+                Ok(TsType {
+                    kind: TsTypeKind::Typeof(Box::new(expr)),
+                    span: Span::new(start, end),
+                })
             }
             TokenKind::Keyof => {
                 self.advance();
                 let ty = self.parse_ts_postfix_type()?;
                 let end = self.current.span.start;
-                Ok(TsType { kind: TsTypeKind::Keyof(Box::new(ty)), span: Span::new(start, end) })
+                Ok(TsType {
+                    kind: TsTypeKind::Keyof(Box::new(ty)),
+                    span: Span::new(start, end),
+                })
             }
             TokenKind::Infer => {
                 self.advance();
@@ -259,7 +287,10 @@ impl<'a> Parser<'a> {
                     let _ = self.parse_ts_type_impl()?;
                 }
                 let end = self.current.span.start;
-                Ok(TsType { kind: TsTypeKind::Any, span: Span::new(start, end) })
+                Ok(TsType {
+                    kind: TsTypeKind::Any,
+                    span: Span::new(start, end),
+                })
             }
 
             // Identifier - could be type reference, or keyword-like types
@@ -268,23 +299,38 @@ impl<'a> Parser<'a> {
                 match name_clone.as_str() {
                     "undefined" => {
                         self.advance();
-                        Ok(TsType { kind: TsTypeKind::Undefined, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::Undefined,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     "boolean" => {
                         self.advance();
-                        Ok(TsType { kind: TsTypeKind::Boolean, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::Boolean,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     "number" => {
                         self.advance();
-                        Ok(TsType { kind: TsTypeKind::Number, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::Number,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     "string" => {
                         self.advance();
-                        Ok(TsType { kind: TsTypeKind::String, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::String,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     "symbol" => {
                         self.advance();
-                        Ok(TsType { kind: TsTypeKind::Symbol, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::Symbol,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     "unique" => {
                         // `unique symbol` type
@@ -292,15 +338,24 @@ impl<'a> Parser<'a> {
                         if matches!(self.peek(), TokenKind::Identifier(ref n) if n == "symbol") {
                             self.advance();
                         }
-                        Ok(TsType { kind: TsTypeKind::Symbol, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::Symbol,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     "bigint" => {
                         self.advance();
-                        Ok(TsType { kind: TsTypeKind::BigInt, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::BigInt,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     "object" => {
                         self.advance();
-                        Ok(TsType { kind: TsTypeKind::Object, span: Span::new(start, self.current.span.start) })
+                        Ok(TsType {
+                            kind: TsTypeKind::Object,
+                            span: Span::new(start, self.current.span.start),
+                        })
                     }
                     _ => {
                         // Type reference: Foo, Foo<T>
@@ -313,20 +368,32 @@ impl<'a> Parser<'a> {
             TokenKind::String(s) => {
                 self.advance();
                 let end = self.current.span.start;
-                Ok(TsType { kind: TsTypeKind::LitString(s), span: Span::new(start, end) })
+                Ok(TsType {
+                    kind: TsTypeKind::LitString(s),
+                    span: Span::new(start, end),
+                })
             }
             TokenKind::Number(n) => {
                 self.advance();
                 let end = self.current.span.start;
-                Ok(TsType { kind: TsTypeKind::LitNumber(n), span: Span::new(start, end) })
+                Ok(TsType {
+                    kind: TsTypeKind::LitNumber(n),
+                    span: Span::new(start, end),
+                })
             }
             TokenKind::True => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::LitBoolean(true), span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::LitBoolean(true),
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::False => {
                 self.advance();
-                Ok(TsType { kind: TsTypeKind::LitBoolean(false), span: Span::new(start, self.current.span.start) })
+                Ok(TsType {
+                    kind: TsTypeKind::LitBoolean(false),
+                    span: Span::new(start, self.current.span.start),
+                })
             }
             TokenKind::Minus => {
                 // Negative number literal type: -1
@@ -334,33 +401,36 @@ impl<'a> Parser<'a> {
                 if let TokenKind::Number(n) = self.peek().clone() {
                     self.advance();
                     let end = self.current.span.start;
-                    Ok(TsType { kind: TsTypeKind::LitNumber(-n), span: Span::new(start, end) })
+                    Ok(TsType {
+                        kind: TsTypeKind::LitNumber(-n),
+                        span: Span::new(start, end),
+                    })
                 } else {
-                    Err(ParseError::new("Expected number after '-' in type", self.current.span))
+                    Err(ParseError::new(
+                        "Expected number after '-' in type",
+                        self.current.span,
+                    ))
                 }
             }
 
             // Parenthesized type or function type: `(x: number) => void` or `(Type)`
-            TokenKind::LParen => {
-                self.parse_ts_paren_or_fn_type()
-            }
+            TokenKind::LParen => self.parse_ts_paren_or_fn_type(),
 
             // Tuple type: `[A, B, C]`
-            TokenKind::LBracket => {
-                self.parse_ts_tuple_type()
-            }
+            TokenKind::LBracket => self.parse_ts_tuple_type(),
 
             // Object type literal: `{ x: number; y: string }`
-            TokenKind::LBrace => {
-                self.parse_ts_type_literal()
-            }
+            TokenKind::LBrace => self.parse_ts_type_literal(),
 
             // Template literal type: `\`hello\``
             TokenKind::TemplateNoSub(s) => {
                 self.advance();
                 let end = self.current.span.start;
                 Ok(TsType {
-                    kind: TsTypeKind::Template { quasis: vec![s], types: Vec::new() },
+                    kind: TsTypeKind::Template {
+                        quasis: vec![s],
+                        types: Vec::new(),
+                    },
                     span: Span::new(start, end),
                 })
             }
@@ -373,7 +443,10 @@ impl<'a> Parser<'a> {
                     types.push(self.parse_ts_type_impl()?);
                     // After the type, current token should be `}` closing the ${...}
                     if !matches!(self.peek(), TokenKind::RBrace) {
-                        return Err(ParseError::new("Expected } in template literal type", self.current.span));
+                        return Err(ParseError::new(
+                            "Expected } in template literal type",
+                            self.current.span,
+                        ));
                     }
                     // Scan template continuation from the lexer
                     let cont_kind = self.lexer.scan_template_continuation();
@@ -402,7 +475,10 @@ impl<'a> Parser<'a> {
                 let n = n.clone();
                 self.advance();
                 let end = self.current.span.start;
-                Ok(TsType { kind: TsTypeKind::LitString(n), span: Span::new(start, end) })
+                Ok(TsType {
+                    kind: TsTypeKind::LitString(n),
+                    span: Span::new(start, end),
+                })
             }
 
             // `new (...) => T` constructor type
@@ -432,7 +508,7 @@ impl<'a> Parser<'a> {
             // `abstract new (...) => T` — abstract constructor type
             TokenKind::Abstract if matches!(self.lexer.peek().kind, TokenKind::New) => {
                 self.advance(); // consume `abstract`
-                // Now parse as constructor type (same as `new` branch)
+                                // Now parse as constructor type (same as `new` branch)
                 self.advance(); // consume `new`
                 let type_params = if self.check(&TokenKind::Lt) {
                     Some(self.parse_ts_type_params_impl()?)
@@ -472,8 +548,12 @@ impl<'a> Parser<'a> {
             }
 
             // JS contextual keywords used as type names
-            TokenKind::From | TokenKind::Get | TokenKind::Set | TokenKind::As
-            | TokenKind::Static | TokenKind::Async => {
+            TokenKind::From
+            | TokenKind::Get
+            | TokenKind::Set
+            | TokenKind::As
+            | TokenKind::Static
+            | TokenKind::Async => {
                 let name = match self.peek() {
                     TokenKind::From => "from",
                     TokenKind::Get => "get",
@@ -482,7 +562,8 @@ impl<'a> Parser<'a> {
                     TokenKind::Static => "static",
                     TokenKind::Async => "async",
                     _ => unreachable!(),
-                }.to_string();
+                }
+                .to_string();
                 self.advance();
                 let type_args = if self.check(&TokenKind::Lt) {
                     Some(self.parse_ts_type_args_impl()?)
@@ -536,7 +617,10 @@ impl<'a> Parser<'a> {
                     })
                 } else {
                     let end = self.current.span.start;
-                    Ok(TsType { kind: TsTypeKind::Any, span: Span::new(start, end) })
+                    Ok(TsType {
+                        kind: TsTypeKind::Any,
+                        span: Span::new(start, end),
+                    })
                 }
             }
             // Spread type in tuples: `...T`
@@ -544,7 +628,10 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let ty = self.parse_ts_type_impl()?;
                 let end = self.current.span.start;
-                Ok(TsType { kind: ty.kind, span: Span::new(start, end) })
+                Ok(TsType {
+                    kind: ty.kind,
+                    span: Span::new(start, end),
+                })
             }
             // Generic function type: `<T>(x: T) => T`
             TokenKind::Lt => {
@@ -579,14 +666,20 @@ impl<'a> Parser<'a> {
         // Check for qualified name: Foo.Bar
         if self.check(&TokenKind::Dot) {
             let mut ty = TsType {
-                kind: TsTypeKind::Reference { name, type_args: None },
+                kind: TsTypeKind::Reference {
+                    name,
+                    type_args: None,
+                },
                 span: Span::new(start, self.current.span.start),
             };
             while self.eat(&TokenKind::Dot) {
                 let right = self.expect_ts_identifier()?;
                 let end = self.current.span.start;
                 ty = TsType {
-                    kind: TsTypeKind::Qualified { left: Box::new(ty), right },
+                    kind: TsTypeKind::Qualified {
+                        left: Box::new(ty),
+                        right,
+                    },
                     span: Span::new(start, end),
                 };
             }
@@ -651,12 +744,18 @@ impl<'a> Parser<'a> {
             TokenKind::This => {
                 // `(this: T, ...)` — `this` parameter in function type
                 let next = self.lexer.peek();
-                matches!(next.kind, TokenKind::Colon | TokenKind::Question | TokenKind::Comma)
+                matches!(
+                    next.kind,
+                    TokenKind::Colon | TokenKind::Question | TokenKind::Comma
+                )
             }
             TokenKind::Identifier(_) => {
                 // Peek at the token after the identifier using lexer.peek()
                 let next = self.lexer.peek();
-                matches!(next.kind, TokenKind::Colon | TokenKind::Question | TokenKind::Comma)
+                matches!(
+                    next.kind,
+                    TokenKind::Colon | TokenKind::Question | TokenKind::Comma
+                )
             }
             // Keywords used as parameter names: `(from: Type, to: Type) => void`
             ref k if k.is_keyword() || is_ts_contextual_keyword(k) => {
@@ -688,7 +787,9 @@ impl<'a> Parser<'a> {
             if params.len() == 1 {
                 let end = self.current.span.start;
                 return Ok(TsType {
-                    kind: TsTypeKind::Parenthesized(Box::new(params.into_iter().next().unwrap().ty)),
+                    kind: TsTypeKind::Parenthesized(Box::new(
+                        params.into_iter().next().unwrap().ty,
+                    )),
                     span: Span::new(start, end),
                 });
             }
@@ -768,7 +869,7 @@ impl<'a> Parser<'a> {
 
             let ty = self.parse_ts_type_impl()?;
             let _ = has_spread; // spread is consumed, type represents the rest element
-            // Optional tuple element: `string?`
+                                // Optional tuple element: `string?`
             self.eat(&TokenKind::Question);
             types.push(ty);
             if !self.eat(&TokenKind::Comma) {
@@ -889,17 +990,17 @@ impl<'a> Parser<'a> {
             Ok(())
         } else if self.check(&TokenKind::GtGt) {
             // Split >> into > and leave one > as current
-            self.current = Token::new(TokenKind::Gt, Span::new(
-                self.current.span.start + 1,
-                self.current.span.end,
-            ));
+            self.current = Token::new(
+                TokenKind::Gt,
+                Span::new(self.current.span.start + 1, self.current.span.end),
+            );
             Ok(())
         } else if self.check(&TokenKind::GtGtGt) {
             // Split >>> into > and leave >> as current
-            self.current = Token::new(TokenKind::GtGt, Span::new(
-                self.current.span.start + 1,
-                self.current.span.end,
-            ));
+            self.current = Token::new(
+                TokenKind::GtGt,
+                Span::new(self.current.span.start + 1, self.current.span.end),
+            );
             Ok(())
         } else {
             Err(ParseError::new(
@@ -933,7 +1034,10 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Some("this".to_string())
             } else if (self.peek().is_keyword() || is_ts_contextual_keyword(self.peek()))
-                && matches!(self.lexer.peek().kind, TokenKind::Colon | TokenKind::Question)
+                && matches!(
+                    self.lexer.peek().kind,
+                    TokenKind::Colon | TokenKind::Question
+                )
             {
                 // Keywords used as parameter names: `from: Type`, `type: Type`, etc.
                 let name = match self.expect_ts_identifier() {
@@ -958,15 +1062,25 @@ impl<'a> Parser<'a> {
             } else if let Some(ref n) = name {
                 // No colon — the name IS the type (e.g., `(number)` not `(x: number)`)
                 TsType {
-                    kind: TsTypeKind::Reference { name: n.clone(), type_args: None },
+                    kind: TsTypeKind::Reference {
+                        name: n.clone(),
+                        type_args: None,
+                    },
                     span: self.current.span,
                 }
             } else {
-                return Err(ParseError::new("Expected type in function type parameter", self.current.span));
+                return Err(ParseError::new(
+                    "Expected type in function type parameter",
+                    self.current.span,
+                ));
             };
 
             params.push(TsFnParam {
-                name: if self.check(&TokenKind::Colon) || name.is_some() { name } else { None },
+                name: if self.check(&TokenKind::Colon) || name.is_some() {
+                    name
+                } else {
+                    None
+                },
                 ty,
                 optional,
                 rest,
@@ -997,7 +1111,9 @@ impl<'a> Parser<'a> {
         };
 
         // Check for readonly — but only consume as modifier, not as property name
-        let readonly = self.check(&TokenKind::Readonly) && !self.is_ts_modifier_used_as_property() && self.eat(&TokenKind::Readonly);
+        let readonly = self.check(&TokenKind::Readonly)
+            && !self.is_ts_modifier_used_as_property()
+            && self.eat(&TokenKind::Readonly);
 
         // `[...]` — index signature, mapped type, or computed property key
         if self.check(&TokenKind::LBracket) {
@@ -1008,20 +1124,39 @@ impl<'a> Parser<'a> {
             // - Mapped type: `[K in Type]: Value`
             // - Computed property: `[expr]: Type` or `[expr](): Type`
             let is_index_or_mapped = {
-                let could_be_ident = matches!(self.peek(),
+                let could_be_ident = matches!(
+                    self.peek(),
                     TokenKind::Identifier(_)
-                    | TokenKind::Type | TokenKind::Readonly | TokenKind::Interface
-                    | TokenKind::Namespace | TokenKind::Module | TokenKind::Declare
-                    | TokenKind::Abstract | TokenKind::Override | TokenKind::Any
-                    | TokenKind::Unknown | TokenKind::Never | TokenKind::Is
-                    | TokenKind::Asserts | TokenKind::Satisfies | TokenKind::Keyof
-                    | TokenKind::Infer | TokenKind::Enum | TokenKind::Async
-                    | TokenKind::From | TokenKind::Get | TokenKind::Set
-                    | TokenKind::As | TokenKind::Static
+                        | TokenKind::Type
+                        | TokenKind::Readonly
+                        | TokenKind::Interface
+                        | TokenKind::Namespace
+                        | TokenKind::Module
+                        | TokenKind::Declare
+                        | TokenKind::Abstract
+                        | TokenKind::Override
+                        | TokenKind::Any
+                        | TokenKind::Unknown
+                        | TokenKind::Never
+                        | TokenKind::Is
+                        | TokenKind::Asserts
+                        | TokenKind::Satisfies
+                        | TokenKind::Keyof
+                        | TokenKind::Infer
+                        | TokenKind::Enum
+                        | TokenKind::Async
+                        | TokenKind::From
+                        | TokenKind::Get
+                        | TokenKind::Set
+                        | TokenKind::As
+                        | TokenKind::Static
                 );
                 if could_be_ident {
                     let next = self.lexer.peek();
-                    matches!(next.kind, TokenKind::Colon | TokenKind::Question | TokenKind::In)
+                    matches!(
+                        next.kind,
+                        TokenKind::Colon | TokenKind::Question | TokenKind::In
+                    )
                 } else {
                     false
                 }
@@ -1053,7 +1188,10 @@ impl<'a> Parser<'a> {
                             readonly,
                             param: TsFnParam {
                                 name: Some(param_name),
-                                ty: TsType { kind: TsTypeKind::Any, span: Span::new(start, end) },
+                                ty: TsType {
+                                    kind: TsTypeKind::Any,
+                                    span: Span::new(start, end),
+                                },
                                 optional: false,
                                 rest: false,
                             },
@@ -1074,7 +1212,10 @@ impl<'a> Parser<'a> {
                     self.parse_ts_type_impl()?
                 } else {
                     // Index signature without type annotation: `[key: Type];`
-                    TsType { kind: TsTypeKind::Any, span: Span::new(start, self.current.span.start) }
+                    TsType {
+                        kind: TsTypeKind::Any,
+                        span: Span::new(start, self.current.span.start),
+                    }
                 };
                 let end = self.current.span.start;
                 return Ok(TsTypeMember {
@@ -1146,7 +1287,9 @@ impl<'a> Parser<'a> {
 
         // Optional call signature: `?(): ReturnType`
         // Must check BEFORE the property/method signature path since `?` is not a valid property key
-        if self.check(&TokenKind::Question) && matches!(self.lexer.peek().kind, TokenKind::LParen | TokenKind::Lt) {
+        if self.check(&TokenKind::Question)
+            && matches!(self.lexer.peek().kind, TokenKind::LParen | TokenKind::Lt)
+        {
             self.advance(); // consume `?`
             let type_params = if self.check(&TokenKind::Lt) {
                 Some(self.parse_ts_type_params_impl()?)
@@ -1491,7 +1634,10 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     return Err(ParseError::new(
-                        format!("Expected declaration after 'declare', got {:?}", self.peek()),
+                        format!(
+                            "Expected declaration after 'declare', got {:?}",
+                            self.peek()
+                        ),
                         self.current.span,
                     ));
                 }
@@ -1514,7 +1660,10 @@ impl<'a> Parser<'a> {
     fn parse_ts_typeof_operand(&mut self) -> Result<Expr, ParseError> {
         let start = self.current.span.start;
         let name = self.expect_ts_identifier()?;
-        let mut expr = Expr::new(ExprKind::Ident(name), Span::new(start, self.current.span.start));
+        let mut expr = Expr::new(
+            ExprKind::Ident(name),
+            Span::new(start, self.current.span.start),
+        );
         // Parse dotted access: Foo.bar.baz
         while self.eat(&TokenKind::Dot) {
             let prop = self.expect_ts_identifier()?;
@@ -1543,30 +1692,99 @@ impl<'a> Parser<'a> {
                 Ok(name)
             }
             // TS contextual keywords can be used as identifiers in many positions
-            TokenKind::Type => { self.advance(); Ok("type".to_string()) }
-            TokenKind::Interface => { self.advance(); Ok("interface".to_string()) }
-            TokenKind::Namespace => { self.advance(); Ok("namespace".to_string()) }
-            TokenKind::Module => { self.advance(); Ok("module".to_string()) }
-            TokenKind::Declare => { self.advance(); Ok("declare".to_string()) }
-            TokenKind::Abstract => { self.advance(); Ok("abstract".to_string()) }
-            TokenKind::Readonly => { self.advance(); Ok("readonly".to_string()) }
-            TokenKind::Override => { self.advance(); Ok("override".to_string()) }
-            TokenKind::Any => { self.advance(); Ok("any".to_string()) }
-            TokenKind::Unknown => { self.advance(); Ok("unknown".to_string()) }
-            TokenKind::Never => { self.advance(); Ok("never".to_string()) }
-            TokenKind::Is => { self.advance(); Ok("is".to_string()) }
-            TokenKind::Asserts => { self.advance(); Ok("asserts".to_string()) }
-            TokenKind::Satisfies => { self.advance(); Ok("satisfies".to_string()) }
-            TokenKind::Keyof => { self.advance(); Ok("keyof".to_string()) }
-            TokenKind::Infer => { self.advance(); Ok("infer".to_string()) }
-            TokenKind::Enum => { self.advance(); Ok("enum".to_string()) }
+            TokenKind::Type => {
+                self.advance();
+                Ok("type".to_string())
+            }
+            TokenKind::Interface => {
+                self.advance();
+                Ok("interface".to_string())
+            }
+            TokenKind::Namespace => {
+                self.advance();
+                Ok("namespace".to_string())
+            }
+            TokenKind::Module => {
+                self.advance();
+                Ok("module".to_string())
+            }
+            TokenKind::Declare => {
+                self.advance();
+                Ok("declare".to_string())
+            }
+            TokenKind::Abstract => {
+                self.advance();
+                Ok("abstract".to_string())
+            }
+            TokenKind::Readonly => {
+                self.advance();
+                Ok("readonly".to_string())
+            }
+            TokenKind::Override => {
+                self.advance();
+                Ok("override".to_string())
+            }
+            TokenKind::Any => {
+                self.advance();
+                Ok("any".to_string())
+            }
+            TokenKind::Unknown => {
+                self.advance();
+                Ok("unknown".to_string())
+            }
+            TokenKind::Never => {
+                self.advance();
+                Ok("never".to_string())
+            }
+            TokenKind::Is => {
+                self.advance();
+                Ok("is".to_string())
+            }
+            TokenKind::Asserts => {
+                self.advance();
+                Ok("asserts".to_string())
+            }
+            TokenKind::Satisfies => {
+                self.advance();
+                Ok("satisfies".to_string())
+            }
+            TokenKind::Keyof => {
+                self.advance();
+                Ok("keyof".to_string())
+            }
+            TokenKind::Infer => {
+                self.advance();
+                Ok("infer".to_string())
+            }
+            TokenKind::Enum => {
+                self.advance();
+                Ok("enum".to_string())
+            }
             // Other keywords that can be used as property names
-            TokenKind::Async => { self.advance(); Ok("async".to_string()) }
-            TokenKind::From => { self.advance(); Ok("from".to_string()) }
-            TokenKind::Get => { self.advance(); Ok("get".to_string()) }
-            TokenKind::Set => { self.advance(); Ok("set".to_string()) }
-            TokenKind::As => { self.advance(); Ok("as".to_string()) }
-            TokenKind::Static => { self.advance(); Ok("static".to_string()) }
+            TokenKind::Async => {
+                self.advance();
+                Ok("async".to_string())
+            }
+            TokenKind::From => {
+                self.advance();
+                Ok("from".to_string())
+            }
+            TokenKind::Get => {
+                self.advance();
+                Ok("get".to_string())
+            }
+            TokenKind::Set => {
+                self.advance();
+                Ok("set".to_string())
+            }
+            TokenKind::As => {
+                self.advance();
+                Ok("as".to_string())
+            }
+            TokenKind::Static => {
+                self.advance();
+                Ok("static".to_string())
+            }
             // Fall through to JS keywords (default, let, new, delete, etc.)
             _ => {
                 let name = crate::parser::keyword_to_str(self.peek());
@@ -1590,21 +1808,38 @@ impl<'a> Parser<'a> {
     /// property name rather than a modifier. True when the next token is `:`, `=`, `;`,
     /// `?`, `!`, or `(` — all of which indicate the keyword IS the property/method name.
     pub(crate) fn is_ts_modifier_used_as_property(&mut self) -> bool {
-        matches!(self.lexer.peek().kind,
-            TokenKind::Colon | TokenKind::Eq | TokenKind::Semicolon
-            | TokenKind::Question | TokenKind::Bang | TokenKind::LParen
+        matches!(
+            self.lexer.peek().kind,
+            TokenKind::Colon
+                | TokenKind::Eq
+                | TokenKind::Semicolon
+                | TokenKind::Question
+                | TokenKind::Bang
+                | TokenKind::LParen
         )
     }
 
     pub(crate) fn try_parse_accessibility(&mut self) -> Option<Accessibility> {
-        let is_access = matches!(self.peek(), TokenKind::Public | TokenKind::Protected | TokenKind::Private);
+        let is_access = matches!(
+            self.peek(),
+            TokenKind::Public | TokenKind::Protected | TokenKind::Private
+        );
         if !is_access || self.is_ts_modifier_used_as_property() {
             return None;
         }
         match self.peek() {
-            TokenKind::Public => { self.advance(); Some(Accessibility::Public) }
-            TokenKind::Protected => { self.advance(); Some(Accessibility::Protected) }
-            TokenKind::Private => { self.advance(); Some(Accessibility::Private) }
+            TokenKind::Public => {
+                self.advance();
+                Some(Accessibility::Public)
+            }
+            TokenKind::Protected => {
+                self.advance();
+                Some(Accessibility::Protected)
+            }
+            TokenKind::Private => {
+                self.advance();
+                Some(Accessibility::Private)
+            }
             _ => None,
         }
     }
@@ -1666,11 +1901,20 @@ impl<'a> Parser<'a> {
                 // Valid after type args: call `(`, tagged template, or instantiation expression
                 // Instantiation expression follow tokens: `;`, `,`, `)`, `]`, `.`, `?.`, `!`, EOF
                 if self.check(&TokenKind::LParen)
-                    || matches!(self.peek(), TokenKind::TemplateNoSub(_) | TokenKind::TemplateHead(_))
-                    || matches!(self.peek(),
-                        TokenKind::Semicolon | TokenKind::Comma | TokenKind::RParen
-                        | TokenKind::RBracket | TokenKind::Dot | TokenKind::QuestionDot
-                        | TokenKind::Bang | TokenKind::Eof
+                    || matches!(
+                        self.peek(),
+                        TokenKind::TemplateNoSub(_) | TokenKind::TemplateHead(_)
+                    )
+                    || matches!(
+                        self.peek(),
+                        TokenKind::Semicolon
+                            | TokenKind::Comma
+                            | TokenKind::RParen
+                            | TokenKind::RBracket
+                            | TokenKind::Dot
+                            | TokenKind::QuestionDot
+                            | TokenKind::Bang
+                            | TokenKind::Eof
                     )
                 {
                     true // keep consumed type args
@@ -1697,12 +1941,16 @@ mod tests {
     use crate::parser::ParserOptions;
 
     fn parse_ts(source: &str) -> Result<crate::ast::Ast, ParseError> {
-        Parser::new(source, ParserOptions {
-            module: true,
-            typescript: true,
-            #[cfg(feature = "jsx")]
-            jsx: false,
-        }).parse()
+        Parser::new(
+            source,
+            ParserOptions {
+                module: true,
+                typescript: true,
+                #[cfg(feature = "jsx")]
+                jsx: false,
+            },
+        )
+        .parse()
     }
 
     // =========================================================================
@@ -1746,8 +1994,20 @@ mod tests {
 
     #[test]
     fn test_keyword_types() {
-        for kw in &["any", "unknown", "never", "void", "null", "undefined",
-                     "number", "string", "boolean", "symbol", "bigint", "object"] {
+        for kw in &[
+            "any",
+            "unknown",
+            "never",
+            "void",
+            "null",
+            "undefined",
+            "number",
+            "string",
+            "boolean",
+            "symbol",
+            "bigint",
+            "object",
+        ] {
             parse_ts(&format!("type X = {};", kw)).unwrap();
         }
     }
@@ -1760,17 +2020,15 @@ mod tests {
     fn test_literal_types() {
         let ast = parse_ts("type Foo = \"hello\" | 42 | true;").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Union(types) => {
-                        assert_eq!(types.len(), 3);
-                        assert!(matches!(&types[0].kind, TsTypeKind::LitString(_)));
-                        assert!(matches!(&types[1].kind, TsTypeKind::LitNumber(_)));
-                        assert!(matches!(&types[2].kind, TsTypeKind::LitBoolean(true)));
-                    }
-                    _ => panic!("Expected Union type"),
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Union(types) => {
+                    assert_eq!(types.len(), 3);
+                    assert!(matches!(&types[0].kind, TsTypeKind::LitString(_)));
+                    assert!(matches!(&types[1].kind, TsTypeKind::LitNumber(_)));
+                    assert!(matches!(&types[2].kind, TsTypeKind::LitBoolean(true)));
                 }
-            }
+                _ => panic!("Expected Union type"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -1793,12 +2051,10 @@ mod tests {
     fn test_union_type() {
         let ast = parse_ts("type Foo = string | number | boolean;").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Union(types) => assert_eq!(types.len(), 3),
-                    _ => panic!("Expected Union"),
-                }
-            }
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Union(types) => assert_eq!(types.len(), 3),
+                _ => panic!("Expected Union"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -1807,12 +2063,10 @@ mod tests {
     fn test_intersection_type() {
         let ast = parse_ts("type Foo = A & B & C;").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Intersection(types) => assert_eq!(types.len(), 3),
-                    _ => panic!("Expected Intersection"),
-                }
-            }
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Intersection(types) => assert_eq!(types.len(), 3),
+                _ => panic!("Expected Intersection"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -1840,12 +2094,10 @@ mod tests {
     fn test_array_type() {
         let ast = parse_ts("type Foo = number[];").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Array(_) => {}
-                    _ => panic!("Expected Array type"),
-                }
-            }
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Array(_) => {}
+                _ => panic!("Expected Array type"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -1868,12 +2120,10 @@ mod tests {
     fn test_tuple_type() {
         let ast = parse_ts("type Foo = [string, number, boolean];").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Tuple(types) => assert_eq!(types.len(), 3),
-                    _ => panic!("Expected Tuple type"),
-                }
-            }
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Tuple(types) => assert_eq!(types.len(), 3),
+                _ => panic!("Expected Tuple type"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -1906,15 +2156,13 @@ mod tests {
     fn test_type_reference_with_args() {
         let ast = parse_ts("type Foo = Promise<string>;").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Reference { name, type_args } => {
-                        assert_eq!(name, "Promise");
-                        assert!(type_args.is_some());
-                    }
-                    _ => panic!("Expected Reference type"),
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Reference { name, type_args } => {
+                    assert_eq!(name, "Promise");
+                    assert!(type_args.is_some());
                 }
-            }
+                _ => panic!("Expected Reference type"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -1976,12 +2224,10 @@ mod tests {
     fn test_object_type_literal() {
         let ast = parse_ts("type Obj = { x: number; y: string };").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::TypeLiteral(members) => assert_eq!(members.len(), 2),
-                    _ => panic!("Expected TypeLiteral"),
-                }
-            }
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::TypeLiteral(members) => assert_eq!(members.len(), 2),
+                _ => panic!("Expected TypeLiteral"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -2029,19 +2275,18 @@ mod tests {
     fn test_conditional_type() {
         let ast = parse_ts("type IsString<T> = T extends string ? true : false;").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Conditional { .. } => {}
-                    _ => panic!("Expected Conditional type"),
-                }
-            }
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Conditional { .. } => {}
+                _ => panic!("Expected Conditional type"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
 
     #[test]
     fn test_nested_conditional_type() {
-        parse_ts("type X<T> = T extends string ? 'str' : T extends number ? 'num' : 'other';").unwrap();
+        parse_ts("type X<T> = T extends string ? 'str' : T extends number ? 'num' : 'other';")
+            .unwrap();
     }
 
     #[test]
@@ -2115,12 +2360,10 @@ mod tests {
     fn test_keyof_type() {
         let ast = parse_ts("type Keys = keyof Foo;").unwrap();
         match &ast.stmts[0].kind {
-            StmtKind::TsTypeAlias(alias) => {
-                match &alias.ty.kind {
-                    TsTypeKind::Keyof(_) => {}
-                    _ => panic!("Expected Keyof type"),
-                }
-            }
+            StmtKind::TsTypeAlias(alias) => match &alias.ty.kind {
+                TsTypeKind::Keyof(_) => {}
+                _ => panic!("Expected Keyof type"),
+            },
             _ => panic!("Expected TsTypeAlias"),
         }
     }
@@ -2428,7 +2671,8 @@ mod tests {
 
     #[test]
     fn test_function_multiple_type_params() {
-        parse_ts("function map<T, U>(arr: T[], fn: (x: T) => U): U[] { return arr.map(fn); }").unwrap();
+        parse_ts("function map<T, U>(arr: T[], fn: (x: T) => U): U[] { return arr.map(fn); }")
+            .unwrap();
     }
 
     #[test]
@@ -2476,7 +2720,8 @@ mod tests {
 
     #[test]
     fn test_class_access_modifiers() {
-        parse_ts("class Foo { public x: number; private y: string; protected z: boolean; }").unwrap();
+        parse_ts("class Foo { public x: number; private y: string; protected z: boolean; }")
+            .unwrap();
     }
 
     #[test]
@@ -2657,7 +2902,8 @@ mod tests {
 
     #[test]
     fn test_vue_component_pattern() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 import type { VNode } from './vnode'
 import {
   type ComponentInternalInstance,
@@ -2670,12 +2916,15 @@ import { isFunction, isString } from '@vue/shared'
 type ComponentVNode = VNode & {
   type: ConcreteComponent
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_utility_types() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 type Partial<T> = { [P in keyof T]?: T[P] };
 type Required<T> = { [P in keyof T]-?: T[P] };
 type Readonly<T> = { readonly [P in keyof T]: T[P] };
@@ -2687,12 +2936,15 @@ type NonNullable<T> = T extends null | undefined ? never : T;
 type ReturnType<T> = T extends (...args: any[]) => infer R ? R : never;
 type Parameters<T> = T extends (...args: infer P) => any ? P : never;
 type InstanceType<T> = T extends new (...args: any[]) => infer R ? R : never;
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_class_with_all_features() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 abstract class Base<T extends object> implements Iterable<T> {
   public readonly id: string;
   private _value!: T;
@@ -2717,12 +2969,15 @@ abstract class Base<T extends object> implements Iterable<T> {
     return [];
   }
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_complex_generics() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 type DeepReadonly<T> = T extends Primitive
   ? T
   : T extends Array<infer U>
@@ -2730,18 +2985,23 @@ type DeepReadonly<T> = T extends Primitive
   : T extends Map<infer K, infer V>
   ? ReadonlyMap<DeepReadonly<K>, DeepReadonly<V>>
   : { readonly [K in keyof T]: DeepReadonly<T[K]> };
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_overloaded_function() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 function create(x: string): string;
 function create(x: number): number;
 function create(x: string | number): string | number {
   return x;
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2756,7 +3016,8 @@ function create(x: string | number): string | number {
 
     #[test]
     fn test_mixed_runtime_and_types() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 interface Logger { log(msg: string): void; }
 type Level = 'info' | 'warn' | 'error';
 declare const globalLogger: Logger;
@@ -2772,24 +3033,30 @@ function createLogger(level: Level): Logger {
 const logger: Logger = createLogger('info');
 export { logger, createLogger };
 export type { Logger, Level };
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_enum_member_expression_initializer() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 enum FileAccess {
   None,
   Read = 1 << 1,
   Write = 1 << 2,
   ReadWrite = Read | Write,
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_declaration_file_patterns() {
-        parse_ts(r#"
+        parse_ts(
+            r#"
 declare module 'my-lib' {
   export interface Config {
     debug?: boolean;
@@ -2802,6 +3069,8 @@ declare module 'my-lib' {
   }
   export const VERSION: string;
 }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
     }
 }

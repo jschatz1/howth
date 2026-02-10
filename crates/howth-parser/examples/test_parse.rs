@@ -1,4 +1,4 @@
-use howth_parser::{parse, transform, ParserOptions, CodegenOptions};
+use howth_parser::{parse, transform, CodegenOptions, ParserOptions};
 
 fn main() {
     let code = r#"
@@ -32,7 +32,10 @@ console.log(result);
 
     // Minified
     let parser_opts = ParserOptions::default();
-    let codegen_opts = CodegenOptions { minify: true, ..Default::default() };
+    let codegen_opts = CodegenOptions {
+        minify: true,
+        ..Default::default()
+    };
     match transform(code, parser_opts, codegen_opts) {
         Ok(output) => {
             println!("\n--- Minified ---\n{}", output);

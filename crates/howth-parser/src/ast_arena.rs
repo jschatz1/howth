@@ -31,7 +31,10 @@ pub enum ExprKind<'a> {
     Number(f64),
     BigInt(&'a str),
     String(&'a str),
-    Regex { pattern: &'a str, flags: &'a str },
+    Regex {
+        pattern: &'a str,
+        flags: &'a str,
+    },
     TemplateNoSub(&'a str),
     Template {
         quasis: &'a [&'a str],
@@ -115,7 +118,10 @@ pub enum ExprKind<'a> {
     },
     Await(&'a Expr<'a>),
     Import(&'a Expr<'a>),
-    MetaProperty { meta: &'a str, property: &'a str },
+    MetaProperty {
+        meta: &'a str,
+        property: &'a str,
+    },
 
     // Parenthesized (for preserving parens in codegen)
     Paren(&'a Expr<'a>),
@@ -177,24 +183,44 @@ pub enum StmtKind<'a> {
         body: &'a Stmt<'a>,
         is_await: bool,
     },
-    While { test: Expr<'a>, body: &'a Stmt<'a> },
-    DoWhile { body: &'a Stmt<'a>, test: Expr<'a> },
-    Break { label: Option<&'a str> },
-    Continue { label: Option<&'a str> },
-    Return { arg: Option<Expr<'a>> },
-    Throw { arg: Expr<'a> },
+    While {
+        test: Expr<'a>,
+        body: &'a Stmt<'a>,
+    },
+    DoWhile {
+        body: &'a Stmt<'a>,
+        test: Expr<'a>,
+    },
+    Break {
+        label: Option<&'a str>,
+    },
+    Continue {
+        label: Option<&'a str>,
+    },
+    Return {
+        arg: Option<Expr<'a>>,
+    },
+    Throw {
+        arg: Expr<'a>,
+    },
     Try {
         block: &'a [Stmt<'a>],
         handler: Option<CatchClause<'a>>,
         finalizer: Option<&'a [Stmt<'a>]>,
     },
-    Labeled { label: &'a str, body: &'a Stmt<'a> },
+    Labeled {
+        label: &'a str,
+        body: &'a Stmt<'a>,
+    },
 
     // === Expressions ===
     Expr(Expr<'a>),
     Empty,
     Debugger,
-    With { object: Expr<'a>, body: &'a Stmt<'a> },
+    With {
+        object: Expr<'a>,
+        body: &'a Stmt<'a>,
+    },
 
     // === Modules ===
     Import(&'a ImportDecl<'a>),
@@ -221,9 +247,15 @@ impl<'a> Binding<'a> {
 /// Binding pattern kinds.
 #[derive(Debug, Clone, Copy)]
 pub enum BindingKind<'a> {
-    Ident { name: &'a str },
-    Array { elements: &'a [Option<ArrayPatternElement<'a>>] },
-    Object { properties: &'a [ObjectPatternProperty<'a>] },
+    Ident {
+        name: &'a str,
+    },
+    Array {
+        elements: &'a [Option<ArrayPatternElement<'a>>],
+    },
+    Object {
+        properties: &'a [ObjectPatternProperty<'a>],
+    },
 }
 
 /// Element in an array pattern.
@@ -251,38 +283,79 @@ pub struct ObjectPatternProperty<'a> {
 /// Unary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    Minus, Plus, Not, BitNot, Typeof, Void, Delete,
+    Minus,
+    Plus,
+    Not,
+    BitNot,
+    Typeof,
+    Void,
+    Delete,
 }
 
 /// Binary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
-    Add, Sub, Mul, Div, Mod, Pow,
-    Eq, NotEq, StrictEq, StrictNotEq, Lt, LtEq, Gt, GtEq,
-    BitOr, BitXor, BitAnd, Shl, Shr, UShr,
-    And, Or, NullishCoalesce,
-    In, Instanceof,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Eq,
+    NotEq,
+    StrictEq,
+    StrictNotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    BitOr,
+    BitXor,
+    BitAnd,
+    Shl,
+    Shr,
+    UShr,
+    And,
+    Or,
+    NullishCoalesce,
+    In,
+    Instanceof,
 }
 
 /// Assignment operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignOp {
-    Assign, AddAssign, SubAssign, MulAssign, DivAssign, ModAssign, PowAssign,
-    ShlAssign, ShrAssign, UShrAssign,
-    BitOrAssign, BitXorAssign, BitAndAssign,
-    AndAssign, OrAssign, NullishAssign,
+    Assign,
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    ModAssign,
+    PowAssign,
+    ShlAssign,
+    ShrAssign,
+    UShrAssign,
+    BitOrAssign,
+    BitXorAssign,
+    BitAndAssign,
+    AndAssign,
+    OrAssign,
+    NullishAssign,
 }
 
 /// Update operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateOp {
-    Increment, Decrement,
+    Increment,
+    Decrement,
 }
 
 /// Variable declaration kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VarKind {
-    Var, Let, Const,
+    Var,
+    Let,
+    Const,
 }
 
 /// Variable declarator.
@@ -316,7 +389,10 @@ pub enum PropertyKey<'a> {
 /// Property kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertyKind {
-    Init, Get, Set, Method,
+    Init,
+    Get,
+    Set,
+    Method,
 }
 
 /// Switch case.
@@ -338,7 +414,10 @@ pub struct CatchClause<'a> {
 /// For loop initializer.
 #[derive(Debug, Clone, Copy)]
 pub enum ForInit<'a> {
-    Var { kind: VarKind, decls: &'a [VarDeclarator<'a>] },
+    Var {
+        kind: VarKind,
+        decls: &'a [VarDeclarator<'a>],
+    },
     Expr(Expr<'a>),
 }
 
@@ -421,7 +500,10 @@ pub enum ClassMemberKind<'a> {
 /// Method kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MethodKind {
-    Method, Get, Set, Constructor,
+    Method,
+    Get,
+    Set,
+    Constructor,
 }
 
 // =============================================================================
@@ -439,9 +521,19 @@ pub struct ImportDecl<'a> {
 /// Import specifier.
 #[derive(Debug, Clone, Copy)]
 pub enum ImportSpecifier<'a> {
-    Default { local: &'a str, span: Span },
-    Namespace { local: &'a str, span: Span },
-    Named { imported: &'a str, local: &'a str, span: Span },
+    Default {
+        local: &'a str,
+        span: Span,
+    },
+    Namespace {
+        local: &'a str,
+        span: Span,
+    },
+    Named {
+        imported: &'a str,
+        local: &'a str,
+        span: Span,
+    },
 }
 
 /// Export declaration.
@@ -452,8 +544,14 @@ pub enum ExportDecl<'a> {
         source: Option<&'a str>,
         span: Span,
     },
-    Default { expr: Expr<'a>, span: Span },
-    Decl { decl: &'a Stmt<'a>, span: Span },
+    Default {
+        expr: Expr<'a>,
+        span: Span,
+    },
+    Decl {
+        decl: &'a Stmt<'a>,
+        span: Span,
+    },
     All {
         exported: Option<&'a str>,
         source: &'a str,

@@ -533,12 +533,14 @@ impl ScopeHoistContext {
     /// Get the symbol ID for a name in a specific module.
     pub fn find_symbol(&self, module_id: ModuleId, name: &str) -> Option<SymbolId> {
         self.module_symbols.get(&module_id).and_then(|syms| {
-            syms.iter().find(|&&sym_id| {
-                self.symbols
-                    .get(sym_id)
-                    .map(|s| s.name == name)
-                    .unwrap_or(false)
-            }).copied()
+            syms.iter()
+                .find(|&&sym_id| {
+                    self.symbols
+                        .get(sym_id)
+                        .map(|s| s.name == name)
+                        .unwrap_or(false)
+                })
+                .copied()
         })
     }
 
@@ -654,7 +656,10 @@ mod tests {
     #[test]
     fn test_extract_decl_name() {
         assert_eq!(extract_decl_name("foo = 1"), Some("foo".to_string()));
-        assert_eq!(extract_decl_name("bar: number = 1"), Some("bar".to_string()));
+        assert_eq!(
+            extract_decl_name("bar: number = 1"),
+            Some("bar".to_string())
+        );
         assert_eq!(extract_decl_name("baz;"), Some("baz".to_string()));
         assert_eq!(extract_decl_name("{ a, b } = obj"), None);
         assert_eq!(extract_decl_name("[x, y] = arr"), None);
@@ -767,7 +772,8 @@ export var c = 3;
 export function d() {}
 export class E {}
 const internal = 42;
-"#.to_string(),
+"#
+            .to_string(),
             imports: vec![],
             dependencies: vec![],
             dynamic_dependencies: vec![],
@@ -815,9 +821,15 @@ const internal = 42;
     #[test]
     fn test_extract_decl_name_edge_cases() {
         // TypeScript type annotations
-        assert_eq!(extract_decl_name("foo: string = 'bar'"), Some("foo".to_string()));
+        assert_eq!(
+            extract_decl_name("foo: string = 'bar'"),
+            Some("foo".to_string())
+        );
         // With type and initializer
-        assert_eq!(extract_decl_name("count: number = 0"), Some("count".to_string()));
+        assert_eq!(
+            extract_decl_name("count: number = 0"),
+            Some("count".to_string())
+        );
         // Just a name
         assert_eq!(extract_decl_name("x"), Some("x".to_string()));
         // Empty string
@@ -829,11 +841,20 @@ const internal = 42;
     #[test]
     fn test_extract_fn_name_edge_cases() {
         // Async function (the 'async' would be stripped before calling this)
-        assert_eq!(extract_fn_name("fetchData() { }"), Some("fetchData".to_string()));
+        assert_eq!(
+            extract_fn_name("fetchData() { }"),
+            Some("fetchData".to_string())
+        );
         // With parameters
-        assert_eq!(extract_fn_name("add(a, b) { return a + b; }"), Some("add".to_string()));
+        assert_eq!(
+            extract_fn_name("add(a, b) { return a + b; }"),
+            Some("add".to_string())
+        );
         // Generator
-        assert_eq!(extract_fn_name("*generator() { yield 1; }"), Some("generator".to_string()));
+        assert_eq!(
+            extract_fn_name("*generator() { yield 1; }"),
+            Some("generator".to_string())
+        );
         // No name (anonymous)
         assert_eq!(extract_fn_name("() { }"), None);
     }
@@ -890,15 +911,17 @@ const internal = 42;
         let mut graph = ModuleGraph::new();
 
         // Five modules all exporting 'name'
-        let ids: Vec<_> = (0..5).map(|i| {
-            graph.add(Module {
-                path: format!("/mod{}.js", i),
-                source: format!("export const name = {};", i),
-                imports: vec![],
-                dependencies: if i > 0 { vec![i - 1] } else { vec![] },
-                dynamic_dependencies: vec![],
+        let ids: Vec<_> = (0..5)
+            .map(|i| {
+                graph.add(Module {
+                    path: format!("/mod{}.js", i),
+                    source: format!("export const name = {};", i),
+                    imports: vec![],
+                    dependencies: if i > 0 { vec![i - 1] } else { vec![] },
+                    dynamic_dependencies: vec![],
+                })
             })
-        }).collect();
+            .collect();
 
         let ctx = ScopeHoistContext::analyze(&graph, &ids);
 
@@ -1069,8 +1092,8 @@ const internal = 42;
         assert!(is_valid_identifier("_$_"));
         assert!(is_valid_identifier("$0"));
         assert!(is_valid_identifier("_0"));
-        assert!(!is_valid_identifier("0$"));  // Can't start with digit
-        assert!(!is_valid_identifier(""));    // Empty is invalid
+        assert!(!is_valid_identifier("0$")); // Can't start with digit
+        assert!(!is_valid_identifier("")); // Empty is invalid
     }
 
     #[test]

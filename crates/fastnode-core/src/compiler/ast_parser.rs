@@ -42,7 +42,9 @@ pub fn extract_imports_ast(source: &str) -> Vec<Import> {
                                 local: local.to_string(),
                             });
                         }
-                        ImportSpecifier::Named { imported, local, .. } => {
+                        ImportSpecifier::Named {
+                            imported, local, ..
+                        } => {
                             names.push(ImportedName {
                                 imported: imported.to_string(),
                                 local: local.to_string(),
@@ -70,7 +72,11 @@ pub fn extract_imports_ast(source: &str) -> Vec<Import> {
                             }],
                         });
                     }
-                    ExportDecl::Named { source: Some(source), specifiers, .. } => {
+                    ExportDecl::Named {
+                        source: Some(source),
+                        specifiers,
+                        ..
+                    } => {
                         // export { x, y } from 'module'
                         let names = specifiers
                             .iter()
@@ -109,7 +115,11 @@ pub fn extract_imports_ast(source: &str) -> Vec<Import> {
             StmtKind::Block(stmts) => {
                 extract_dynamic_imports_from_stmts(stmts, &mut imports);
             }
-            StmtKind::If { consequent, alternate, .. } => {
+            StmtKind::If {
+                consequent,
+                alternate,
+                ..
+            } => {
                 extract_dynamic_imports_from_stmt(consequent, &mut imports);
                 if let Some(alt) = alternate {
                     extract_dynamic_imports_from_stmt(alt, &mut imports);
@@ -148,7 +158,11 @@ fn extract_dynamic_imports_from_stmt(stmt: &Stmt<'_>, imports: &mut Vec<Import>)
         StmtKind::Block(stmts) => {
             extract_dynamic_imports_from_stmts(stmts, imports);
         }
-        StmtKind::If { consequent, alternate, .. } => {
+        StmtKind::If {
+            consequent,
+            alternate,
+            ..
+        } => {
             extract_dynamic_imports_from_stmt(consequent, imports);
             if let Some(alt) = alternate {
                 extract_dynamic_imports_from_stmt(alt, imports);
@@ -190,7 +204,12 @@ fn extract_dynamic_imports_from_expr(
             extract_dynamic_imports_from_expr(left, imports);
             extract_dynamic_imports_from_expr(right, imports);
         }
-        ExprKind::Conditional { test, consequent, alternate, .. } => {
+        ExprKind::Conditional {
+            test,
+            consequent,
+            alternate,
+            ..
+        } => {
             extract_dynamic_imports_from_expr(test, imports);
             extract_dynamic_imports_from_expr(consequent, imports);
             extract_dynamic_imports_from_expr(alternate, imports);

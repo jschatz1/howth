@@ -97,7 +97,11 @@ impl<'a> Codegen<'a> {
     }
 
     /// Create a code generator with identifier renames (for scope hoisting).
-    pub fn with_renames(ast: &'a Ast, options: CodegenOptions, renames: HashMap<String, String>) -> Self {
+    pub fn with_renames(
+        ast: &'a Ast,
+        options: CodegenOptions,
+        renames: HashMap<String, String>,
+    ) -> Self {
         let indent_str = options.indent.clone().unwrap_or_else(|| "  ".to_string());
         Self {
             ast,
@@ -114,7 +118,10 @@ impl<'a> Codegen<'a> {
 
     /// Rename an identifier if it's in the renames map.
     fn rename(&self, name: &str) -> String {
-        self.renames.get(name).cloned().unwrap_or_else(|| name.to_string())
+        self.renames
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
     }
 
     /// Generate JavaScript source code.
@@ -229,7 +236,11 @@ impl<'a> Codegen<'a> {
             StmtKind::Block(stmts) => {
                 self.emit_block(stmts);
             }
-            StmtKind::If { test, consequent, alternate } => {
+            StmtKind::If {
+                test,
+                consequent,
+                alternate,
+            } => {
                 self.emit("if");
                 self.emit_space();
                 self.emit("(");
@@ -244,7 +255,10 @@ impl<'a> Codegen<'a> {
                     self.emit_stmt(alt);
                 }
             }
-            StmtKind::Switch { discriminant, cases } => {
+            StmtKind::Switch {
+                discriminant,
+                cases,
+            } => {
                 self.emit("switch");
                 self.emit_space();
                 self.emit("(");
@@ -274,7 +288,12 @@ impl<'a> Codegen<'a> {
                 self.emit_newline();
                 self.emit("}");
             }
-            StmtKind::For { init, test, update, body } => {
+            StmtKind::For {
+                init,
+                test,
+                update,
+                body,
+            } => {
                 self.emit("for");
                 self.emit_space();
                 self.emit("(");
@@ -306,7 +325,12 @@ impl<'a> Codegen<'a> {
                 self.emit_space();
                 self.emit_stmt(body);
             }
-            StmtKind::ForOf { left, right, body, is_await } => {
+            StmtKind::ForOf {
+                left,
+                right,
+                body,
+                is_await,
+            } => {
                 self.emit("for");
                 if *is_await {
                     self.emit(" await");
@@ -371,7 +395,11 @@ impl<'a> Codegen<'a> {
                 self.emit_expr(arg);
                 self.emit_semicolon();
             }
-            StmtKind::Try { block, handler, finalizer } => {
+            StmtKind::Try {
+                block,
+                handler,
+                finalizer,
+            } => {
                 self.emit("try");
                 self.emit_space();
                 self.emit_block(block);
@@ -685,7 +713,14 @@ impl<'a> Codegen<'a> {
 
     fn emit_class_member(&mut self, member: &ClassMember) {
         match &member.kind {
-            ClassMemberKind::Method { key, value, kind, computed, is_static, .. } => {
+            ClassMemberKind::Method {
+                key,
+                value,
+                kind,
+                computed,
+                is_static,
+                ..
+            } => {
                 if *is_static {
                     self.emit("static ");
                 }
@@ -711,7 +746,13 @@ impl<'a> Codegen<'a> {
                 self.emit_space();
                 self.emit_block(&value.body);
             }
-            ClassMemberKind::Property { key, value, computed, is_static, .. } => {
+            ClassMemberKind::Property {
+                key,
+                value,
+                computed,
+                is_static,
+                ..
+            } => {
                 if *is_static {
                     self.emit("static ");
                 }
@@ -762,9 +803,17 @@ impl<'a> Codegen<'a> {
                 ImportSpecifier::Namespace { local, .. } => {
                     namespace_local = Some(local);
                 }
-                ImportSpecifier::Named { imported, local, #[cfg(feature = "typescript")] is_type, .. } => {
+                ImportSpecifier::Named {
+                    imported,
+                    local,
                     #[cfg(feature = "typescript")]
-                    if *is_type { continue; }
+                    is_type,
+                    ..
+                } => {
+                    #[cfg(feature = "typescript")]
+                    if *is_type {
+                        continue;
+                    }
                     named.push((imported, local));
                 }
             }
@@ -773,7 +822,9 @@ impl<'a> Codegen<'a> {
         // If all specifiers were type-only, skip emitting the import entirely
         // to avoid turning it into a side-effect import
         #[cfg(feature = "typescript")]
-        if default_local.is_none() && namespace_local.is_none() && named.is_empty()
+        if default_local.is_none()
+            && namespace_local.is_none()
+            && named.is_empty()
             && !decl.specifiers.is_empty()
         {
             return;
@@ -831,7 +882,13 @@ impl<'a> Codegen<'a> {
 
     fn emit_export(&mut self, decl: &ExportDecl) {
         match decl {
-            ExportDecl::Named { specifiers, source, #[cfg(feature = "typescript")] is_type_only, .. } => {
+            ExportDecl::Named {
+                specifiers,
+                source,
+                #[cfg(feature = "typescript")]
+                is_type_only,
+                ..
+            } => {
                 // TypeScript: skip type-only exports entirely
                 #[cfg(feature = "typescript")]
                 if *is_type_only {
@@ -839,12 +896,18 @@ impl<'a> Codegen<'a> {
                 }
 
                 // Filter out type-only specifiers
-                let runtime_specs: Vec<&ExportSpecifier> = specifiers.iter()
+                let runtime_specs: Vec<&ExportSpecifier> = specifiers
+                    .iter()
                     .filter(|s| {
                         #[cfg(feature = "typescript")]
-                        { !s.is_type }
+                        {
+                            !s.is_type
+                        }
                         #[cfg(not(feature = "typescript"))]
-                        { let _ = s; true }
+                        {
+                            let _ = s;
+                            true
+                        }
                     })
                     .collect();
 
@@ -885,7 +948,9 @@ impl<'a> Codegen<'a> {
                 self.emit("export ");
                 self.emit_stmt(decl);
             }
-            ExportDecl::All { exported, source, .. } => {
+            ExportDecl::All {
+                exported, source, ..
+            } => {
                 self.emit("export *");
                 if let Some(exported) = exported {
                     self.emit(" as ");
@@ -1027,7 +1092,11 @@ impl<'a> Codegen<'a> {
                 self.emit(op_str);
                 self.emit_space();
                 // Right side needs higher precedence for left-associative ops
-                let right_prec = if is_right_associative(*op) { prec } else { prec + 1 };
+                let right_prec = if is_right_associative(*op) {
+                    prec
+                } else {
+                    prec + 1
+                };
                 self.emit_expr_with_prec(right, right_prec);
                 if needs_parens {
                     self.emit(")");
@@ -1059,7 +1128,11 @@ impl<'a> Codegen<'a> {
                     self.emit(op_str);
                 }
             }
-            ExprKind::Conditional { test, consequent, alternate } => {
+            ExprKind::Conditional {
+                test,
+                consequent,
+                alternate,
+            } => {
                 if min_prec > 3 {
                     self.emit("(");
                 }
@@ -1085,7 +1158,11 @@ impl<'a> Codegen<'a> {
                     self.emit_expr_with_prec(expr, 1);
                 }
             }
-            ExprKind::Member { object, property, computed } => {
+            ExprKind::Member {
+                object,
+                property,
+                computed,
+            } => {
                 self.emit_expr_with_prec(object, 18);
                 if *computed {
                     self.emit("[");
@@ -1096,7 +1173,11 @@ impl<'a> Codegen<'a> {
                     self.emit_expr(property);
                 }
             }
-            ExprKind::OptionalMember { object, property, computed } => {
+            ExprKind::OptionalMember {
+                object,
+                property,
+                computed,
+            } => {
                 self.emit_expr_with_prec(object, 18);
                 if *computed {
                     self.emit("?.[");
@@ -1244,7 +1325,9 @@ impl<'a> Codegen<'a> {
         for attr in &element.opening.attributes {
             match attr {
                 JsxAttribute::Attribute { name, value, .. } => {
-                    if !first { self.emit(", "); }
+                    if !first {
+                        self.emit(", ");
+                    }
                     first = false;
                     self.emit_jsx_attr_name(name);
                     self.emit(": ");
@@ -1269,7 +1352,9 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 JsxAttribute::SpreadAttribute { argument, .. } => {
-                    if !first { self.emit(", "); }
+                    if !first {
+                        self.emit(", ");
+                    }
                     first = false;
                     self.emit("...");
                     self.emit_expr(argument);
@@ -1279,12 +1364,16 @@ impl<'a> Codegen<'a> {
 
         // Children
         if !element.children.is_empty() {
-            if !first { self.emit(", "); }
+            if !first {
+                self.emit(", ");
+            }
             self.emit("children: ");
             if has_multiple_children {
                 self.emit("[");
                 for (i, child) in element.children.iter().enumerate() {
-                    if i > 0 { self.emit(", "); }
+                    if i > 0 {
+                        self.emit(", ");
+                    }
                     self.emit_jsx_child(child);
                 }
                 self.emit("]");
@@ -1312,7 +1401,9 @@ impl<'a> Codegen<'a> {
             if has_multiple_children {
                 self.emit("[");
                 for (i, child) in fragment.children.iter().enumerate() {
-                    if i > 0 { self.emit(", "); }
+                    if i > 0 {
+                        self.emit(", ");
+                    }
                     self.emit_jsx_child(child);
                 }
                 self.emit("]");
@@ -1334,7 +1425,9 @@ impl<'a> Codegen<'a> {
                         '"' => self.emit("\\\""),
                         '\\' => self.emit("\\\\"),
                         '\n' => self.emit("\\n"),
-                        _ => { self.output.push(c); }
+                        _ => {
+                            self.output.push(c);
+                        }
                     }
                 }
                 self.emit("\"");
@@ -1667,7 +1760,9 @@ mod tests {
     use crate::parser::{Parser, ParserOptions};
 
     fn roundtrip(source: &str) -> String {
-        let ast = Parser::new(source, ParserOptions::default()).parse().unwrap();
+        let ast = Parser::new(source, ParserOptions::default())
+            .parse()
+            .unwrap();
         Codegen::new(&ast, CodegenOptions::default()).generate()
     }
 
@@ -1686,14 +1781,27 @@ mod tests {
 
     #[test]
     fn test_minify() {
-        let ast = Parser::new("let x = 1;\nlet y = 2;", ParserOptions::default()).parse().unwrap();
-        let output = Codegen::new(&ast, CodegenOptions { minify: true, ..Default::default() }).generate();
+        let ast = Parser::new("let x = 1;\nlet y = 2;", ParserOptions::default())
+            .parse()
+            .unwrap();
+        let output = Codegen::new(
+            &ast,
+            CodegenOptions {
+                minify: true,
+                ..Default::default()
+            },
+        )
+        .generate();
         assert!(!output.contains('\n'));
     }
 
     #[cfg(feature = "typescript")]
     fn ts_strip(source: &str) -> String {
-        let opts = ParserOptions { module: true, typescript: true, ..Default::default() };
+        let opts = ParserOptions {
+            module: true,
+            typescript: true,
+            ..Default::default()
+        };
         let ast = Parser::new(source, opts).parse().unwrap();
         Codegen::new(&ast, CodegenOptions::default()).generate()
     }
@@ -1710,7 +1818,10 @@ mod tests {
         // Type annotations on functions → stripped
         let out = ts_strip("function add(a: number, b: number): number { return a + b; }");
         assert!(!out.contains(": number"), "type annotations stripped");
-        assert!(out.contains("function add(a, b)"), "params preserved without types");
+        assert!(
+            out.contains("function add(a, b)"),
+            "params preserved without types"
+        );
 
         // import type → stripped entirely
         let out = ts_strip("import type { Foo } from './foo';\nimport { bar } from './bar';");
@@ -1758,12 +1869,18 @@ mod tests {
         // import { type Foo } from "x" should be dropped entirely,
         // not emitted as a side-effect `import "x"`
         let out = ts_strip("import { type Foo } from './foo';");
-        assert!(!out.contains("import"), "type-only named import should not emit side-effect import");
+        assert!(
+            !out.contains("import"),
+            "type-only named import should not emit side-effect import"
+        );
         assert!(!out.contains("foo"), "source should not appear");
 
         // import { type Foo, type Bar } from "x" — all type-only
         let out = ts_strip("import { type Foo, type Bar } from './mod';");
-        assert!(!out.contains("import"), "all-type-only named import should be dropped");
+        assert!(
+            !out.contains("import"),
+            "all-type-only named import should be dropped"
+        );
 
         // import { type Foo, bar } from "x" — mixed: only bar remains
         let out = ts_strip("import { type Foo, bar } from './mod';");
@@ -1778,12 +1895,18 @@ mod tests {
         // export { type Foo } from "x" should be dropped entirely,
         // not emitted as `export {} from "x"`
         let out = ts_strip("export { type Foo } from './foo';");
-        assert!(!out.contains("export"), "type-only re-export should be dropped");
+        assert!(
+            !out.contains("export"),
+            "type-only re-export should be dropped"
+        );
         assert!(!out.contains("foo"), "source should not appear");
 
         // export { type Foo, type Bar } from "x" — all type-only
         let out = ts_strip("export { type Foo, type Bar } from './mod';");
-        assert!(!out.contains("export"), "all-type-only re-export should be dropped");
+        assert!(
+            !out.contains("export"),
+            "all-type-only re-export should be dropped"
+        );
 
         // export { type Foo, bar } from "x" — mixed: only bar remains
         let out = ts_strip("export { type Foo, bar } from './mod';");

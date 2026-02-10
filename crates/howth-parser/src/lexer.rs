@@ -5,7 +5,7 @@
 //! context-sensitive tokenization (e.g., regex vs division).
 
 use crate::span::Span;
-use crate::token::{Token, TokenKind, keyword_from_str};
+use crate::token::{keyword_from_str, Token, TokenKind};
 
 /// The lexer state.
 #[derive(Clone)]
@@ -83,18 +83,54 @@ impl<'a> Lexer<'a> {
             b'`' => self.scan_template_head(),
 
             // Punctuation and operators
-            b'(' => { self.advance(); TokenKind::LParen }
-            b')' => { self.advance(); TokenKind::RParen }
-            b'{' => { self.advance(); TokenKind::LBrace }
-            b'}' => { self.advance(); TokenKind::RBrace }
-            b'[' => { self.advance(); TokenKind::LBracket }
-            b']' => { self.advance(); TokenKind::RBracket }
-            b';' => { self.advance(); TokenKind::Semicolon }
-            b',' => { self.advance(); TokenKind::Comma }
-            b':' => { self.advance(); TokenKind::Colon }
-            b'@' => { self.advance(); TokenKind::At }
-            b'#' => { self.advance(); TokenKind::Hash }
-            b'~' => { self.advance(); TokenKind::Tilde }
+            b'(' => {
+                self.advance();
+                TokenKind::LParen
+            }
+            b')' => {
+                self.advance();
+                TokenKind::RParen
+            }
+            b'{' => {
+                self.advance();
+                TokenKind::LBrace
+            }
+            b'}' => {
+                self.advance();
+                TokenKind::RBrace
+            }
+            b'[' => {
+                self.advance();
+                TokenKind::LBracket
+            }
+            b']' => {
+                self.advance();
+                TokenKind::RBracket
+            }
+            b';' => {
+                self.advance();
+                TokenKind::Semicolon
+            }
+            b',' => {
+                self.advance();
+                TokenKind::Comma
+            }
+            b':' => {
+                self.advance();
+                TokenKind::Colon
+            }
+            b'@' => {
+                self.advance();
+                TokenKind::At
+            }
+            b'#' => {
+                self.advance();
+                TokenKind::Hash
+            }
+            b'~' => {
+                self.advance();
+                TokenKind::Tilde
+            }
 
             b'.' => self.scan_dot(),
             b'?' => self.scan_question(),
@@ -123,16 +159,29 @@ impl<'a> Lexer<'a> {
         // After operators, punctuation, keywords, `/` starts a regex.
         self.allow_regex = !matches!(
             kind,
-            TokenKind::Identifier(_) | TokenKind::Number(_) | TokenKind::BigInt(_)
-            | TokenKind::String(_) | TokenKind::TemplateNoSub(_)
-            | TokenKind::Regex { .. }
-            | TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace
-            | TokenKind::True | TokenKind::False | TokenKind::Null
-            | TokenKind::This | TokenKind::Super
-            | TokenKind::PlusPlus | TokenKind::MinusMinus
+            TokenKind::Identifier(_)
+                | TokenKind::Number(_)
+                | TokenKind::BigInt(_)
+                | TokenKind::String(_)
+                | TokenKind::TemplateNoSub(_)
+                | TokenKind::Regex { .. }
+                | TokenKind::RParen
+                | TokenKind::RBracket
+                | TokenKind::RBrace
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Null
+                | TokenKind::This
+                | TokenKind::Super
+                | TokenKind::PlusPlus
+                | TokenKind::MinusMinus
         );
 
-        Token::with_newline(kind, Span::new(self.token_start as u32, self.pos as u32), had_newline)
+        Token::with_newline(
+            kind,
+            Span::new(self.token_start as u32, self.pos as u32),
+            had_newline,
+        )
     }
 
     /// Peek at the next token without consuming it.
@@ -536,7 +585,10 @@ impl<'a> Lexer<'a> {
 
         // Scan flags
         let flags_start = self.pos;
-        while matches!(self.current(), b'g' | b'i' | b'm' | b's' | b'u' | b'y' | b'd' | b'v') {
+        while matches!(
+            self.current(),
+            b'g' | b'i' | b'm' | b's' | b'u' | b'y' | b'd' | b'v'
+        ) {
             self.advance();
         }
         let flags = self.slice(flags_start, self.pos).to_string();
@@ -583,8 +635,14 @@ impl<'a> Lexer<'a> {
     fn scan_plus(&mut self) -> TokenKind {
         self.advance();
         match self.current() {
-            b'+' => { self.advance(); TokenKind::PlusPlus }
-            b'=' => { self.advance(); TokenKind::PlusEq }
+            b'+' => {
+                self.advance();
+                TokenKind::PlusPlus
+            }
+            b'=' => {
+                self.advance();
+                TokenKind::PlusEq
+            }
             _ => TokenKind::Plus,
         }
     }
@@ -592,8 +650,14 @@ impl<'a> Lexer<'a> {
     fn scan_minus(&mut self) -> TokenKind {
         self.advance();
         match self.current() {
-            b'-' => { self.advance(); TokenKind::MinusMinus }
-            b'=' => { self.advance(); TokenKind::MinusEq }
+            b'-' => {
+                self.advance();
+                TokenKind::MinusMinus
+            }
+            b'=' => {
+                self.advance();
+                TokenKind::MinusEq
+            }
             _ => TokenKind::Minus,
         }
     }
@@ -610,7 +674,10 @@ impl<'a> Lexer<'a> {
                     TokenKind::StarStar
                 }
             }
-            b'=' => { self.advance(); TokenKind::StarEq }
+            b'=' => {
+                self.advance();
+                TokenKind::StarEq
+            }
             _ => TokenKind::Star,
         }
     }
@@ -623,7 +690,10 @@ impl<'a> Lexer<'a> {
             self.scan_regex()
         } else {
             match self.current() {
-                b'=' => { self.advance(); TokenKind::SlashEq }
+                b'=' => {
+                    self.advance();
+                    TokenKind::SlashEq
+                }
                 _ => TokenKind::Slash,
             }
         }
@@ -651,7 +721,10 @@ impl<'a> Lexer<'a> {
                     TokenKind::EqEq
                 }
             }
-            b'>' => { self.advance(); TokenKind::Arrow }
+            b'>' => {
+                self.advance();
+                TokenKind::Arrow
+            }
             _ => TokenKind::Eq,
         }
     }
@@ -684,7 +757,10 @@ impl<'a> Lexer<'a> {
                     TokenKind::LtLt
                 }
             }
-            b'=' => { self.advance(); TokenKind::LtEq }
+            b'=' => {
+                self.advance();
+                TokenKind::LtEq
+            }
             _ => TokenKind::Lt,
         }
     }
@@ -704,11 +780,17 @@ impl<'a> Lexer<'a> {
                             TokenKind::GtGtGt
                         }
                     }
-                    b'=' => { self.advance(); TokenKind::GtGtEq }
+                    b'=' => {
+                        self.advance();
+                        TokenKind::GtGtEq
+                    }
                     _ => TokenKind::GtGt,
                 }
             }
-            b'=' => { self.advance(); TokenKind::GtEq }
+            b'=' => {
+                self.advance();
+                TokenKind::GtEq
+            }
             _ => TokenKind::Gt,
         }
     }
@@ -725,7 +807,10 @@ impl<'a> Lexer<'a> {
                     TokenKind::AmpAmp
                 }
             }
-            b'=' => { self.advance(); TokenKind::AmpEq }
+            b'=' => {
+                self.advance();
+                TokenKind::AmpEq
+            }
             _ => TokenKind::Amp,
         }
     }
@@ -742,7 +827,10 @@ impl<'a> Lexer<'a> {
                     TokenKind::PipePipe
                 }
             }
-            b'=' => { self.advance(); TokenKind::PipeEq }
+            b'=' => {
+                self.advance();
+                TokenKind::PipeEq
+            }
             _ => TokenKind::Pipe,
         }
     }
@@ -792,7 +880,12 @@ mod tests {
     fn test_keywords() {
         assert_eq!(
             tokenize("const let var function"),
-            vec![TokenKind::Const, TokenKind::Let, TokenKind::Var, TokenKind::Function]
+            vec![
+                TokenKind::Const,
+                TokenKind::Let,
+                TokenKind::Var,
+                TokenKind::Function
+            ]
         );
     }
 
@@ -827,9 +920,15 @@ mod tests {
         assert_eq!(
             tokenize("+ - * a / % ** ++ --"),
             vec![
-                TokenKind::Plus, TokenKind::Minus, TokenKind::Star,
-                TokenKind::Identifier("a".into()), TokenKind::Slash,
-                TokenKind::Percent, TokenKind::StarStar, TokenKind::PlusPlus, TokenKind::MinusMinus,
+                TokenKind::Plus,
+                TokenKind::Minus,
+                TokenKind::Star,
+                TokenKind::Identifier("a".into()),
+                TokenKind::Slash,
+                TokenKind::Percent,
+                TokenKind::StarStar,
+                TokenKind::PlusPlus,
+                TokenKind::MinusMinus,
             ]
         );
     }
@@ -839,8 +938,14 @@ mod tests {
         assert_eq!(
             tokenize("== === != !== < <= > >="),
             vec![
-                TokenKind::EqEq, TokenKind::EqEqEq, TokenKind::BangEq, TokenKind::BangEqEq,
-                TokenKind::Lt, TokenKind::LtEq, TokenKind::Gt, TokenKind::GtEq,
+                TokenKind::EqEq,
+                TokenKind::EqEqEq,
+                TokenKind::BangEq,
+                TokenKind::BangEqEq,
+                TokenKind::Lt,
+                TokenKind::LtEq,
+                TokenKind::Gt,
+                TokenKind::GtEq,
             ]
         );
     }

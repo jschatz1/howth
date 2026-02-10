@@ -143,7 +143,10 @@ impl Resolver {
         });
 
         let result = listing.clone();
-        self.dir_cache.write().unwrap().insert(dir.to_path_buf(), listing);
+        self.dir_cache
+            .write()
+            .unwrap()
+            .insert(dir.to_path_buf(), listing);
         result
     }
 

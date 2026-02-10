@@ -84,10 +84,7 @@ impl ModuleGraph {
     }
 
     /// Set dependencies from a map of module path -> (specifier, resolved_path, is_dynamic) tuples.
-    pub fn set_dependencies(
-        &mut self,
-        dep_info: &HashMap<String, Vec<(String, String, bool)>>,
-    ) {
+    pub fn set_dependencies(&mut self, dep_info: &HashMap<String, Vec<(String, String, bool)>>) {
         for module in &mut self.modules {
             if let Some(deps) = dep_info.get(&module.path) {
                 // Static dependencies

@@ -224,8 +224,8 @@ pub fn process_sass(content: &str, path: &Path) -> Result<String, String> {
     };
 
     // Compile Sass to CSS
-    let css = compile_sass(content, &options)
-        .map_err(|e| format!("Sass compilation error: {}", e))?;
+    let css =
+        compile_sass(content, &options).map_err(|e| format!("Sass compilation error: {}", e))?;
 
     // Apply lightningcss processing
     Ok(process_css(&css))

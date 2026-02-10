@@ -1691,7 +1691,11 @@ fn op_howth_shared_buffer_sub_i32(#[bigint] buffer_id: u64, byte_offset: u32, va
 
 /// Atomically exchange an i32 in a shared buffer, returning the old value.
 #[op2(fast)]
-fn op_howth_shared_buffer_exchange_i32(#[bigint] buffer_id: u64, byte_offset: u32, value: i32) -> i32 {
+fn op_howth_shared_buffer_exchange_i32(
+    #[bigint] buffer_id: u64,
+    byte_offset: u32,
+    value: i32,
+) -> i32 {
     if let Ok(pool) = SHARED_MEMORY_POOL.read() {
         if let Some(buffer) = pool.get(&buffer_id) {
             return buffer.exchange_i32(byte_offset as usize, value);
@@ -1804,9 +1808,9 @@ fn op_howth_shared_buffer_set_bytes(#[bigint] buffer_id: u64, #[buffer] data: &[
 // DNS Operations
 // ============================================================================
 
-use hickory_resolver::Resolver;
 use hickory_resolver::config::ResolverConfig;
 use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::Resolver;
 
 /// DNS lookup result
 #[derive(serde::Serialize)]
@@ -1845,8 +1849,11 @@ struct DnsSoaResult {
 
 /// Create a DNS resolver (uses system config)
 fn get_resolver() -> Resolver<TokioConnectionProvider> {
-    Resolver::builder_with_config(ResolverConfig::default(), TokioConnectionProvider::default())
-        .build()
+    Resolver::builder_with_config(
+        ResolverConfig::default(),
+        TokioConnectionProvider::default(),
+    )
+    .build()
 }
 
 /// DNS lookup - resolve hostname to IP address
@@ -2015,9 +2022,9 @@ async fn op_howth_dns_resolve_cname(
     Ok(response
         .iter()
         .filter_map(|record| {
-            record.as_cname().map(|cname| {
-                cname.to_string().trim_end_matches('.').to_string()
-            })
+            record
+                .as_cname()
+                .map(|cname| cname.to_string().trim_end_matches('.').to_string())
         })
         .collect())
 }
@@ -2086,9 +2093,9 @@ async fn op_howth_dns_resolve_ptr(
     Ok(response
         .iter()
         .filter_map(|record| {
-            record.as_ptr().map(|ptr| {
-                ptr.to_string().trim_end_matches('.').to_string()
-            })
+            record
+                .as_ptr()
+                .map(|ptr| ptr.to_string().trim_end_matches('.').to_string())
         })
         .collect())
 }
@@ -2105,10 +2112,9 @@ async fn op_howth_dns_reverse(
         .parse()
         .map_err(|e| deno_core::error::generic_error(format!("Invalid IP address: {}", e)))?;
 
-    let response = resolver
-        .reverse_lookup(addr)
-        .await
-        .map_err(|e| deno_core::error::generic_error(format!("DNS reverse lookup failed: {}", e)))?;
+    let response = resolver.reverse_lookup(addr).await.map_err(|e| {
+        deno_core::error::generic_error(format!("DNS reverse lookup failed: {}", e))
+    })?;
 
     Ok(response
         .iter()
@@ -2143,7 +2149,10 @@ async fn op_howth_stdin_read_line() -> Result<Option<String>, deno_core::error::
                 }
                 Ok(Some(line))
             }
-            Err(e) => Err(deno_core::error::generic_error(format!("stdin read error: {}", e))),
+            Err(e) => Err(deno_core::error::generic_error(format!(
+                "stdin read error: {}",
+                e
+            ))),
         }
     })
     .await
@@ -4930,9 +4939,8 @@ use tokio_rustls::TlsConnector;
 
 type TlsStream = tokio_rustls::client::TlsStream<tokio::net::TcpStream>;
 
-static TLS_STREAMS: std::sync::OnceLock<
-    tokio::sync::Mutex<HashMap<u32, TlsStream>>,
-> = std::sync::OnceLock::new();
+static TLS_STREAMS: std::sync::OnceLock<tokio::sync::Mutex<HashMap<u32, TlsStream>>> =
+    std::sync::OnceLock::new();
 
 static NEXT_TLS_CONN_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -4951,7 +4959,8 @@ fn ensure_crypto_provider() {
 }
 
 /// Build a TLS client config with system root certificates.
-fn build_tls_client_config() -> Result<std::sync::Arc<tokio_rustls::rustls::ClientConfig>, deno_core::error::AnyError> {
+fn build_tls_client_config(
+) -> Result<std::sync::Arc<tokio_rustls::rustls::ClientConfig>, deno_core::error::AnyError> {
     use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
     // Ensure crypto provider is installed
@@ -5023,13 +5032,15 @@ async fn op_howth_tls_connect(
     let connector = TlsConnector::from(config);
 
     // Parse server name for SNI
-    let server_name = ServerName::try_from(sni_name.to_string())
-        .map_err(|_| deno_core::error::AnyError::msg(format!("Invalid server name: {}", sni_name)))?;
+    let server_name = ServerName::try_from(sni_name.to_string()).map_err(|_| {
+        deno_core::error::AnyError::msg(format!("Invalid server name: {}", sni_name))
+    })?;
 
     // Perform TLS handshake
-    let tls_stream = connector.connect(server_name, tcp_stream).await.map_err(|e| {
-        deno_core::error::AnyError::msg(format!("TLS handshake failed: {}", e))
-    })?;
+    let tls_stream = connector
+        .connect(server_name, tcp_stream)
+        .await
+        .map_err(|e| deno_core::error::AnyError::msg(format!("TLS handshake failed: {}", e)))?;
 
     // Get connection info
     let (_, conn) = tls_stream.get_ref();
@@ -5043,7 +5054,9 @@ async fn op_howth_tls_connect(
         .map(|c| format!("{:?}", c.suite()))
         .unwrap_or_else(|| "unknown".to_string());
 
-    let alpn_protocol = conn.alpn_protocol().map(|p| String::from_utf8_lossy(p).to_string());
+    let alpn_protocol = conn
+        .alpn_protocol()
+        .map(|p| String::from_utf8_lossy(p).to_string());
 
     let conn_id = NEXT_TLS_CONN_ID.fetch_add(1, Ordering::SeqCst);
     get_tls_streams().lock().await.insert(conn_id, tls_stream);
@@ -5080,7 +5093,8 @@ async fn op_howth_tls_read(conn_id: u32) -> Result<serde_json::Value, deno_core:
     // Put the stream back
     get_tls_streams().lock().await.insert(conn_id, stream);
 
-    let n = result.map_err(|e| deno_core::error::AnyError::msg(format!("TLS read failed: {}", e)))?;
+    let n =
+        result.map_err(|e| deno_core::error::AnyError::msg(format!("TLS read failed: {}", e)))?;
 
     if n == 0 {
         Ok(serde_json::Value::Null)
@@ -5629,8 +5643,8 @@ fn op_howth_scrypt(
     #[buffer] password: &[u8],
     #[buffer] salt: &[u8],
     key_length: u32,
-    cost: u32,        // N - CPU/memory cost parameter (must be power of 2)
-    block_size: u32,  // r - block size
+    cost: u32,            // N - CPU/memory cost parameter (must be power of 2)
+    block_size: u32,      // r - block size
     parallelization: u32, // p - parallelization parameter
 ) -> Result<Vec<u8>, deno_core::error::AnyError> {
     use scrypt::{scrypt, Params};
@@ -5638,7 +5652,7 @@ fn op_howth_scrypt(
     // Validate cost is a power of 2
     if cost == 0 || (cost & (cost - 1)) != 0 {
         return Err(deno_core::error::AnyError::msg(
-            "scrypt: N must be a power of 2"
+            "scrypt: N must be a power of 2",
         ));
     }
 
@@ -6041,8 +6055,7 @@ fn op_howth_markdown_to_html(
 
     // If heading IDs are enabled, post-process to add IDs
     if opts.heading_ids {
-        let heading_regex =
-            regex::Regex::new(r"<(h[1-6])>([^<]+)</h[1-6]>").expect("valid regex");
+        let heading_regex = regex::Regex::new(r"<(h[1-6])>([^<]+)</h[1-6]>").expect("valid regex");
 
         html_output = heading_regex
             .replace_all(&html_output, |caps: &regex::Captures| {

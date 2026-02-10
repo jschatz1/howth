@@ -95,13 +95,9 @@ impl SourceMapBuilder {
     }
 
     /// Add a line-level mapping: output_line maps to source_line in source_idx.
-    fn add_line_mapping(
-        &mut self,
-        output_line: u32,
-        source_idx: u32,
-        source_line: u32,
-    ) {
-        self.mappings.push((output_line, 0, source_idx, source_line, 0));
+    fn add_line_mapping(&mut self, output_line: u32, source_idx: u32, source_line: u32) {
+        self.mappings
+            .push((output_line, 0, source_idx, source_line, 0));
     }
 
     /// Generate a V3 sourcemap JSON string.
@@ -139,7 +135,11 @@ impl SourceMapBuilder {
 
         // Build JSON manually (avoid serde dependency for this small structure)
         let sources_json: Vec<String> = self.sources.iter().map(|s| json_string(s)).collect();
-        let contents_json: Vec<String> = self.sources_content.iter().map(|s| json_string(s)).collect();
+        let contents_json: Vec<String> = self
+            .sources_content
+            .iter()
+            .map(|s| json_string(s))
+            .collect();
 
         format!(
             r#"{{"version":3,"file":{},"sources":[{}],"sourcesContent":[{}],"mappings":{}}}"#,
@@ -266,19 +266,12 @@ pub fn emit_bundle_with_entry(
         None
     };
 
-    Ok(BundleOutput {
-        code: output,
-        map,
-    })
+    Ok(BundleOutput { code: output, map })
 }
 
 /// Build a line-level sourcemap by scanning the output for module path comments.
 /// This works for both wrapped and scope-hoisted output since both emit `// /path` comments.
-fn build_sourcemap_from_output(
-    output: &str,
-    graph: &ModuleGraph,
-    order: &[ModuleId],
-) -> String {
+fn build_sourcemap_from_output(output: &str, graph: &ModuleGraph, order: &[ModuleId]) -> String {
     let mut builder = SourceMapBuilder::new();
 
     // Register all sources
@@ -306,7 +299,12 @@ fn build_sourcemap_from_output(
         let trimmed = line.trim();
 
         // Detect module path comment: "// /path/to/module.js"
-        if trimmed.starts_with("// ") && !trimmed.starts_with("// howth") && !trimmed.starts_with("// Generated") && !trimmed.starts_with("// Module registry") && !trimmed.starts_with("// Entry") {
+        if trimmed.starts_with("// ")
+            && !trimmed.starts_with("// howth")
+            && !trimmed.starts_with("// Generated")
+            && !trimmed.starts_with("// Module registry")
+            && !trimmed.starts_with("// Entry")
+        {
             let path = &trimmed[3..];
             if let Some(&(_, src_idx)) = path_to_source.get(path) {
                 current_source = Some((src_idx, 0));
@@ -326,7 +324,10 @@ fn build_sourcemap_from_output(
 
         // Map this output line to the current source
         if let Some((src_idx, ref mut src_line)) = current_source {
-            if !trimmed.is_empty() && !trimmed.starts_with("__modules[") && !trimmed.starts_with("};") {
+            if !trimmed.is_empty()
+                && !trimmed.starts_with("__modules[")
+                && !trimmed.starts_with("};")
+            {
                 builder.add_line_mapping(output_line as u32, src_idx, *src_line);
                 *src_line += 1;
             }
@@ -592,7 +593,6 @@ fn filter_swc_export(line: &str, used_exports: Option<&HashSet<String>>) -> Opti
 
     Some(line.to_string())
 }
-
 
 /// Transform a single line (basic import/export rewriting).
 /// Returns (transformed_line, pending_exports_to_emit_later).
@@ -871,10 +871,7 @@ pub fn emit_scope_hoisted(
         None
     };
 
-    Ok(BundleOutput {
-        code: output,
-        map,
-    })
+    Ok(BundleOutput { code: output, map })
 }
 
 /// Emit scope-hoisted ESM bundle.
@@ -1079,11 +1076,13 @@ fn emit_hoisted_module_ast(
         ..Default::default()
     };
 
-    let ast = Parser::new(source, parser_opts).parse().map_err(|e| BundleError {
-        code: "SCOPE_HOIST_PARSE_ERROR",
-        message: format!("Failed to parse module for scope hoisting: {}", e),
-        path: None,
-    })?;
+    let ast = Parser::new(source, parser_opts)
+        .parse()
+        .map_err(|e| BundleError {
+            code: "SCOPE_HOIST_PARSE_ERROR",
+            message: format!("Failed to parse module for scope hoisting: {}", e),
+            path: None,
+        })?;
 
     // Filter out import/export statements from the AST
     let mut filtered_stmts = Vec::new();
@@ -1097,7 +1096,9 @@ fn emit_hoisted_module_ast(
                     // export { a, b } - skip (names already in scope)
                     howth_parser::ExportDecl::Named { source: None, .. } => continue,
                     // export { a } from './mod' - skip (re-exports handled separately)
-                    howth_parser::ExportDecl::Named { source: Some(_), .. } => continue,
+                    howth_parser::ExportDecl::Named {
+                        source: Some(_), ..
+                    } => continue,
                     // export * from './mod' - skip
                     howth_parser::ExportDecl::All { .. } => continue,
                     // export default expr - keep as variable
@@ -1122,7 +1123,10 @@ fn emit_hoisted_module_ast(
 
     // Generate code with renames applied
     let codegen_opts = CodegenOptions::default();
-    let std_renames: std::collections::HashMap<String, String> = renames.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let std_renames: std::collections::HashMap<String, String> = renames
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     let code = Codegen::with_renames(&filtered_ast, codegen_opts, std_renames).generate();
 
     Ok(code)
@@ -1178,7 +1182,10 @@ fn transform_export_for_hoisting(line: &str, renames: &HashMap<String, String>) 
 
         // Anonymous default export - assign to _default
         let renamed_value = apply_renames(value, renames);
-        let default_name = renames.get("_default").cloned().unwrap_or_else(|| "_default".to_string());
+        let default_name = renames
+            .get("_default")
+            .cloned()
+            .unwrap_or_else(|| "_default".to_string());
         return Some(format!("var {} = {};", default_name, renamed_value));
     }
 
@@ -1758,7 +1765,7 @@ console.log(a + b);
     #[test]
     fn test_scope_hoisted_iife_format() {
         use crate::bundler::graph::Module;
-        use crate::bundler::{BundleOptions, BundleFormat};
+        use crate::bundler::{BundleFormat, BundleOptions};
 
         let mut graph = ModuleGraph::new();
 
@@ -1790,7 +1797,7 @@ console.log(a + b);
     #[test]
     fn test_scope_hoisted_cjs_format() {
         use crate::bundler::graph::Module;
-        use crate::bundler::{BundleOptions, BundleFormat};
+        use crate::bundler::{BundleFormat, BundleOptions};
 
         let mut graph = ModuleGraph::new();
 
@@ -1884,7 +1891,8 @@ export function init() {
     }
 }
 const internal = 42;
-"#.to_string(),
+"#
+            .to_string(),
             imports: vec![],
             dependencies: vec![],
             dynamic_dependencies: vec![],
@@ -1952,7 +1960,10 @@ const internal = 42;
     #[test]
     fn test_replace_identifier_empty_name() {
         // Empty old name should return source unchanged
-        assert_eq!(replace_identifier("const foo = 1;", "", "bar"), "const foo = 1;");
+        assert_eq!(
+            replace_identifier("const foo = 1;", "", "bar"),
+            "const foo = 1;"
+        );
     }
 
     #[test]
@@ -1963,18 +1974,12 @@ const internal = 42;
 
     #[test]
     fn test_replace_identifier_at_start() {
-        assert_eq!(
-            replace_identifier("foo = 1", "foo", "bar"),
-            "bar = 1"
-        );
+        assert_eq!(replace_identifier("foo = 1", "foo", "bar"), "bar = 1");
     }
 
     #[test]
     fn test_replace_identifier_at_end() {
-        assert_eq!(
-            replace_identifier("return foo", "foo", "bar"),
-            "return bar"
-        );
+        assert_eq!(replace_identifier("return foo", "foo", "bar"), "return bar");
     }
 
     #[test]
@@ -1987,10 +1992,7 @@ const internal = 42;
         // When old and new are the same, should be a no-op
         let mut renames = HashMap::default();
         renames.insert("foo".to_string(), "foo".to_string());
-        assert_eq!(
-            apply_renames("const foo = 1;", &renames),
-            "const foo = 1;"
-        );
+        assert_eq!(apply_renames("const foo = 1;", &renames), "const foo = 1;");
     }
 
     #[test]

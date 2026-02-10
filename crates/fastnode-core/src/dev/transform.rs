@@ -95,11 +95,10 @@ impl ModuleTransformer {
                     .unwrap_or(false);
 
                 let css_result = crate::css::process_css_file(
-                    &source,
-                    &file_path,
-                    false, // Don't minify in dev
+                    &source, &file_path, false, // Don't minify in dev
                     true,  // Enable autoprefixer
-                ).map_err(|e| ModuleTransformError {
+                )
+                .map_err(|e| ModuleTransformError {
                     message: format!("CSS processing error: {}", e),
                     file: Some(file_path_str.clone()),
                 })?;
@@ -124,8 +123,8 @@ impl ModuleTransformer {
                     filename: Some(file_path_str.clone()),
                 };
 
-                let compiled_css = compile_sass(&source, &sass_options)
-                    .map_err(|e| ModuleTransformError {
+                let compiled_css =
+                    compile_sass(&source, &sass_options).map_err(|e| ModuleTransformError {
                         message: format!("Sass compile error: {}", e),
                         file: Some(file_path_str.clone()),
                     })?;
@@ -143,7 +142,8 @@ impl ModuleTransformer {
                     &file_path,
                     false, // Don't minify in dev
                     true,  // Enable autoprefixer
-                ).map_err(|e| ModuleTransformError {
+                )
+                .map_err(|e| ModuleTransformError {
                     message: format!("CSS processing error: {}", e),
                     file: Some(file_path_str.clone()),
                 })?;

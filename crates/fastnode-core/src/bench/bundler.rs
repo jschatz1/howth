@@ -292,11 +292,7 @@ fn run_bundler_tool(
                     "--dir".to_string(),
                     outdir.to_string_lossy().to_string(),
                 ],
-                format!(
-                    "rolldown {} --dir {}",
-                    entry.display(),
-                    outdir.display()
-                ),
+                format!("rolldown {} --dir {}", entry.display(), outdir.display()),
             )
         }
         _ => {
@@ -426,16 +422,9 @@ fn generate_comparisons(results: &[BundlerToolResult]) -> Vec<BundlerComparison>
                 if let Some(other_ms) = result.median_ms {
                     let speedup = other_ms / howth_ms;
                     let description = if speedup > 1.0 {
-                        format!(
-                            "howth is {:.2}x faster than {}",
-                            speedup, result.name
-                        )
+                        format!("howth is {:.2}x faster than {}", speedup, result.name)
                     } else if speedup < 1.0 {
-                        format!(
-                            "{} is {:.2}x faster than howth",
-                            result.name,
-                            1.0 / speedup
-                        )
+                        format!("{} is {:.2}x faster than howth", result.name, 1.0 / speedup)
                     } else {
                         format!("howth and {} have similar performance", result.name)
                     };

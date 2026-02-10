@@ -169,7 +169,8 @@ const server = await Howth.serveStatic({ port, hostname: '127.0.0.1' }, 'Hello W
 // Keep the process running indefinitely using setInterval
 setInterval(() => {}, 60000);
 "#;
-    fs::write(dir.join("server-howth-static.ts"), howth_static_server).expect("Failed to write howth static server");
+    fs::write(dir.join("server-howth-static.ts"), howth_static_server)
+        .expect("Failed to write howth static server");
 
     // Node.js server (uses node:http)
     let node_server = r"
