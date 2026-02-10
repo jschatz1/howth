@@ -19,7 +19,7 @@ default = []
 native-runtime = ["fastnode-runtime", "fastnode-daemon/runtime", "url"]
 
 [dependencies]
-fastnode-core = { workspace = true, features = ["swc"] }
+fastnode-core.workspace = true
 fastnode-daemon.workspace = true
 fastnode-proto.workspace = true
 fastnode-util.workspace = true

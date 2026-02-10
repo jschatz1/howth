@@ -487,7 +487,8 @@ impl Bundler {
         graph: &mut ModuleGraph,
         options: &BundleOptions,
     ) -> Result<ModuleId, BundleError> {
-        use std::collections::{HashMap, HashSet, VecDeque};
+        use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+        use std::collections::VecDeque;
 
         let entry_path = if entry.is_absolute() {
             entry.to_path_buf()
@@ -502,10 +503,10 @@ impl Bundler {
         })?;
 
         // Track dependency info for each module: (specifier, resolved_path, is_dynamic)
-        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::default();
         // Track external modules (resolved by plugins) - for future use in warnings/manifest
         #[allow(unused_mut)]
-        let mut externals: HashSet<String> = HashSet::new();
+        let mut externals: HashSet<String> = HashSet::default();
 
         let mut queue: VecDeque<std::path::PathBuf> = VecDeque::new();
         queue.push_back(entry_path.clone());
@@ -694,7 +695,7 @@ impl Bundler {
         graph: &mut ModuleGraph,
         options: &BundleOptions,
     ) -> Result<ModuleId, BundleError> {
-        use std::collections::{HashMap, HashSet};
+        use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 
         let entry_path = if entry.is_absolute() {
@@ -711,8 +712,8 @@ impl Bundler {
 
         // Phase 1: Parallel discovery - process files level by level
         // Each level is processed in parallel for both reading and import extraction
-        let mut file_contents: HashMap<String, String> = HashMap::new();
-        let mut path_set: HashSet<String> = HashSet::new();
+        let mut file_contents: HashMap<String, String> = HashMap::default();
+        let mut path_set: HashSet<String> = HashSet::default();
         let mut ordered_paths: Vec<String> = Vec::new();
 
         // Start with entry file
@@ -780,9 +781,6 @@ impl Bundler {
 
         let has_plugins = self.plugins.has_plugins();
 
-        // Use SWC backend for transpilation (shared across threads - SWC is thread-safe)
-        use crate::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
-
         // Phase 2: Transform all files AND resolve imports in parallel
         // Each worker: plugin transform → transpile → extract imports → resolve deps
         let externals = &options.external;
@@ -837,18 +835,11 @@ impl Bundler {
                         let imports = self.extract_imports(&plugin_transformed, &path)?;
                         (plugin_transformed.clone(), imports)
                     }
-                    // Fallback: use SWC for unknown extensions
+                    // Fallback: treat as JS, just extract imports
                     _ => {
-                        let backend = SwcBackend::new();
-                        let spec = TranspileSpec::new(path_str, "");
-                        let transpiled = backend.transpile(&spec, &plugin_transformed).map_err(|e| BundleError {
-                            code: "BUNDLE_TRANSPILE_ERROR",
-                            message: e.message,
-                            path: Some(path_str.clone()),
-                        })?;
                         let path = std::path::PathBuf::from(path_str);
-                        let imports = self.extract_imports(&transpiled.code, &path)?;
-                        (transpiled.code, imports)
+                        let imports = self.extract_imports(&plugin_transformed, &path)?;
+                        (plugin_transformed.clone(), imports)
                     }
                 };
 
@@ -878,7 +869,7 @@ impl Bundler {
             .collect();
 
         // Phase 3: Build the graph from processed results (just assembly, no I/O)
-        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::new();
+        let mut dep_info: HashMap<String, Vec<(String, String, bool)>> = HashMap::default();
 
         for result in processed {
             let (path_str, source, imports, module_deps) = result?;

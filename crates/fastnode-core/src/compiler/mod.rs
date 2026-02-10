@@ -1,26 +1,25 @@
 //! Compiler backend abstraction for transpilation.
 //!
 //! This module provides a trait-based abstraction over JavaScript/TypeScript
-//! compilers like SWC. The design allows for swappable backends without
-//! changing the rest of the build system.
+//! compilers. The default backend uses howth-parser for all transpilation.
 //!
 //! ## Design Goals
 //!
 //! 1. **Fast in-process transpilation** - No shell subprocess, direct library call
 //! 2. **Deterministic** - `TranspileSpec` captures all options for reproducible builds
-//! 3. **Swappable backend** - Rest of howth never calls SWC directly
+//! 3. **Swappable backend** - Rest of howth uses the `CompilerBackend` trait
 //! 4. **Fits existing cache model** - Input hash + output fingerprint
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! use fastnode_core::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
+//! use fastnode_core::compiler::{CompilerBackend, HowthBackend, TranspileSpec};
 //!
-//! let backend = SwcBackend::new();
+//! let backend = HowthBackend::new();
 //! let spec = TranspileSpec::new("src/App.tsx", "dist/App.js")
 //!     .with_jsx_runtime(JsxRuntime::Automatic);
 //!
-//! let output = backend.transpile(&spec)?;
+//! let output = backend.transpile(&spec, source)?;
 //! println!("{}", output.code);
 //! ```
 
@@ -30,14 +29,17 @@
 #![allow(clippy::manual_strip)]
 
 pub mod ast_parser;
+pub mod backend;
 pub mod spec;
-pub mod swc;
 
+pub use backend::HowthBackend;
 pub use spec::{
     Diagnostic, DiagnosticSeverity, EsTarget, JsxRuntime, ModuleKind, SourceMapKind,
     TranspileOutput, TranspileSpec,
 };
-pub use swc::SwcBackend;
+
+/// Backward-compatible alias for `HowthBackend`.
+pub type SwcBackend = HowthBackend;
 
 use std::fmt;
 use std::path::Path;
@@ -639,7 +641,7 @@ impl std::error::Error for CompilerError {}
 ///
 /// ## Implementations
 ///
-/// - `SwcBackend` - Uses SWC for fast JavaScript/TypeScript transpilation
+/// - `HowthBackend` - Uses howth-parser for fast JavaScript/TypeScript transpilation
 pub trait CompilerBackend: Send + Sync {
     /// Get the backend name (e.g., "swc", "oxc").
     fn name(&self) -> &'static str;

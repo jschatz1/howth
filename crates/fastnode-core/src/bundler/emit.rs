@@ -12,10 +12,9 @@ use super::graph::{ModuleGraph, ModuleId};
 use super::scope::ScopeHoistContext;
 use super::treeshake::UsedExports;
 use super::{BundleError, BundleOptions};
-use crate::compiler::{CompilerBackend, SwcBackend, TranspileSpec};
 use howth_parser::{Codegen, CodegenOptions, Parser, ParserOptions};
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 // =============================================================================
 // Minification
@@ -283,7 +282,7 @@ fn build_sourcemap_from_output(
     let mut builder = SourceMapBuilder::new();
 
     // Register all sources
-    let mut source_indices: HashMap<ModuleId, u32> = HashMap::new();
+    let mut source_indices: HashMap<ModuleId, u32> = HashMap::default();
     for &id in order {
         if let Some(module) = graph.get(id) {
             let idx = builder.add_source(&module.path, &module.source);
@@ -292,7 +291,7 @@ fn build_sourcemap_from_output(
     }
 
     // Build a map from module path to (module_id, source_idx)
-    let mut path_to_source: HashMap<&str, (ModuleId, u32)> = HashMap::new();
+    let mut path_to_source: HashMap<&str, (ModuleId, u32)> = HashMap::default();
     for &id in order {
         if let Some(module) = graph.get(id) {
             if let Some(&src_idx) = source_indices.get(&id) {
@@ -594,22 +593,6 @@ fn filter_swc_export(line: &str, used_exports: Option<&HashSet<String>>) -> Opti
     Some(line.to_string())
 }
 
-/// Transpile TypeScript/JSX to JavaScript using SWC.
-fn transpile_source(source: &str, path: &str) -> Result<String, BundleError> {
-    let backend = SwcBackend::new();
-
-    // Create a transpile spec
-    let spec = TranspileSpec::new(path, "");
-
-    match backend.transpile(&spec, source) {
-        Ok(output) => Ok(output.code),
-        Err(e) => Err(BundleError {
-            code: "BUNDLE_TRANSPILE_ERROR",
-            message: e.message,
-            path: Some(path.to_string()),
-        }),
-    }
-}
 
 /// Transform a single line (basic import/export rewriting).
 /// Returns (transformed_line, pending_exports_to_emit_later).
@@ -1139,7 +1122,8 @@ fn emit_hoisted_module_ast(
 
     // Generate code with renames applied
     let codegen_opts = CodegenOptions::default();
-    let code = Codegen::with_renames(&filtered_ast, codegen_opts, renames.clone()).generate();
+    let std_renames: std::collections::HashMap<String, String> = renames.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let code = Codegen::with_renames(&filtered_ast, codegen_opts, std_renames).generate();
 
     Ok(code)
 }
@@ -1353,7 +1337,7 @@ mod tests {
 
     #[test]
     fn test_tree_shaking_filters_unused() {
-        let mut used = HashSet::new();
+        let mut used = HashSet::default();
         used.insert("usedFn".to_string());
 
         // Used export should be included
@@ -1368,7 +1352,7 @@ mod tests {
 
     #[test]
     fn test_filter_swc_export() {
-        let mut used = HashSet::new();
+        let mut used = HashSet::default();
         used.insert("foo".to_string());
 
         // Used export - should be kept
@@ -1431,7 +1415,7 @@ console.log(add(1, 2));
         let entry_id = graph.add(entry_module);
 
         // Set up specifier resolution
-        let mut dep_info = std::collections::HashMap::new();
+        let mut dep_info = HashMap::default();
         dep_info.insert(
             "/test/entry.ts".to_string(),
             vec![("./utils".to_string(), "/test/utils.ts".to_string(), false)],
@@ -1493,13 +1477,13 @@ console.log(add(1, 2));
 
     #[test]
     fn test_apply_renames_empty() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         assert_eq!(apply_renames("const foo = 1;", &renames), "const foo = 1;");
     }
 
     #[test]
     fn test_apply_renames_single() {
-        let mut renames = HashMap::new();
+        let mut renames = HashMap::default();
         renames.insert("foo".to_string(), "foo$1".to_string());
         assert_eq!(
             apply_renames("const foo = 1;", &renames),
@@ -1509,7 +1493,7 @@ console.log(add(1, 2));
 
     #[test]
     fn test_apply_renames_multiple() {
-        let mut renames = HashMap::new();
+        let mut renames = HashMap::default();
         renames.insert("a".to_string(), "a$1".to_string());
         renames.insert("b".to_string(), "b$1".to_string());
         let result = apply_renames("const x = a + b;", &renames);
@@ -1519,28 +1503,28 @@ console.log(add(1, 2));
 
     #[test]
     fn test_transform_export_for_hoisting_const() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         let result = transform_export_for_hoisting("export const foo = 1;", &renames);
         assert_eq!(result, Some("const foo = 1;".to_string()));
     }
 
     #[test]
     fn test_transform_export_for_hoisting_function() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         let result = transform_export_for_hoisting("export function bar() {}", &renames);
         assert_eq!(result, Some("function bar() {}".to_string()));
     }
 
     #[test]
     fn test_transform_export_for_hoisting_default() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         let result = transform_export_for_hoisting("export default 42;", &renames);
         assert_eq!(result, Some("var _default = 42;".to_string()));
     }
 
     #[test]
     fn test_transform_export_for_hoisting_named_export() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         // Named exports without `from` should be stripped
         let result = transform_export_for_hoisting("export { foo, bar };", &renames);
         assert_eq!(result, None);
@@ -1604,7 +1588,7 @@ console.log(a + b);
         });
 
         // Set up specifier resolution
-        let mut dep_info = std::collections::HashMap::new();
+        let mut dep_info = HashMap::default();
         dep_info.insert(
             "/entry.js".to_string(),
             vec![
@@ -2001,7 +1985,7 @@ const internal = 42;
     #[test]
     fn test_apply_renames_same_name() {
         // When old and new are the same, should be a no-op
-        let mut renames = HashMap::new();
+        let mut renames = HashMap::default();
         renames.insert("foo".to_string(), "foo".to_string());
         assert_eq!(
             apply_renames("const foo = 1;", &renames),
@@ -2030,7 +2014,7 @@ const internal = 42;
 
     #[test]
     fn test_emit_hoisted_module_empty_source() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         let mut output = String::new();
 
         let result = emit_hoisted_module("", &renames, &mut output);
@@ -2040,7 +2024,7 @@ const internal = 42;
 
     #[test]
     fn test_emit_hoisted_module_only_newlines() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         let mut output = String::new();
 
         let result = emit_hoisted_module("\n\n\n", &renames, &mut output);
@@ -2051,7 +2035,7 @@ const internal = 42;
 
     #[test]
     fn test_transform_export_for_hoisting_empty() {
-        let renames = HashMap::new();
+        let renames = HashMap::default();
         let result = transform_export_for_hoisting("", &renames);
         // Empty line with export prefix check fails, returns None or comment
         assert!(result.is_none() || result.as_ref().unwrap().contains("scope-hoist"));
@@ -2064,7 +2048,7 @@ const internal = 42;
 const foo = 1;
 const obj = { foo: foo, bar: foo };
 "#;
-        let mut renames = HashMap::new();
+        let mut renames = HashMap::default();
         renames.insert("foo".to_string(), "foo$1".to_string());
 
         let result = emit_hoisted_module_ast(source, &renames);
@@ -2086,7 +2070,7 @@ class MyClass { constructor() {} }
 const x = myFunc();
 const y = new MyClass();
 "#;
-        let mut renames = HashMap::new();
+        let mut renames = HashMap::default();
         renames.insert("myFunc".to_string(), "myFunc$1".to_string());
         renames.insert("MyClass".to_string(), "MyClass$1".to_string());
 
@@ -2109,7 +2093,7 @@ import { foo } from './other';
 import bar from './bar';
 const x = foo + bar;
 "#;
-        let renames = HashMap::new();
+        let renames = HashMap::default();
 
         let result = emit_hoisted_module_ast(source, &renames);
         assert!(result.is_ok());
@@ -2128,7 +2112,7 @@ export const foo = 1;
 export function bar() { return 2; }
 export class Baz {}
 "#;
-        let renames = HashMap::new();
+        let renames = HashMap::default();
 
         let result = emit_hoisted_module_ast(source, &renames);
         assert!(result.is_ok());
