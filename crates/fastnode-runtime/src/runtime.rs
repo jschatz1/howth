@@ -3459,7 +3459,7 @@ async fn op_howth_http_serve_fast(
                                     body_total.fetch_add(body_time, Ordering::Relaxed);
                                     js_total.fetch_add(js_time, Ordering::Relaxed);
 
-                                    if c.is_multiple_of(50000) {
+                                    if c % 50000 == 0 {
                                         let avg_e2e = total.load(Ordering::Relaxed) / c;
                                         let avg_parse = parse_total.load(Ordering::Relaxed) / c;
                                         let avg_body = body_total.load(Ordering::Relaxed) / c;
