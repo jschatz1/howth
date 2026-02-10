@@ -20,20 +20,28 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 // Minification
 // =============================================================================
 
-/// Minify a bundle string using howth-parser (whitespace removal).
+/// Minify a bundle string using howth-parser (whitespace removal + optional mangling).
 ///
 /// Parses the concatenated bundle and re-emits with minified codegen
 /// (no whitespace, no newlines, deferred semicolons).
-fn minify_bundle(code: &str) -> Result<String, BundleError> {
+/// When `mangle` is true, also shortens local variable names.
+fn minify_bundle(code: &str, mangle: bool) -> Result<String, BundleError> {
     let opts = ParserOptions {
         module: false,
         ..Default::default()
     };
-    let ast = Parser::new(code, opts).parse().map_err(|e| BundleError {
+    let mut ast = Parser::new(code, opts).parse().map_err(|e| BundleError {
         code: "MINIFY_PARSE_ERROR",
         message: format!("Failed to parse bundle for minification: {e}"),
         path: None,
     })?;
+
+    if mangle {
+        howth_parser::mangle::mangle(
+            &mut ast,
+            &howth_parser::mangle::MangleOptions::default(),
+        );
+    }
 
     let codegen_opts = CodegenOptions {
         minify: true,
@@ -257,7 +265,7 @@ pub fn emit_bundle_with_entry(
 
     // Run minifier when minify is enabled (whitespace removal)
     if options.minify {
-        output = minify_bundle(&output).unwrap_or(output);
+        output = minify_bundle(&output, options.mangle).unwrap_or(output);
     }
 
     // Generate sourcemap if requested (must be after minification since line numbers change)
@@ -862,7 +870,7 @@ pub fn emit_scope_hoisted(
 
     // Run minifier when minify is enabled (whitespace removal)
     if options.minify {
-        output = minify_bundle(&output).unwrap_or(output);
+        output = minify_bundle(&output, options.mangle).unwrap_or(output);
     }
 
     // Generate sourcemap if requested (must be after minification since line numbers change)

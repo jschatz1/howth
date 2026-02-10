@@ -105,6 +105,9 @@ pub struct BundleOptions {
     /// When enabled, top-level declarations are hoisted to the bundle scope
     /// instead of being wrapped in module functions.
     pub scope_hoist: bool,
+    /// Enable variable name mangling (shortens local variable names).
+    /// Only effective when minify is also enabled.
+    pub mangle: bool,
 }
 
 impl Default for BundleOptions {
@@ -118,6 +121,7 @@ impl Default for BundleOptions {
             treeshake: true,    // Enable by default
             splitting: false,   // Disabled by default
             scope_hoist: false, // Disabled by default for backwards compatibility
+            mangle: false,      // Disabled by default
         }
     }
 }
