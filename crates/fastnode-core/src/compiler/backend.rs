@@ -3,7 +3,7 @@
 //! This module provides the howth-parser-based implementation of the `CompilerBackend` trait.
 //! It handles JS/TS/JSX/TSX transpilation without any SWC dependency.
 
-use super::spec::SourceMapKind;
+use super::spec::{JsxRuntime, SourceMapKind};
 use super::{CompilerBackend, CompilerError, TranspileOutput, TranspileSpec};
 
 /// howth-parser-based compiler backend.
@@ -77,8 +77,8 @@ impl CompilerBackend for HowthBackend {
         };
         let mut code = Codegen::new(&ast, codegen_opts).generate();
 
-        // Prepend JSX runtime import for JSX/TSX files
-        if is_jsx {
+        // Prepend JSX runtime import for JSX/TSX files (automatic mode only)
+        if is_jsx && spec.jsx_runtime == JsxRuntime::Automatic {
             code = format!(
                 "import {{ jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment }} from \"react/jsx-runtime\";\n{}",
                 code

@@ -1593,7 +1593,7 @@ impl<'a> Parser<'a> {
         matches!(self.lexer.peek().kind,
             TokenKind::Colon | TokenKind::Eq | TokenKind::Semicolon
             | TokenKind::Question | TokenKind::Bang | TokenKind::LParen
-        ) || self.lexer.peek().had_newline_before
+        )
     }
 
     pub(crate) fn try_parse_accessibility(&mut self) -> Option<Accessibility> {
