@@ -263,12 +263,10 @@ pub fn emit_bundle_with_entry(
         )?,
     }
 
-    // Run minifier when minify is enabled (whitespace removal)
-    if options.minify {
-        output = minify_bundle(&output, options.mangle).unwrap_or(output);
-    }
+    // Minification is handled per-module in emit_module_to_string (parallel).
+    // Scope-hoisted bundles still use minify_bundle since they share a single scope.
 
-    // Generate sourcemap if requested (must be after minification since line numbers change)
+    // Generate sourcemap if requested
     let map = if options.sourcemap {
         Some(build_sourcemap_from_output(&output, graph, order))
     } else {
@@ -424,7 +422,11 @@ fn emit_cjs(
 
     // Add module.exports for the entry
     if let Some(entry) = entry_id {
-        output.push_str(&format!("\nmodule.exports = __exports[{}];\n", entry));
+        if options.minify {
+            output.push_str(&format!("module.exports=__exports[{}];", entry));
+        } else {
+            output.push_str(&format!("\nmodule.exports = __exports[{}];\n", entry));
+        }
     }
 
     Ok(())
@@ -477,20 +479,6 @@ fn emit_module_to_string(
     options: &BundleOptions,
     used_exports: Option<&UsedExports>,
 ) -> Result<String, BundleError> {
-    // Pre-allocate: source + ~200 bytes for wrapper
-    let mut output = String::with_capacity(module.source.len() + 200);
-
-    if !options.minify {
-        output.push_str(&format!("// Module {}: {}\n", id, module.path));
-    }
-    output.push_str(&format!(
-        "__modules[{}]=function(module,exports,require){{",
-        id
-    ));
-    if !options.minify {
-        output.push('\n');
-    }
-
     // Get the set of used exports for tree shaking
     let used_set: Option<HashSet<String>> = used_exports.and_then(|u| u.get_used(id).cloned());
 
@@ -498,29 +486,63 @@ fn emit_module_to_string(
     let transformed = transform_module(&module.source, &module.path, graph, used_set.as_ref())?;
 
     if options.minify {
-        // No indentation, no extra newlines
+        // Build the wrapped module string, then parse+minify+mangle in one shot
+        let mut wrapped = String::with_capacity(transformed.len() + 100);
+        wrapped.push_str(&format!(
+            "__modules[{}]=function(module,exports,require){{",
+            id
+        ));
         for line in transformed.lines() {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
-                output.push_str(trimmed);
-                output.push('\n');
+                wrapped.push_str(trimmed);
+                wrapped.push('\n');
             }
         }
+        wrapped.push_str("};");
+
+        // Parse the small wrapped module (~500 bytes)
+        let opts = ParserOptions {
+            module: false,
+            ..Default::default()
+        };
+        let mut ast = Parser::new(&wrapped, opts).parse().map_err(|e| BundleError {
+            code: "MINIFY_PARSE_ERROR",
+            message: format!("Failed to parse module {} for minification: {e}", module.path),
+            path: Some(module.path.clone()),
+        })?;
+
+        if options.mangle {
+            howth_parser::mangle::mangle(
+                &mut ast,
+                &howth_parser::mangle::MangleOptions::default(),
+            );
+        }
+
+        let codegen_opts = CodegenOptions {
+            minify: true,
+            ..Default::default()
+        };
+        Ok(Codegen::new(&ast, codegen_opts).generate())
     } else {
-        // Indent and emit
+        // Pretty-print with indentation
+        let mut output = String::with_capacity(module.source.len() + 200);
+        output.push_str(&format!("// Module {}: {}\n", id, module.path));
+        output.push_str(&format!(
+            "__modules[{}]=function(module,exports,require){{",
+            id
+        ));
+        output.push('\n');
+
         for line in transformed.lines() {
             output.push_str("  ");
             output.push_str(line);
             output.push('\n');
         }
-    }
 
-    output.push_str("};");
-    if !options.minify {
-        output.push_str("\n\n");
+        output.push_str("};\n\n");
+        Ok(output)
     }
-
-    Ok(output)
 }
 
 /// Emit a single module (legacy function, kept for compatibility).
