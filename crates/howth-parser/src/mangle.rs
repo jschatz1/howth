@@ -391,6 +391,9 @@ impl<'a> MangleContext<'a> {
             }
             BindingKind::Object { properties, .. } => {
                 for prop in properties {
+                    if let PropertyKey::Computed(e) = &prop.key {
+                        self.collect_expr(e, scope);
+                    }
                     self.collect_binding(&prop.value, var_kind, scope);
                     if let Some(default) = &prop.default {
                         self.collect_expr(default, scope);
@@ -1066,6 +1069,9 @@ impl<'a> Renamer<'a> {
             }
             BindingKind::Object { properties, .. } => {
                 for prop in properties {
+                    if let PropertyKey::Computed(e) = &mut prop.key {
+                        self.rename_expr(e);
+                    }
                     if prop.shorthand {
                         // Shorthand: `{ foo }` → need to expand to `{ foo: a }`
                         // The key stays as the original name, value gets renamed
@@ -1568,5 +1574,17 @@ function test() {
             &MangleOptions::default(),
         );
         assert!(!result.contains("item"));
+    }
+
+    #[test]
+    fn test_computed_key_destructuring() {
+        let result = parse_and_mangle_top(
+            "let foo = 'x'; let { [foo]: bar } = obj;",
+        );
+        // Both foo and bar should be mangled, including the computed key reference
+        assert!(!result.contains("foo"));
+        assert!(!result.contains("bar"));
+        // Should produce something like: let a = 'x'; let { [a]: b } = obj;
+        assert!(result.contains("[a]"));
     }
 }
