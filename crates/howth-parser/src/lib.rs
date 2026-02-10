@@ -52,6 +52,7 @@ mod typescript;
 mod jsx;
 
 mod codegen;
+pub mod mangle;
 
 // Re-exports
 pub use ast::*;
