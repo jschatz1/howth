@@ -102,6 +102,20 @@ The connection runs deeper: deterministic builds are about always arriving back 
 
 All benchmarks on Apple M3 Pro (11 cores). Run with `howth bench`.
 
+### Bundler (10,000 React components)
+
+| Tool | Time | JS Size | Relative |
+|------|------|---------|----------|
+| **Bun** | **315ms** | **5.34 MB** | **1.0x** |
+| **howth** | **317ms** | **4.01 MB** | **1.0x** |
+| esbuild | 736ms | 5.91 MB | 2.3x |
+| Rolldown | 799ms | 5.22 MB | 2.5x |
+| Vite | 1,229ms | 5.28 MB | 3.9x |
+| Rsbuild | 1,569ms | 5.70 MB | 5.0x |
+| rspack | 1,646ms | 5.18 MB | 5.2x |
+
+howth and bun are tied. howth produces the smallest output (25% smaller than bun). Measured with [hyperfine](https://github.com/sharkdp/hyperfine), 10 runs. See [benchmarks source](https://github.com/jschatz1/benchmarks).
+
 ### Transpile
 
 | Tool | Cold | Warm | Peak RSS |

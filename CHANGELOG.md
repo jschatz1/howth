@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.5.1 — Per-Module Minification
+
+### Performance
+- **Per-module minification**: minify+mangle each module inside the existing `par_iter()` loop instead of re-parsing the entire ~5MB concatenated bundle
+- **M3 Pro (10K modules)**: 460ms → 317ms (1.45x faster), now tied with Bun (315ms)
+- howth produces the smallest output in the benchmark: 4.01 MB (25% smaller than Bun's 5.34 MB)
+
+---
+
 ## v0.5.0 — Variable Name Mangling
 
 ### Minification
