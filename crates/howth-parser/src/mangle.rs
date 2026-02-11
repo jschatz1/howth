@@ -173,14 +173,21 @@ impl<'a> MangleContext<'a> {
                 let block_scope = self.add_scope(ScopeKind::Block, scope);
                 self.collect_stmts(stmts, block_scope);
             }
-            StmtKind::If { test, consequent, alternate } => {
+            StmtKind::If {
+                test,
+                consequent,
+                alternate,
+            } => {
                 self.collect_expr(test, scope);
                 self.collect_stmt(consequent, scope);
                 if let Some(alt) = alternate {
                     self.collect_stmt(alt, scope);
                 }
             }
-            StmtKind::Switch { discriminant, cases } => {
+            StmtKind::Switch {
+                discriminant,
+                cases,
+            } => {
                 self.collect_expr(discriminant, scope);
                 // Switch body gets its own block scope for let/const
                 let switch_scope = self.add_scope(ScopeKind::Block, scope);
@@ -191,7 +198,12 @@ impl<'a> MangleContext<'a> {
                     self.collect_stmts(&case.consequent, switch_scope);
                 }
             }
-            StmtKind::For { init, test, update, body } => {
+            StmtKind::For {
+                init,
+                test,
+                update,
+                body,
+            } => {
                 // For-loop gets an implicit block scope for `let`/`const` in init
                 let for_scope = self.add_scope(ScopeKind::Block, scope);
                 if let Some(init) = init {
@@ -228,7 +240,9 @@ impl<'a> MangleContext<'a> {
                 self.collect_expr(right, for_scope);
                 self.collect_stmt(body, for_scope);
             }
-            StmtKind::ForOf { left, right, body, .. } => {
+            StmtKind::ForOf {
+                left, right, body, ..
+            } => {
                 let for_scope = self.add_scope(ScopeKind::Block, scope);
                 match left {
                     ForInit::Var { kind, decls } => {
@@ -257,7 +271,11 @@ impl<'a> MangleContext<'a> {
             StmtKind::Throw { arg } => {
                 self.collect_expr(arg, scope);
             }
-            StmtKind::Try { block, handler, finalizer } => {
+            StmtKind::Try {
+                block,
+                handler,
+                finalizer,
+            } => {
                 let try_scope = self.add_scope(ScopeKind::Block, scope);
                 self.collect_stmts(block, try_scope);
                 if let Some(catch) = handler {
@@ -461,7 +479,11 @@ impl<'a> MangleContext<'a> {
                 self.collect_expr(right, scope);
             }
             ExprKind::Update { arg, .. } => self.collect_expr(arg, scope),
-            ExprKind::Conditional { test, consequent, alternate } => {
+            ExprKind::Conditional {
+                test,
+                consequent,
+                alternate,
+            } => {
                 self.collect_expr(test, scope);
                 self.collect_expr(consequent, scope);
                 self.collect_expr(alternate, scope);
@@ -471,13 +493,21 @@ impl<'a> MangleContext<'a> {
                     self.collect_expr(e, scope);
                 }
             }
-            ExprKind::Member { object, property, computed } => {
+            ExprKind::Member {
+                object,
+                property,
+                computed,
+            } => {
                 self.collect_expr(object, scope);
                 if *computed {
                     self.collect_expr(property, scope);
                 }
             }
-            ExprKind::OptionalMember { object, property, computed } => {
+            ExprKind::OptionalMember {
+                object,
+                property,
+                computed,
+            } => {
                 self.collect_expr(object, scope);
                 if *computed {
                     self.collect_expr(property, scope);
@@ -544,7 +574,10 @@ impl<'a> MangleContext<'a> {
     fn collect_jsx_element(&mut self, el: &JsxElement, scope: ScopeId) {
         for attr in &el.opening.attributes {
             match attr {
-                JsxAttribute::Attribute { value: Some(JsxAttrValue::Expr(e)), .. } => {
+                JsxAttribute::Attribute {
+                    value: Some(JsxAttrValue::Expr(e)),
+                    ..
+                } => {
                     self.collect_expr(e, scope);
                 }
                 JsxAttribute::SpreadAttribute { argument, .. } => {
@@ -736,12 +769,47 @@ fn encode_name(mut n: usize) -> String {
 fn is_js_reserved(name: &str) -> bool {
     matches!(
         name,
-        "do" | "if" | "in" | "for" | "let" | "new" | "try" | "var" | "case" | "else" | "enum"
-            | "eval" | "null" | "this" | "true" | "void" | "with" | "await" | "break"
-            | "catch" | "class" | "const" | "false" | "super" | "throw" | "while" | "yield"
-            | "delete" | "export" | "import" | "return" | "switch" | "typeof"
-            | "default" | "extends" | "finally" | "continue" | "debugger" | "function"
-            | "arguments" | "instanceof" | "of"
+        "do" | "if"
+            | "in"
+            | "for"
+            | "let"
+            | "new"
+            | "try"
+            | "var"
+            | "case"
+            | "else"
+            | "enum"
+            | "eval"
+            | "null"
+            | "this"
+            | "true"
+            | "void"
+            | "with"
+            | "await"
+            | "break"
+            | "catch"
+            | "class"
+            | "const"
+            | "false"
+            | "super"
+            | "throw"
+            | "while"
+            | "yield"
+            | "delete"
+            | "export"
+            | "import"
+            | "return"
+            | "switch"
+            | "typeof"
+            | "default"
+            | "extends"
+            | "finally"
+            | "continue"
+            | "debugger"
+            | "function"
+            | "arguments"
+            | "instanceof"
+            | "of"
     )
 }
 
@@ -839,14 +907,21 @@ impl<'a> Renamer<'a> {
                 self.rename_stmts(stmts);
                 self.leave_scope();
             }
-            StmtKind::If { test, consequent, alternate } => {
+            StmtKind::If {
+                test,
+                consequent,
+                alternate,
+            } => {
                 self.rename_expr(test);
                 self.rename_stmt(consequent);
                 if let Some(alt) = alternate {
                     self.rename_stmt(alt);
                 }
             }
-            StmtKind::Switch { discriminant, cases } => {
+            StmtKind::Switch {
+                discriminant,
+                cases,
+            } => {
                 self.rename_expr(discriminant);
                 self.enter_scope();
                 for case in cases {
@@ -857,7 +932,12 @@ impl<'a> Renamer<'a> {
                 }
                 self.leave_scope();
             }
-            StmtKind::For { init, test, update, body } => {
+            StmtKind::For {
+                init,
+                test,
+                update,
+                body,
+            } => {
                 self.enter_scope();
                 if let Some(init) = init {
                     match init {
@@ -895,7 +975,9 @@ impl<'a> Renamer<'a> {
                 self.rename_stmt(body);
                 self.leave_scope();
             }
-            StmtKind::ForOf { left, right, body, .. } => {
+            StmtKind::ForOf {
+                left, right, body, ..
+            } => {
                 self.enter_scope();
                 match left {
                     ForInit::Var { decls, .. } => {
@@ -925,7 +1007,11 @@ impl<'a> Renamer<'a> {
             StmtKind::Throw { arg } => {
                 self.rename_expr(arg);
             }
-            StmtKind::Try { block, handler, finalizer } => {
+            StmtKind::Try {
+                block,
+                handler,
+                finalizer,
+            } => {
                 self.enter_scope(); // try block scope
                 self.rename_stmts(block);
                 self.leave_scope();
@@ -1169,7 +1255,11 @@ impl<'a> Renamer<'a> {
                 self.rename_expr(right);
             }
             ExprKind::Update { arg, .. } => self.rename_expr(arg),
-            ExprKind::Conditional { test, consequent, alternate } => {
+            ExprKind::Conditional {
+                test,
+                consequent,
+                alternate,
+            } => {
                 self.rename_expr(test);
                 self.rename_expr(consequent);
                 self.rename_expr(alternate);
@@ -1179,14 +1269,22 @@ impl<'a> Renamer<'a> {
                     self.rename_expr(e);
                 }
             }
-            ExprKind::Member { object, property, computed } => {
+            ExprKind::Member {
+                object,
+                property,
+                computed,
+            } => {
                 self.rename_expr(object);
                 // Only rename computed properties — `obj.foo` stays `obj.foo`
                 if *computed {
                     self.rename_expr(property);
                 }
             }
-            ExprKind::OptionalMember { object, property, computed } => {
+            ExprKind::OptionalMember {
+                object,
+                property,
+                computed,
+            } => {
                 self.rename_expr(object);
                 if *computed {
                     self.rename_expr(property);
@@ -1258,7 +1356,10 @@ impl<'a> Renamer<'a> {
     fn rename_jsx_element(&mut self, el: &mut JsxElement) {
         for attr in &mut el.opening.attributes {
             match attr {
-                JsxAttribute::Attribute { value: Some(JsxAttrValue::Expr(e)), .. } => {
+                JsxAttribute::Attribute {
+                    value: Some(JsxAttrValue::Expr(e)),
+                    ..
+                } => {
                     self.rename_expr(e);
                 }
                 JsxAttribute::SpreadAttribute { argument, .. } => {
@@ -1300,7 +1401,9 @@ mod tests {
     use crate::{Parser, ParserOptions};
 
     fn parse_and_mangle(source: &str, opts: &MangleOptions) -> String {
-        let mut ast = Parser::new(source, ParserOptions::default()).parse().unwrap();
+        let mut ast = Parser::new(source, ParserOptions::default())
+            .parse()
+            .unwrap();
         mangle(&mut ast, opts);
         crate::Codegen::new(&ast, crate::CodegenOptions::default()).generate()
     }
@@ -1408,9 +1511,7 @@ function test() {
 
     #[test]
     fn test_shorthand_expansion_destructuring() {
-        let result = parse_and_mangle_top(
-            "let obj = { x: 1 }; let { x } = obj;",
-        );
+        let result = parse_and_mangle_top("let obj = { x: 1 }; let { x } = obj;");
         // Destructuring { x } should expand to { x: a }
         assert!(!result.contains("let { x }"));
     }
@@ -1426,9 +1527,7 @@ function test() {
 
     #[test]
     fn test_arrow_function_params() {
-        let result = parse_and_mangle_top(
-            "let fn = (longName) => longName * 2;",
-        );
+        let result = parse_and_mangle_top("let fn = (longName) => longName * 2;");
         assert!(!result.contains("longName"));
     }
 
@@ -1522,7 +1621,8 @@ function test() {
 
     #[test]
     fn test_destructuring_array() {
-        let result = parse_and_mangle_top("let [first, second] = [1, 2]; console.log(first, second);");
+        let result =
+            parse_and_mangle_top("let [first, second] = [1, 2]; console.log(first, second);");
         assert!(!result.contains("first"));
         assert!(!result.contains("second"));
     }
@@ -1551,9 +1651,7 @@ function test() {
 
     #[test]
     fn test_function_expression_name() {
-        let result = parse_and_mangle_top(
-            "let f = function myFunc() { return myFunc; };",
-        );
+        let result = parse_and_mangle_top("let f = function myFunc() { return myFunc; };");
         // myFunc is only visible inside its own scope
         assert!(!result.contains("myFunc"));
     }
@@ -1578,9 +1676,7 @@ function test() {
 
     #[test]
     fn test_computed_key_destructuring() {
-        let result = parse_and_mangle_top(
-            "let foo = 'x'; let { [foo]: bar } = obj;",
-        );
+        let result = parse_and_mangle_top("let foo = 'x'; let { [foo]: bar } = obj;");
         // Both foo and bar should be mangled, including the computed key reference
         assert!(!result.contains("foo"));
         assert!(!result.contains("bar"));
@@ -1592,7 +1688,10 @@ function test() {
     fn test_bundle_wrapper_pattern() {
         // Bundle wrappers use function(mod, exp, req) — params should be mangled
         // even with top_level: false
-        let opts = ParserOptions { module: false, ..Default::default() };
+        let opts = ParserOptions {
+            module: false,
+            ..Default::default()
+        };
         let mut ast = Parser::new(
             r#"var __modules = {};
 __modules[1] = function(mod, exp, req) {
@@ -1600,7 +1699,9 @@ __modules[1] = function(mod, exp, req) {
     mod.exports = longVariableName;
 };"#,
             opts,
-        ).parse().unwrap();
+        )
+        .parse()
+        .unwrap();
         mangle(&mut ast, &MangleOptions::default());
         let result = crate::Codegen::new(&ast, crate::CodegenOptions::default()).generate();
         // Function params should be mangled (they're in function scope, not top-level)

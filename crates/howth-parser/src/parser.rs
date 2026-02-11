@@ -490,8 +490,7 @@ impl<'a> Parser<'a> {
             // TypeScript contextual keywords as binding names
             // (these are valid JS identifiers even when not in TS mode)
             #[cfg(feature = "typescript")]
-            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) =>
-            {
+            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) => {
                 let name = self.expect_ts_identifier()?;
                 let end = self.current.span.start;
                 let type_ann = if self.eat(&TokenKind::Colon) {
@@ -727,8 +726,7 @@ impl<'a> Parser<'a> {
                 Some(n)
             }
             #[cfg(feature = "typescript")]
-            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) =>
-            {
+            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) => {
                 Some(self.expect_ts_identifier().unwrap_or_default())
             }
             // JS keywords used as function names (e.g., `declare function get<T>()`)
@@ -2973,8 +2971,7 @@ impl<'a> Parser<'a> {
             // TypeScript contextual keywords used as identifiers
             // (these are valid JS identifiers even when not in TS mode)
             #[cfg(feature = "typescript")]
-            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) =>
-            {
+            _ if crate::typescript::is_ts_contextual_keyword(self.peek()) => {
                 let name = self.expect_ts_identifier()?;
                 Ok(Expr::new(
                     ExprKind::Ident(name),

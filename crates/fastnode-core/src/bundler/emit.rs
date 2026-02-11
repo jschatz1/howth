@@ -37,10 +37,7 @@ fn minify_bundle(code: &str, mangle: bool) -> Result<String, BundleError> {
     })?;
 
     if mangle {
-        howth_parser::mangle::mangle(
-            &mut ast,
-            &howth_parser::mangle::MangleOptions::default(),
-        );
+        howth_parser::mangle::mangle(&mut ast, &howth_parser::mangle::MangleOptions::default());
     }
 
     let codegen_opts = CodegenOptions {
@@ -506,17 +503,19 @@ fn emit_module_to_string(
             module: false,
             ..Default::default()
         };
-        let mut ast = Parser::new(&wrapped, opts).parse().map_err(|e| BundleError {
-            code: "MINIFY_PARSE_ERROR",
-            message: format!("Failed to parse module {} for minification: {e}", module.path),
-            path: Some(module.path.clone()),
-        })?;
+        let mut ast = Parser::new(&wrapped, opts)
+            .parse()
+            .map_err(|e| BundleError {
+                code: "MINIFY_PARSE_ERROR",
+                message: format!(
+                    "Failed to parse module {} for minification: {e}",
+                    module.path
+                ),
+                path: Some(module.path.clone()),
+            })?;
 
         if options.mangle {
-            howth_parser::mangle::mangle(
-                &mut ast,
-                &howth_parser::mangle::MangleOptions::default(),
-            );
+            howth_parser::mangle::mangle(&mut ast, &howth_parser::mangle::MangleOptions::default());
         }
 
         let codegen_opts = CodegenOptions {

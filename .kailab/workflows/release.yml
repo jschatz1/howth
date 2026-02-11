@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v0.1.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            use_cross: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.use_cross && '' || matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-${{ matrix.target }}-
+
+      - name: Install cross (for ARM64 cross-compilation)
+        if: ${{ matrix.use_cross }}
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release (cross)
+        if: ${{ matrix.use_cross }}
+        run: cross build --release --workspace --target ${{ matrix.target }}
+
+      - name: Build release (native)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --workspace --target ${{ matrix.target }}
+
+      - name: Smoke test
+        if: ${{ !matrix.use_cross }}
+        run: ./target/${{ matrix.target }}/release/howth --version
+
+      - name: Package
+        run: |
+          ARCHIVE_NAME="howth-${{ env.RELEASE_TAG }}-${{ matrix.target }}"
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            RELEASE_DIR="target/${{ matrix.target }}/release"
+          else
+            RELEASE_DIR="target/${{ matrix.target }}/release"
+          fi
+          mkdir -p "${ARCHIVE_NAME}"
+          cp "${RELEASE_DIR}/howth" "${ARCHIVE_NAME}/"
+          cp "${RELEASE_DIR}/fastnode" "${ARCHIVE_NAME}/"
+          cp LICENSE README.md "${ARCHIVE_NAME}/"
+          tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+          echo "ARCHIVE=${ARCHIVE_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: howth-${{ matrix.target }}
+          path: howth-${{ env.RELEASE_TAG }}-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum howth-* > sha256sums.txt
+          cat sha256sums.txt
+          echo "Release artifacts:"
+          ls -la
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: |
+            artifacts/howth-*
+            artifacts/sha256sums.txt
