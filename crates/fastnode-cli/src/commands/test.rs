@@ -53,8 +53,9 @@ pub fn run(
 ) -> Result<()> {
     let cwd = &config.cwd;
 
-    // Check for package.json test script first (only if no explicit paths given)
-    if paths.is_empty() {
+    // Check for package.json test script first (only if no howth-specific flags given)
+    let has_howth_flags = setup.is_some() || timeout.is_some() || force_exit;
+    if paths.is_empty() && !has_howth_flags {
         if let Some(script) = get_test_script(cwd) {
             return run_test_script(cwd, &script);
         }
