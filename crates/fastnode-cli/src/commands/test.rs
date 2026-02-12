@@ -538,7 +538,7 @@ fn run_node_tests_force_exit(cwd: &Path, files: &[PathBuf]) -> i32 {
 import { run } from 'node:test';
 import { resolve } from 'node:path';
 
-const files = process.argv.slice(1).map(f => resolve(f));
+const files = process.argv.slice(2).map(f => resolve(f));
 const stream = run({ files, concurrency: false, isolation: 'none' });
 
 let failed = 0;
