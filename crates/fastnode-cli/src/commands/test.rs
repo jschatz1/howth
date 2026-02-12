@@ -552,7 +552,8 @@ fn run_node_tests_force_exit(cwd: &Path, files: &[PathBuf]) -> i32 {
         &wrapper_path,
         r#"
 import { describe as _describe, it as _it, before, after, beforeEach, afterEach } from 'node:test';
-import { resolve, pathToFileURL } from 'node:path';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 // Inject mocha-compatible globals so tests using global describe/it work
 function chainable(result) {
