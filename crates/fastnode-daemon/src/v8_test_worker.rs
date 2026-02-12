@@ -108,6 +108,7 @@ impl V8TestWorker {
         &self,
         id: String,
         files: Vec<TranspiledTestFile>,
+        timeout_ms: Option<u64>,
     ) -> io::Result<WorkerResponse> {
         let (reply_tx, reply_rx) = mpsc::channel();
 
@@ -119,12 +120,13 @@ impl V8TestWorker {
             })
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "V8 worker thread died"))?;
 
+        let timeout_secs = timeout_ms.unwrap_or(120_000) / 1000;
         reply_rx
-            .recv_timeout(std::time::Duration::from_secs(1200))
+            .recv_timeout(std::time::Duration::from_secs(timeout_secs))
             .map_err(|e| match e {
                 mpsc::RecvTimeoutError::Timeout => io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "V8 test worker timed out after 1200s",
+                    format!("V8 test worker timed out after {timeout_secs}s"),
                 ),
                 mpsc::RecvTimeoutError::Disconnected => {
                     io::Error::new(io::ErrorKind::BrokenPipe, "V8 worker thread died")

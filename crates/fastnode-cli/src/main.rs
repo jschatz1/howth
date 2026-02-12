@@ -297,6 +297,15 @@ enum Commands {
 
     /// Run tests
     Test {
+        /// Setup file to run before tests (like mocha --require)
+        #[arg(long)]
+        setup: Option<String>,
+        /// Worker timeout in milliseconds (default: 120000)
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// Force exit after tests complete (useful when tests leave open handles)
+        #[arg(long)]
+        exit: bool,
         /// Paths to test files or directories (default: discover in cwd)
         paths: Vec<String>,
     },
@@ -1096,10 +1105,15 @@ fn main() -> Result<()> {
         ) => {
             unreachable!() // Handled above
         }
-        Some(Commands::Test { paths }) => {
+        Some(Commands::Test {
+            setup,
+            timeout,
+            exit,
+            paths,
+        }) => {
             let span = tracing::info_span!("test", cmd = "test", cwd = %cwd.display());
             let _guard = span.enter();
-            commands::test::run(&config, &paths)
+            commands::test::run(&config, setup.as_deref(), timeout, exit, &paths)
         }
     }
 }

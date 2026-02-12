@@ -343,7 +343,16 @@ pub async fn handle_request_async(
             .await,
             false,
         ),
-        Request::RunTests { cwd, files } => (handle_run_tests(cwd, files, _state).await, false),
+        Request::RunTests {
+            cwd,
+            files,
+            setup,
+            timeout_ms,
+            force_exit,
+        } => (
+            handle_run_tests(cwd, files, setup.as_ref(), *timeout_ms, *force_exit, _state).await,
+            false,
+        ),
         // Non-async operations - should not reach here, but handle gracefully
         _ => (
             Response::error(
@@ -714,6 +723,9 @@ fn convert_build_result(result: fastnode_core::build::BuildRunResult, cwd: &str)
 async fn handle_run_tests(
     cwd: &str,
     files: &[String],
+    setup: Option<&String>,
+    timeout_ms: Option<u64>,
+    force_exit: bool,
     state: Option<&Arc<DaemonState>>,
 ) -> Response {
     use crate::test_worker::TranspiledTestFile;
@@ -734,6 +746,12 @@ async fn handle_run_tests(
     let Some(state) = state else {
         return Response::error(codes::INTERNAL_ERROR, "Daemon state not available");
     };
+
+    // Path to the howth:mocha shim (written by test_worker.mjs at startup)
+    let mocha_shim_path = std::env::temp_dir()
+        .join("howth-test-worker")
+        .join("howth-mocha-shim.mjs");
+    let mocha_shim_str = mocha_shim_path.to_string_lossy().to_string();
 
     // Transpile all files in parallel using rayon
     let compiler = &state.compiler;
@@ -769,12 +787,12 @@ async fn handle_run_tests(
                     })?;
                     Ok(TranspiledTestFile {
                         path: file_path.clone(),
-                        code: output.code,
+                        code: output.code.replace("howth:mocha", &mocha_shim_str),
                     })
                 } else {
                     Ok(TranspiledTestFile {
                         path: file_path.clone(),
-                        code: source,
+                        code: source.replace("howth:mocha", &mocha_shim_str),
                     })
                 }
             })
@@ -792,10 +810,57 @@ async fn handle_run_tests(
         }
     }
 
+    // Prepend setup file if provided — it runs first (before test files)
+    if let Some(setup_path) = setup {
+        let setup_pb = PathBuf::from(setup_path);
+        match std::fs::read_to_string(&setup_pb) {
+            Ok(source) => {
+                let ext = setup_pb.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let needs_transpile = matches!(
+                    ext.to_lowercase().as_str(),
+                    "ts" | "tsx" | "jsx" | "mts" | "cts"
+                );
+                let code = if needs_transpile {
+                    let out_path = setup_pb.with_extension("mjs");
+                    let spec = TranspileSpec::new(&setup_pb, &out_path);
+                    match compiler.transpile(&spec, &source) {
+                        Ok(output) => output.code.replace("howth:mocha", &mocha_shim_str),
+                        Err(e) => {
+                            return Response::error(
+                                codes::TEST_TRANSPILE_FAILED,
+                                format!("Failed to transpile setup file: {e}"),
+                            );
+                        }
+                    }
+                } else {
+                    source.replace("howth:mocha", &mocha_shim_str)
+                };
+                transpiled.insert(
+                    0,
+                    TranspiledTestFile {
+                        path: setup_path.clone(),
+                        code,
+                    },
+                );
+            }
+            Err(e) => {
+                return Response::error(
+                    codes::TEST_TRANSPILE_FAILED,
+                    format!("Failed to read setup file: {e}"),
+                );
+            }
+        }
+    }
+
+    // Clean up stale temp files from previous runs (timeout/kill leftovers)
+    // before starting a new run. This prevents node:test from discovering
+    // orphaned .howth-test-* files alongside real test files.
+    crate::test_worker::cleanup_stale_temp_files(files);
+
     // Try native V8 test worker first, fall back to Node.js worker
     #[cfg(feature = "runtime")]
     let result = {
-        let v8_result = try_v8_test_worker(state, &transpiled);
+        let v8_result = try_v8_test_worker(state, &transpiled, timeout_ms);
         match v8_result {
             Ok(result) => result,
             Err(v8_err) if v8_err.kind() == std::io::ErrorKind::TimedOut => {
@@ -810,7 +875,7 @@ async fn handle_run_tests(
             Err(v8_err) => {
                 warn!("V8 test worker failed ({v8_err}), falling back to Node.js worker");
                 // Fallback to Node.js worker
-                match run_tests_node_worker(state, transpiled).await {
+                match run_tests_node_worker(state, transpiled, timeout_ms, force_exit).await {
                     Ok(r) => r,
                     Err(e) => {
                         let code = if e.kind() == std::io::ErrorKind::TimedOut {
@@ -827,7 +892,7 @@ async fn handle_run_tests(
 
     #[cfg(not(feature = "runtime"))]
     let result = {
-        match run_tests_node_worker(state, transpiled).await {
+        match run_tests_node_worker(state, transpiled, timeout_ms, force_exit).await {
             Ok(r) => r,
             Err(e) => {
                 let code = if e.kind() == std::io::ErrorKind::TimedOut {
@@ -882,6 +947,7 @@ fn worker_response_to_response(cwd: &str, result: crate::test_worker::WorkerResp
 fn try_v8_test_worker(
     state: &Arc<DaemonState>,
     files: &[crate::test_worker::TranspiledTestFile],
+    timeout_ms: Option<u64>,
 ) -> Result<crate::test_worker::WorkerResponse, std::io::Error> {
     let mut guard = state
         .v8_test_worker
@@ -906,13 +972,15 @@ fn try_v8_test_worker(
             .as_millis()
     );
 
-    worker.run_tests(id, files.to_vec())
+    worker.run_tests(id, files.to_vec(), timeout_ms)
 }
 
 /// Run tests via the Node.js test worker (fallback path).
 async fn run_tests_node_worker(
     state: &Arc<DaemonState>,
     files: Vec<crate::test_worker::TranspiledTestFile>,
+    timeout_ms: Option<u64>,
+    force_exit: bool,
 ) -> Result<crate::test_worker::WorkerResponse, std::io::Error> {
     let mut worker_guard = state.test_worker.lock().await;
     if worker_guard.is_none() {
@@ -920,7 +988,7 @@ async fn run_tests_node_worker(
     }
 
     let worker = worker_guard.as_mut().unwrap();
-    match worker.run_tests(files).await {
+    match worker.run_tests(files, timeout_ms, force_exit).await {
         Ok(result) => Ok(result),
         Err(e) => {
             *worker_guard = None;

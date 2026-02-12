@@ -1,12 +1,39 @@
 // Bootstrap JavaScript runtime with Node-like globals
 ((globalThis) => {
   const core = Deno.core;
-  const ops = core.ops;
+  // Wrap core.ops in a Proxy that provides stub fallbacks for ops not yet
+  // registered (needed during V8 snapshot creation where no Rust ops exist).
+  // At runtime, all ops are registered on core.ops before user code runs,
+  // so the Proxy's fallback path is never hit.
+  const ops = new Proxy(core.ops, {
+    get(target, prop, receiver) {
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      const stubs = {
+        op_howth_args: () => [],
+        op_howth_platform: () => 'linux',
+        op_howth_arch: () => 'x64',
+        op_howth_worker_is_main_thread: () => true,
+        op_howth_worker_thread_id: () => 0,
+        op_howth_cwd: () => '/',
+        op_howth_env_get: () => null,
+        op_howth_hrtime: () => 0,
+        op_howth_stdin_is_tty: () => false,
+        op_howth_print: () => {},
+        op_howth_print_error: () => {},
+        op_howth_fs_exists: () => false,
+        op_howth_read_file: () => '',
+        op_howth_fs_stat: () => null,
+      };
+      return stubs[prop] || (() => null);
+    }
+  });
 
   // Node.js uses 'global' as an alias for globalThis
   globalThis.global = globalThis;
 
-  Error.stackTraceLimit = 50;
+  // Note: Error.stackTraceLimit is set after snapshot load to avoid
+  // conflicting with V8's Genesis::InstallSpecialObjects during snapshot restore.
+  // See runtime.rs where it's set via execute_script after snapshot load.
 
   // Console implementation
   const consoleTimers = new Map();
@@ -206,11 +233,11 @@
       ops.op_howth_exit(code);
     },
     exitCode: 0,
-    argv: ops.op_howth_args(),
-    argv0: ops.op_howth_args()[0] || "howth",
+    get argv() { return ops.op_howth_args(); },
+    get argv0() { return ops.op_howth_args()[0] || "howth"; },
     execArgv: [], // Command-line options passed to Node.js executable
-    execPath: ops.op_howth_args()[0] || "/usr/bin/howth",
-    platform: ops.op_howth_platform(),
+    get execPath() { return ops.op_howth_args()[0] || "/usr/bin/howth"; },
+    get platform() { return ops.op_howth_platform(); },
     version: "v20.18.0", // Fake Node.js version for compatibility
     versions: {
       node: "20.18.0",
@@ -232,7 +259,7 @@
     },
     pid: 1,
     ppid: 0,
-    arch: ops.op_howth_arch(),
+    get arch() { return ops.op_howth_arch(); },
     title: "howth",
     hrtime: Object.assign(
       function hrtime(time) {
@@ -11963,10 +11990,10 @@
   };
 
   const workerThreadsModule = {
-    isMainThread: ops.op_howth_worker_is_main_thread(),
+    get isMainThread() { return ops.op_howth_worker_is_main_thread(); },
     parentPort,
     workerData,
-    threadId: ops.op_howth_worker_thread_id(),
+    get threadId() { return ops.op_howth_worker_thread_id(); },
     Worker,
     MessageChannel,
     MessagePort,
@@ -14928,10 +14955,27 @@
 
     // howth:mocha — mocha-compatible API wrapping the same test infrastructure
     (function() {
+      // Chainable wrapper that supports .timeout() (mocha-ism)
+      function chainable(result) {
+        const chain = { timeout() { return chain; }, slow() { return chain; }, retries() { return chain; } };
+        if (result && typeof result.then === 'function') {
+          chain.then = result.then.bind(result);
+          chain.catch = result.catch.bind(result);
+        }
+        return chain;
+      }
+
+      // Mocha this-context: supports this.timeout(), this.slow(), this.retries()
+      const mochaCtx = { timeout() { return mochaCtx; }, slow() { return mochaCtx; }, retries() { return mochaCtx; }, skip() {} };
+      function bindCtx(fn) {
+        if (!fn) return fn;
+        return function(...args) { return fn.call(mochaCtx, ...args); };
+      }
+
       // describe with .only and .skip
-      function mochaDescribe(name, fn) { describe(name, fn); }
-      mochaDescribe.only = function(name, fn) { describe(name, { only: true }, fn); };
-      mochaDescribe.skip = function(name, fn) { describe(name, { skip: true }, fn); };
+      function mochaDescribe(name, fn) { return chainable(describe(name, bindCtx(fn))); }
+      mochaDescribe.only = function(name, fn) { return chainable(describe(name, { only: true }, bindCtx(fn))); };
+      mochaDescribe.skip = function(name, fn) { return chainable(describe(name, { skip: true }, bindCtx(fn))); };
 
       // context is an alias for describe
       const context = mochaDescribe;
@@ -14939,9 +14983,9 @@
       context.skip = mochaDescribe.skip;
 
       // it with .only and .skip
-      function mochaIt(name, fn) { return it(name, fn); }
-      mochaIt.only = function(name, fn) { return it(name, { only: true }, fn); };
-      mochaIt.skip = function(name, fn) { return it(name, { skip: true }, fn); };
+      function mochaIt(name, fn) { return chainable(it(name, bindCtx(fn))); }
+      mochaIt.only = function(name, fn) { return chainable(it(name, { only: true }, bindCtx(fn))); };
+      mochaIt.skip = function(name, fn) { return chainable(it(name, { skip: true }, bindCtx(fn))); };
 
       // specify is an alias for it
       const specify = mochaIt;

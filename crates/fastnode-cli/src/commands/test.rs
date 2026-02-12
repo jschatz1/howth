@@ -44,7 +44,13 @@ const EXCLUDE_DIRS: &[&str] = &[
 /// If no script exists, discovers test files and tries to run via
 /// the daemon's warm Node worker pool for speed. Falls back to
 /// direct `node --test` if daemon is not running.
-pub fn run(config: &Config, paths: &[String]) -> Result<()> {
+pub fn run(
+    config: &Config,
+    setup: Option<&str>,
+    timeout: Option<u64>,
+    force_exit: bool,
+    paths: &[String],
+) -> Result<()> {
     let cwd = &config.cwd;
 
     // Check for package.json test script first (only if no explicit paths given)
@@ -86,21 +92,42 @@ pub fn run(config: &Config, paths: &[String]) -> Result<()> {
     }
 
     println!("Found {} test file(s)", test_files.len());
+    for f in &test_files {
+        println!("  {}", f.display());
+    }
+
+    // Resolve setup file path
+    let setup_path = setup.map(|s| {
+        let p = Path::new(s);
+        if p.is_absolute() {
+            PathBuf::from(s)
+        } else {
+            cwd.join(s)
+        }
+    });
 
     // Try running via daemon first
-    if let Some(exit_code) = try_run_via_daemon(cwd, &test_files) {
+    if let Some(exit_code) =
+        try_run_via_daemon(cwd, &test_files, setup_path.as_deref(), timeout, force_exit)
+    {
         std::process::exit(exit_code);
     }
 
     // Fallback: run directly via node --test
-    run_direct(cwd, test_files)
+    run_direct(cwd, test_files, setup_path.as_deref(), force_exit)
 }
 
 /// Try to run tests via the daemon's warm Node worker pool.
 /// Returns Some(exit_code) on success, None if daemon is unavailable.
 ///
 /// Uses a blocking Unix socket to avoid tokio runtime startup overhead.
-fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
+fn try_run_via_daemon(
+    cwd: &Path,
+    test_files: &[PathBuf],
+    setup: Option<&Path>,
+    timeout: Option<u64>,
+    force_exit: bool,
+) -> Option<i32> {
     let endpoint = paths::ipc_endpoint(Channel::Stable);
 
     let file_paths: Vec<String> = test_files
@@ -108,7 +135,16 @@ fn try_run_via_daemon(cwd: &Path, test_files: &[PathBuf]) -> Option<i32> {
         .map(|f| f.to_string_lossy().into_owned())
         .collect();
 
-    let result = send_run_tests_blocking(&endpoint, cwd, &file_paths);
+    let setup_str = setup.map(|p| p.to_string_lossy().into_owned());
+
+    let result = send_run_tests_blocking(
+        &endpoint,
+        cwd,
+        &file_paths,
+        setup_str.as_deref(),
+        timeout,
+        force_exit,
+    );
 
     match result {
         Ok(response) => Some(handle_test_response(response)),
@@ -126,9 +162,12 @@ fn send_run_tests_blocking(
     endpoint: &str,
     cwd: &Path,
     files: &[String],
+    setup: Option<&str>,
+    timeout: Option<u64>,
+    force_exit: bool,
 ) -> std::io::Result<Response> {
     let mut stream = std::os::unix::net::UnixStream::connect(endpoint)?;
-    send_run_tests_blocking_impl(&mut stream, cwd, files)
+    send_run_tests_blocking_impl(&mut stream, cwd, files, setup, timeout, force_exit)
 }
 
 /// Send RunTests request to daemon using named pipes on Windows.
@@ -137,6 +176,9 @@ fn send_run_tests_blocking(
     endpoint: &str,
     _cwd: &Path,
     _files: &[String],
+    _setup: Option<&str>,
+    _timeout: Option<u64>,
+    _force_exit: bool,
 ) -> std::io::Result<Response> {
     // On Windows, we can't use blocking named pipes easily without tokio.
     // Return an error indicating daemon mode isn't supported for blocking tests on Windows.
@@ -152,12 +194,18 @@ fn send_run_tests_blocking_impl(
     stream: &mut (impl std::io::Read + std::io::Write),
     cwd: &Path,
     files: &[String],
+    setup: Option<&str>,
+    timeout: Option<u64>,
+    force_exit: bool,
 ) -> std::io::Result<Response> {
     let frame = Frame::new(
         VERSION,
         Request::RunTests {
             cwd: cwd.to_string_lossy().into_owned(),
             files: files.to_vec(),
+            setup: setup.map(String::from),
+            timeout_ms: timeout,
+            force_exit,
         },
     );
     let encoded = encode_frame(&frame)?;
@@ -204,7 +252,9 @@ fn handle_test_response(response: Response) -> i32 {
                 }
                 println!();
                 if let Some(ref err) = test.error {
-                    eprintln!("  {err}");
+                    for line in err.lines() {
+                        eprintln!("    {line}");
+                    }
                 }
             }
 
@@ -250,17 +300,86 @@ fn handle_test_response(response: Response) -> i32 {
 }
 
 /// Fallback: run tests directly via transpile + node --test.
-fn run_direct(cwd: &Path, test_files: Vec<PathBuf>) -> Result<()> {
+fn run_direct(
+    cwd: &Path,
+    test_files: Vec<PathBuf>,
+    setup: Option<&Path>,
+    force_exit: bool,
+) -> Result<()> {
     // Separate files by type
     let (ts_files, js_files): (Vec<_>, Vec<_>) =
         test_files.into_iter().partition(|f| needs_transpilation(f));
 
-    // Transpile TypeScript files
-    let mut files_to_run: Vec<PathBuf> = js_files;
+    // Write the howth:mocha shim for .timeout() chaining support
+    let shim_dir = std::env::temp_dir().join("howth-test-worker");
+    let _ = std::fs::create_dir_all(&shim_dir);
+    let shim_path = shim_dir.join("howth-mocha-shim.mjs");
+    let _ = std::fs::write(
+        &shim_path,
+        r#"
+import { describe as _describe, it as _it, before, after, beforeEach, afterEach } from 'node:test';
+function chainable(result) {
+  const c = { timeout() { return c; }, slow() { return c; }, retries() { return c; } };
+  if (result && typeof result.then === 'function') { c.then = result.then.bind(result); c.catch = result.catch.bind(result); }
+  return c;
+}
+const mochaCtx = { timeout() { return mochaCtx; }, slow() { return mochaCtx; }, retries() { return mochaCtx; }, skip() {} };
+function bindCtx(fn) { if (!fn) return fn; return function(...a) { return fn.call(mochaCtx, ...a); }; }
+function describe(name, fn) { return chainable(_describe(name, bindCtx(fn))); }
+describe.only = function(name, fn) { return chainable(_describe(name, { only: true }, bindCtx(fn))); };
+describe.skip = function(name, fn) { return chainable(_describe(name, { skip: true }, bindCtx(fn))); };
+const context = describe;
+function it(name, fn) { return chainable(_it(name, bindCtx(fn))); }
+it.only = function(name, fn) { return chainable(_it(name, { only: true }, bindCtx(fn))); };
+it.skip = function(name, fn) { return chainable(_it(name, { skip: true }, bindCtx(fn))); };
+const specify = it;
+export { describe, context, it, specify, before, after, beforeEach, afterEach };
+export default describe;
+"#,
+    );
+    let shim_str = shim_path.to_string_lossy().to_string();
+
+    // Rewrite howth:mocha to shim in plain JS files that use it.
+    // Write temp files next to originals (for node_modules resolution) with
+    // .test/.spec stripped from the name (so node:test doesn't discover them).
+    let mut files_to_run: Vec<PathBuf> = Vec::new();
     let mut temp_files: Vec<PathBuf> = Vec::new();
+    for js_file in &js_files {
+        if let Ok(source) = std::fs::read_to_string(js_file) {
+            if source.contains("howth:mocha") {
+                let rewritten = source.replace("howth:mocha", &shim_str);
+                let dir = js_file.parent().unwrap_or(cwd);
+                let stem = js_file
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("test");
+                let name = stem
+                    .strip_suffix(".test")
+                    .or_else(|| stem.strip_suffix(".spec"))
+                    .unwrap_or(stem);
+                let ext = js_file
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("mjs");
+                let temp_path = dir.join(format!(
+                    ".howth-test-{}-{}.{}",
+                    name,
+                    std::process::id(),
+                    ext,
+                ));
+                let _ = std::fs::write(&temp_path, rewritten);
+                files_to_run.push(temp_path.clone());
+                temp_files.push(temp_path);
+                continue;
+            }
+        }
+        files_to_run.push(js_file.clone());
+    }
+
+    // Transpile TypeScript files
 
     for ts_file in &ts_files {
-        match transpile_test_file(ts_file) {
+        match transpile_test_file(ts_file, Some(&shim_str)) {
             Ok(temp_path) => {
                 files_to_run.push(temp_path.clone());
                 temp_files.push(temp_path);
@@ -273,8 +392,34 @@ fn run_direct(cwd: &Path, test_files: Vec<PathBuf>) -> Result<()> {
         }
     }
 
+    // Prepend setup file if provided
+    if let Some(setup_path) = setup {
+        if needs_transpilation(setup_path) {
+            match transpile_test_file(setup_path, Some(&shim_str)) {
+                Ok(temp_path) => {
+                    files_to_run.insert(0, temp_path.clone());
+                    temp_files.push(temp_path);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "error: failed to transpile setup file {}: {e}",
+                        setup_path.display()
+                    );
+                    cleanup_temp_files(&temp_files);
+                    std::process::exit(EXIT_INTERNAL_ERROR);
+                }
+            }
+        } else {
+            files_to_run.insert(0, setup_path.to_path_buf());
+        }
+    }
+
     // Run tests via Node
-    let exit_code = run_node_tests(cwd, &files_to_run);
+    let exit_code = if force_exit {
+        run_node_tests_force_exit(cwd, &files_to_run)
+    } else {
+        run_node_tests(cwd, &files_to_run)
+    };
 
     // Clean up temp files
     cleanup_temp_files(&temp_files);
@@ -346,20 +491,23 @@ fn needs_transpilation(path: &Path) -> bool {
 }
 
 /// Transpile a TypeScript test file to JavaScript.
-fn transpile_test_file(path: &Path) -> Result<PathBuf> {
+/// Writes the output next to the original file (for node_modules resolution)
+/// with .test/.spec stripped from the name (so node:test doesn't discover it).
+fn transpile_test_file(path: &Path, mocha_shim: Option<&str>) -> Result<PathBuf> {
     let source =
         std::fs::read_to_string(path).map_err(|e| miette::miette!("Failed to read file: {}", e))?;
 
     let backend = SwcBackend::new();
 
-    // Create output path in temp directory
-    let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("test");
-    let temp_dir = std::env::temp_dir();
-    let output_path = temp_dir.join(format!(
-        "howth-test-{}-{}.mjs",
-        file_name,
-        std::process::id()
-    ));
+    // Write next to the original so Node's module resolution finds node_modules.
+    // Strip .test/.spec from the name to avoid node:test discovery.
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("test");
+    let name = stem
+        .strip_suffix(".test")
+        .or_else(|| stem.strip_suffix(".spec"))
+        .unwrap_or(stem);
+    let output_path = dir.join(format!(".howth-test-{}-{}.mjs", name, std::process::id()));
 
     let spec = TranspileSpec::new(path, &output_path);
 
@@ -367,10 +515,84 @@ fn transpile_test_file(path: &Path) -> Result<PathBuf> {
         .transpile(&spec, &source)
         .map_err(|e| miette::miette!("Transpilation failed: {}", e))?;
 
-    std::fs::write(&output_path, &output.code)
+    // Rewrite howth:mocha to shim (or node:test) since the fallback path uses Node.js
+    let replacement = mocha_shim.unwrap_or("node:test");
+    let code = output.code.replace("howth:mocha", replacement);
+    std::fs::write(&output_path, &code)
         .map_err(|e| miette::miette!("Failed to write transpiled file: {}", e))?;
 
     Ok(output_path)
+}
+
+/// Run tests via a wrapper that forces process.exit() after tests complete.
+/// Uses node:test's programmatic API with isolation:'none' and idle detection,
+/// so open handles (Express servers, DB connections) don't prevent exit.
+fn run_node_tests_force_exit(cwd: &Path, files: &[PathBuf]) -> i32 {
+    let wrapper_dir = std::env::temp_dir().join("howth-test-worker");
+    let _ = std::fs::create_dir_all(&wrapper_dir);
+    let wrapper_path = wrapper_dir.join("force-exit-runner.mjs");
+    let _ = std::fs::write(
+        &wrapper_path,
+        r#"
+import { run } from 'node:test';
+import { resolve } from 'node:path';
+
+const files = process.argv.slice(1).map(f => resolve(f));
+const stream = run({ files, concurrency: false, isolation: 'none' });
+
+let failed = 0;
+let lastEvent = performance.now();
+
+stream.on('test:pass', () => { lastEvent = performance.now(); });
+stream.on('test:fail', () => { failed++; lastEvent = performance.now(); });
+stream.on('test:skip', () => { lastEvent = performance.now(); });
+stream.on('test:diagnostic', () => { lastEvent = performance.now(); });
+
+// Pretty output via spec reporter (Node 20+), fall back to TAP
+try {
+  const { spec } = await import('node:test/reporters');
+  if (typeof stream.compose === 'function') {
+    stream.compose(spec).pipe(process.stdout);
+  } else {
+    stream.pipe(process.stdout);
+  }
+} catch {
+  stream.pipe(process.stdout);
+}
+
+// Normal stream end (all handles closed cleanly)
+stream.on('end', () => {
+  setTimeout(() => process.exit(failed > 0 ? 1 : 0), 100);
+});
+
+// Force exit on idle: if no test events for 500ms, tests are done
+// but open handles are preventing stream end.
+const idle = setInterval(() => {
+  if (performance.now() - lastEvent > 500) {
+    clearInterval(idle);
+    process.exit(failed > 0 ? 1 : 0);
+  }
+}, 100);
+idle.unref();
+"#,
+    );
+
+    let mut cmd = Command::new("node");
+    cmd.arg(&wrapper_path)
+        .args(files)
+        .current_dir(cwd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    match cmd.status() {
+        Ok(status) => status.code().unwrap_or(EXIT_INTERNAL_ERROR),
+        Err(e) => {
+            eprintln!("error: failed to execute node: {e}");
+            eprintln!("hint: Is Node.js 18+ installed?");
+            EXIT_VALIDATION_ERROR
+        }
+    }
 }
 
 /// Run tests via Node's built-in test runner.

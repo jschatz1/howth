@@ -421,6 +421,15 @@ pub enum Request {
         cwd: String,
         /// Absolute paths to test files (.test.ts, .test.js, etc.).
         files: Vec<String>,
+        /// Optional setup file to run before tests (like mocha --require).
+        #[serde(default)]
+        setup: Option<String>,
+        /// Worker timeout in milliseconds (default: 120000).
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        /// Force exit after tests complete (like mocha --exit).
+        #[serde(default)]
+        force_exit: bool,
     },
 
     /// Watch for file changes and rebuild (v3.0).

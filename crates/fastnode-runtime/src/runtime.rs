@@ -303,8 +303,9 @@ extension!(
     ],
 );
 
-/// Bootstrap JavaScript code to set up globals like console, process, etc.
-const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
+/// V8 snapshot containing pre-initialized bootstrap globals (console, process, fetch, etc.).
+/// Created at build time by build.rs executing bootstrap.js into a JsRuntimeForSnapshot.
+static SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/SNAPSHOT.bin"));
 
 /// Print to stdout.
 #[op2(fast)]
@@ -1516,6 +1517,7 @@ fn run_worker_script(
             module_loader: Some(module_loader),
             extensions: vec![ext, napi_ext],
             create_params,
+            startup_snapshot: Some(SNAPSHOT),
             ..Default::default()
         };
 
@@ -1523,9 +1525,8 @@ fn run_worker_script(
         let mut runtime = JsRuntime::new(options);
         runtime.op_state().borrow_mut().put(HowthNapiPermissions);
 
-        // Execute bootstrap
-        let bootstrap_code = include_str!("bootstrap.js");
-        runtime.execute_script("<howth:bootstrap>", bootstrap_code)?;
+        // Set Error.stackTraceLimit post-snapshot
+        runtime.execute_script("<howth:post-snapshot>", "Error.stackTraceLimit = 50")?;
 
         // Read and execute the worker script
         let _script_content = std::fs::read_to_string(filename)?;
@@ -6106,6 +6107,7 @@ impl Runtime {
                 deno_napi::deno_napi::init_ops::<HowthNapiPermissions>(),
             ],
             module_loader: Some(module_loader),
+            startup_snapshot: Some(SNAPSHOT),
             ..Default::default()
         });
 
@@ -6118,10 +6120,14 @@ impl Runtime {
                 .map_err(|e| RuntimeError::Init(format!("Failed to set cwd: {}", e)))?;
         }
 
-        // Execute bootstrap code to set up globals
+        // Set Error.stackTraceLimit post-snapshot (can't be set during snapshot
+        // creation because it conflicts with V8's Genesis::InstallSpecialObjects)
         js_runtime
-            .execute_script("<howth:bootstrap>", BOOTSTRAP_JS.to_string())
-            .map_err(|e| RuntimeError::Init(format!("Bootstrap failed: {}", e)))?;
+            .execute_script(
+                "<howth:post-snapshot>",
+                "Error.stackTraceLimit = 50".to_string(),
+            )
+            .map_err(|e| RuntimeError::Init(format!("Post-snapshot init failed: {}", e)))?;
 
         Ok(Self { js_runtime, state })
     }
