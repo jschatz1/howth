@@ -592,16 +592,17 @@ for (const file of files) {
   }
 }
 
-// Track test results via node:test diagnostics
-let testFailed = 0;
-let testCount = 0;
-process.on('test:fail', () => { testFailed++; testCount++; });
-process.on('test:pass', () => { testCount++; });
-
-// Wait for node:test to finish: it emits a diagnostic with the summary
-// when all top-level tests complete. Use 'beforeExit' as the signal.
-process.on('beforeExit', () => {
-  process.exit((importFailed > 0 || testFailed > 0) ? 1 : 0);
+// Track top-level test completion and force exit when done.
+// beforeExit won't fire if open handles exist (Express servers, DB connections),
+// which is the whole reason --exit exists. Instead, listen for node:test's
+// diagnostic summary message that signals all tests finished.
+let testFailed = false;
+process.on('test:fail', (e) => { if (e.data.nesting === 0) testFailed = true; });
+process.on('test:diagnostic', (e) => {
+  // node:test emits "tests N" as a diagnostic when the run is complete
+  if (e.data.nesting === 0 && e.data.message.startsWith('tests ')) {
+    process.exit((importFailed > 0 || testFailed) ? 1 : 0);
+  }
 });
 "#,
     );
