@@ -15,9 +15,9 @@
 #
 # Tags: :latest, :0.5.17, :0.5
 
-FROM node:20-bookworm-slim
+FROM ubuntu:24.04
 
-# Install common CI dependencies
+# Install Node.js 20 and common CI dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       git \
@@ -26,6 +26,8 @@ RUN apt-get update && \
       python3 \
       make \
       g++ \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm
