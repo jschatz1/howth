@@ -561,10 +561,11 @@ import { pathToFileURL } from 'node:url';
 let registered = 0;
 let completed = 0;
 let failed = false;
-let allImported = false;
+let totalExpected = 0; // snapshot after all imports
 
 function checkDone() {
-  if (allImported && registered > 0 && completed >= registered) {
+  // Only check after we know the final count
+  if (totalExpected > 0 && completed >= totalExpected) {
     // Let node:test's reporter flush output before exiting
     setTimeout(() => process.exit(failed ? 1 : 0), 100);
   }
@@ -619,11 +620,14 @@ for (const file of files) {
   }
 }
 
-allImported = true;
-checkDone();
-// Fallback: if no it() calls were registered (empty test files), exit
-if (registered === 0) {
+// Now that all files are imported, snapshot the final registration count.
+// Tests may have already started completing during imports, but we only
+// start checking completion against the final total from this point.
+totalExpected = registered;
+if (totalExpected === 0) {
   setTimeout(() => process.exit(failed ? 1 : 0), 500);
+} else {
+  checkDone();
 }
 "#,
     );

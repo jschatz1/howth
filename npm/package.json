@@ -1,6 +1,6 @@
 {
   "name": "howth",
-  "version": "0.5.27",
+  "version": "0.5.28",
   "description": "A fast JavaScript runtime",
   "license": "MIT",
   "repository": {
