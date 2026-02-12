@@ -580,22 +580,29 @@ globalThis.afterEach = afterEach;
 
 // Import each test file sequentially — global describe/it register with node:test
 const files = process.argv.slice(2).map(f => resolve(f));
-let failed = 0;
+let importFailed = 0;
 
 for (const file of files) {
   try {
     await import(pathToFileURL(file).href);
   } catch (err) {
-    failed++;
+    importFailed++;
     console.error(`\n✖ ${file}`);
     console.error(err);
   }
 }
 
-// Give node:test a tick to finish running queued tests, then force exit
-setTimeout(() => {
-  process.exit(failed > 0 ? 1 : 0);
-}, 2000);
+// Track test results via node:test diagnostics
+let testFailed = 0;
+let testCount = 0;
+process.on('test:fail', () => { testFailed++; testCount++; });
+process.on('test:pass', () => { testCount++; });
+
+// Wait for node:test to finish: it emits a diagnostic with the summary
+// when all top-level tests complete. Use 'beforeExit' as the signal.
+process.on('beforeExit', () => {
+  process.exit((importFailed > 0 || testFailed > 0) ? 1 : 0);
+});
 "#,
     );
 
