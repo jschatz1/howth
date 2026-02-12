@@ -551,8 +551,31 @@ fn run_node_tests_force_exit(cwd: &Path, files: &[PathBuf]) -> i32 {
     let _ = std::fs::write(
         &wrapper_path,
         r#"
-import { run } from 'node:test';
+import { run, describe as _describe, it as _it, before, after, beforeEach, afterEach } from 'node:test';
 import { resolve } from 'node:path';
+
+// Inject mocha-compatible globals so tests using global describe/it work
+function chainable(result) {
+  const c = { timeout() { return c; }, slow() { return c; }, retries() { return c; } };
+  if (result && typeof result.then === 'function') { c.then = result.then.bind(result); c.catch = result.catch.bind(result); }
+  return c;
+}
+const mochaCtx = { timeout() { return mochaCtx; }, slow() { return mochaCtx; }, retries() { return mochaCtx; }, skip() {} };
+function bindCtx(fn) { if (!fn) return fn; return function(...a) { return fn.call(mochaCtx, ...a); }; }
+function describe(name, fn) { return chainable(_describe(name, bindCtx(fn))); }
+describe.only = function(name, fn) { return chainable(_describe(name, { only: true }, bindCtx(fn))); };
+describe.skip = function(name, fn) { return chainable(_describe(name, { skip: true }, bindCtx(fn))); };
+function it(name, fn) { return chainable(_it(name, bindCtx(fn))); }
+it.only = function(name, fn) { return chainable(_it(name, { only: true }, bindCtx(fn))); };
+it.skip = function(name, fn) { return chainable(_it(name, { skip: true }, bindCtx(fn))); };
+globalThis.describe = describe;
+globalThis.context = describe;
+globalThis.it = it;
+globalThis.specify = it;
+globalThis.before = before;
+globalThis.after = after;
+globalThis.beforeEach = beforeEach;
+globalThis.afterEach = afterEach;
 
 const files = process.argv.slice(2).map(f => resolve(f));
 const stream = run({ files, concurrency: false, isolation: 'none' });
