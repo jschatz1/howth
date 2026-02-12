@@ -620,10 +620,13 @@ const totalExpected = registered;
 if (totalExpected === 0) {
   // No it() calls went through our wrapper — tests use node:test directly.
   // Fall back to idle detection: if no new output for 2s, assume done.
+  // Also scan TAP output for "not ok" to detect failures.
   let lastActivity = Date.now();
   const origWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = function(...args) {
     lastActivity = Date.now();
+    const str = typeof args[0] === 'string' ? args[0] : '';
+    if (str.match(/^not ok /m)) failed = true;
     return origWrite(...args);
   };
   const idle = setInterval(() => {
