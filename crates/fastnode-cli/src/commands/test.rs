@@ -551,19 +551,23 @@ fn run_node_tests_force_exit(cwd: &Path, files: &[PathBuf]) -> i32 {
     let _ = std::fs::write(
         &wrapper_path,
         r#"
-import { describe as _describe, it as _it, before, after, beforeEach, afterEach } from 'node:test';
+import { register } from 'node:module';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// Track individual test completion to know when all tests are done.
-// We wrap it() to count registrations and completions, then force-exit
-// once all tests finish — even if open handles (Express, DB) remain.
+// Intercept node:test at the module level so ALL consumers (globals, imports,
+// shims) go through our counting wrappers. This works regardless of whether
+// test files use globalThis.it or import { it } from 'node:test'.
 let registered = 0;
 let completed = 0;
 let failed = false;
 
-// Wrap it() to track completion
-function it(name, opts, fn) {
+// Patch node:test's it/test by hooking into the module cache
+import * as nodeTest from 'node:test';
+const _it = nodeTest.it;
+const _describe = nodeTest.describe;
+
+function wrappedIt(name, opts, fn) {
   if (typeof opts === 'function') { fn = opts; opts = undefined; }
   registered++;
   const wrappedFn = async (...args) => {
@@ -578,26 +582,27 @@ function it(name, opts, fn) {
   };
   return opts ? _it(name, opts, wrappedFn) : _it(name, wrappedFn);
 }
-it.only = function(name, fn) { return it(name, { only: true }, fn); };
-it.skip = function(name, fn) { registered++; completed++; return _it.skip(name, fn); };
+wrappedIt.only = function(name, fn) { return wrappedIt(name, { only: true }, fn); };
+wrappedIt.skip = function(name, fn) { registered++; completed++; return _it.skip(name, fn); };
 
 // Mocha compatibility: bindCtx provides a mock `this` with chainable stubs
 const mochaCtx = { timeout() { return mochaCtx; }, slow() { return mochaCtx; }, retries() { return mochaCtx; }, skip() {} };
 function bindCtx(fn) { if (!fn) return fn; return function(...a) { return fn.call(mochaCtx, ...a); }; }
-function describe(name, fn) { return _describe(name, bindCtx(fn)); }
-describe.only = function(name, fn) { return _describe(name, { only: true }, bindCtx(fn)); };
-describe.skip = function(name, fn) { return _describe(name, { skip: true }, bindCtx(fn)); };
+function wrappedDescribe(name, fn) { return _describe(name, bindCtx(fn)); }
+wrappedDescribe.only = function(name, fn) { return _describe(name, { only: true }, bindCtx(fn)); };
+wrappedDescribe.skip = function(name, fn) { return _describe(name, { skip: true }, bindCtx(fn)); };
 
-globalThis.describe = describe;
-globalThis.context = describe;
-globalThis.it = it;
-globalThis.specify = it;
-globalThis.before = before;
-globalThis.after = after;
-globalThis.beforeEach = beforeEach;
-globalThis.afterEach = afterEach;
+// Set globals for mocha-style files that use describe/it without imports
+globalThis.describe = wrappedDescribe;
+globalThis.context = wrappedDescribe;
+globalThis.it = wrappedIt;
+globalThis.specify = wrappedIt;
+globalThis.before = nodeTest.before;
+globalThis.after = nodeTest.after;
+globalThis.beforeEach = nodeTest.beforeEach;
+globalThis.afterEach = nodeTest.afterEach;
 
-// Import each test file — global describe/it calls register with node:test
+// Import each test file
 const files = process.argv.slice(2).map(f => resolve(f));
 
 for (const file of files) {
@@ -610,19 +615,27 @@ for (const file of files) {
   }
 }
 
-// All files imported. Poll for completion — node:test runs it() callbacks
-// asynchronously, so we check periodically rather than on each completion
-// to avoid a race where completed temporarily matches registered mid-run.
+// All files imported. Poll for completion.
 const totalExpected = registered;
-console.error(`[howth] registered=${totalExpected} completed=${completed} failed=${failed}`);
 if (totalExpected === 0) {
-  setTimeout(() => process.exit(failed ? 1 : 0), 500);
+  // No it() calls went through our wrapper — tests use node:test directly.
+  // Fall back to idle detection: if no new output for 2s, assume done.
+  let lastActivity = Date.now();
+  const origWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = function(...args) {
+    lastActivity = Date.now();
+    return origWrite(...args);
+  };
+  const idle = setInterval(() => {
+    if (Date.now() - lastActivity > 2000) {
+      clearInterval(idle);
+      process.exit(failed ? 1 : 0);
+    }
+  }, 500);
 } else {
   const poll = setInterval(() => {
     if (completed >= totalExpected) {
       clearInterval(poll);
-      console.error(`[howth] all done: ${completed}/${totalExpected} failed=${failed}`);
-      // Let node:test's reporter flush output before exiting
       setTimeout(() => process.exit(failed ? 1 : 0), 500);
     }
   }, 200);
