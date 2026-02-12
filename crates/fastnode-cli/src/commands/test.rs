@@ -542,12 +542,15 @@ const files = process.argv.slice(2).map(f => resolve(f));
 const stream = run({ files, concurrency: false, isolation: 'none' });
 
 let failed = 0;
+let started = false;
 let lastEvent = performance.now();
 
-stream.on('test:pass', () => { lastEvent = performance.now(); });
-stream.on('test:fail', () => { failed++; lastEvent = performance.now(); });
-stream.on('test:skip', () => { lastEvent = performance.now(); });
-stream.on('test:diagnostic', () => { lastEvent = performance.now(); });
+function onEvent() { started = true; lastEvent = performance.now(); }
+stream.on('test:pass', onEvent);
+stream.on('test:fail', () => { failed++; onEvent(); });
+stream.on('test:skip', onEvent);
+stream.on('test:diagnostic', onEvent);
+stream.on('test:start', onEvent);
 
 // Pretty output via spec reporter (Node 20+), fall back to TAP
 try {
@@ -566,14 +569,14 @@ stream.on('end', () => {
   setTimeout(() => process.exit(failed > 0 ? 1 : 0), 100);
 });
 
-// Force exit on idle: if no test events for 500ms, tests are done
-// but open handles are preventing stream end.
+// Force exit on idle: only start checking after first test event,
+// then exit if no events for 2s (handles preventing stream end).
 const idle = setInterval(() => {
-  if (performance.now() - lastEvent > 500) {
+  if (started && performance.now() - lastEvent > 2000) {
     clearInterval(idle);
     process.exit(failed > 0 ? 1 : 0);
   }
-}, 100);
+}, 200);
 idle.unref();
 "#,
     );
