@@ -561,15 +561,6 @@ import { pathToFileURL } from 'node:url';
 let registered = 0;
 let completed = 0;
 let failed = false;
-let totalExpected = 0; // snapshot after all imports
-
-function checkDone() {
-  // Only check after we know the final count
-  if (totalExpected > 0 && completed >= totalExpected) {
-    // Let node:test's reporter flush output before exiting
-    setTimeout(() => process.exit(failed ? 1 : 0), 100);
-  }
-}
 
 // Wrap it() to track completion
 function it(name, opts, fn) {
@@ -583,7 +574,6 @@ function it(name, opts, fn) {
       throw e;
     } finally {
       completed++;
-      checkDone();
     }
   };
   return opts ? _it(name, opts, wrappedFn) : _it(name, wrappedFn);
@@ -620,14 +610,22 @@ for (const file of files) {
   }
 }
 
-// Now that all files are imported, snapshot the final registration count.
-// Tests may have already started completing during imports, but we only
-// start checking completion against the final total from this point.
-totalExpected = registered;
+// All files imported. Poll for completion — node:test runs it() callbacks
+// asynchronously, so we check periodically rather than on each completion
+// to avoid a race where completed temporarily matches registered mid-run.
+const totalExpected = registered;
+console.error(`[howth] registered=${totalExpected} completed=${completed} failed=${failed}`);
 if (totalExpected === 0) {
   setTimeout(() => process.exit(failed ? 1 : 0), 500);
 } else {
-  checkDone();
+  const poll = setInterval(() => {
+    if (completed >= totalExpected) {
+      clearInterval(poll);
+      console.error(`[howth] all done: ${completed}/${totalExpected} failed=${failed}`);
+      // Let node:test's reporter flush output before exiting
+      setTimeout(() => process.exit(failed ? 1 : 0), 500);
+    }
+  }, 200);
 }
 "#,
     );
