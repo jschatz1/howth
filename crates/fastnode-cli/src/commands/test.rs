@@ -555,20 +555,48 @@ import { describe as _describe, it as _it, before, after, beforeEach, afterEach 
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// Inject mocha-compatible globals so tests using global describe/it work
-function chainable(result) {
-  const c = { timeout() { return c; }, slow() { return c; }, retries() { return c; } };
-  if (result && typeof result.then === 'function') { c.then = result.then.bind(result); c.catch = result.catch.bind(result); }
-  return c;
+// Track individual test completion to know when all tests are done.
+// We wrap it() to count registrations and completions, then force-exit
+// once all tests finish — even if open handles (Express, DB) remain.
+let registered = 0;
+let completed = 0;
+let failed = false;
+let allImported = false;
+
+function checkDone() {
+  if (allImported && registered > 0 && completed >= registered) {
+    // Let node:test's reporter flush output before exiting
+    setTimeout(() => process.exit(failed ? 1 : 0), 100);
+  }
 }
+
+// Wrap it() to track completion
+function it(name, opts, fn) {
+  if (typeof opts === 'function') { fn = opts; opts = undefined; }
+  registered++;
+  const wrappedFn = async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (e) {
+      failed = true;
+      throw e;
+    } finally {
+      completed++;
+      checkDone();
+    }
+  };
+  return opts ? _it(name, opts, wrappedFn) : _it(name, wrappedFn);
+}
+it.only = function(name, fn) { return it(name, { only: true }, fn); };
+it.skip = function(name, fn) { registered++; completed++; return _it.skip(name, fn); };
+
+// Mocha compatibility: bindCtx provides a mock `this` with chainable stubs
 const mochaCtx = { timeout() { return mochaCtx; }, slow() { return mochaCtx; }, retries() { return mochaCtx; }, skip() {} };
 function bindCtx(fn) { if (!fn) return fn; return function(...a) { return fn.call(mochaCtx, ...a); }; }
-function describe(name, fn) { return chainable(_describe(name, bindCtx(fn))); }
-describe.only = function(name, fn) { return chainable(_describe(name, { only: true }, bindCtx(fn))); };
-describe.skip = function(name, fn) { return chainable(_describe(name, { skip: true }, bindCtx(fn))); };
-function it(name, fn) { return chainable(_it(name, bindCtx(fn))); }
-it.only = function(name, fn) { return chainable(_it(name, { only: true }, bindCtx(fn))); };
-it.skip = function(name, fn) { return chainable(_it(name, { skip: true }, bindCtx(fn))); };
+function describe(name, fn) { return _describe(name, bindCtx(fn)); }
+describe.only = function(name, fn) { return _describe(name, { only: true }, bindCtx(fn)); };
+describe.skip = function(name, fn) { return _describe(name, { skip: true }, bindCtx(fn)); };
+
 globalThis.describe = describe;
 globalThis.context = describe;
 globalThis.it = it;
@@ -578,32 +606,25 @@ globalThis.after = after;
 globalThis.beforeEach = beforeEach;
 globalThis.afterEach = afterEach;
 
-// Import each test file sequentially — global describe/it register with node:test
+// Import each test file — global describe/it calls register with node:test
 const files = process.argv.slice(2).map(f => resolve(f));
-let importFailed = 0;
 
 for (const file of files) {
   try {
     await import(pathToFileURL(file).href);
   } catch (err) {
-    importFailed++;
+    failed = true;
     console.error(`\n✖ ${file}`);
     console.error(err);
   }
 }
 
-// Track top-level test completion and force exit when done.
-// beforeExit won't fire if open handles exist (Express servers, DB connections),
-// which is the whole reason --exit exists. Instead, listen for node:test's
-// diagnostic summary message that signals all tests finished.
-let testFailed = false;
-process.on('test:fail', (e) => { if (e.data.nesting === 0) testFailed = true; });
-process.on('test:diagnostic', (e) => {
-  // node:test emits "tests N" as a diagnostic when the run is complete
-  if (e.data.nesting === 0 && e.data.message.startsWith('tests ')) {
-    process.exit((importFailed > 0 || testFailed) ? 1 : 0);
-  }
-});
+allImported = true;
+checkDone();
+// Fallback: if no it() calls were registered (empty test files), exit
+if (registered === 0) {
+  setTimeout(() => process.exit(failed ? 1 : 0), 500);
+}
 "#,
     );
 
