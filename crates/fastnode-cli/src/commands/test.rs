@@ -551,8 +551,8 @@ fn run_node_tests_force_exit(cwd: &Path, files: &[PathBuf]) -> i32 {
     let _ = std::fs::write(
         &wrapper_path,
         r#"
-import { run, describe as _describe, it as _it, before, after, beforeEach, afterEach } from 'node:test';
-import { resolve } from 'node:path';
+import { describe as _describe, it as _it, before, after, beforeEach, afterEach } from 'node:test';
+import { resolve, pathToFileURL } from 'node:path';
 
 // Inject mocha-compatible globals so tests using global describe/it work
 function chainable(result) {
@@ -577,46 +577,24 @@ globalThis.after = after;
 globalThis.beforeEach = beforeEach;
 globalThis.afterEach = afterEach;
 
+// Import each test file sequentially — global describe/it register with node:test
 const files = process.argv.slice(2).map(f => resolve(f));
-const stream = run({ files, concurrency: false, isolation: 'none' });
-
 let failed = 0;
-let started = false;
-let lastEvent = performance.now();
 
-function onEvent() { started = true; lastEvent = performance.now(); }
-stream.on('test:pass', onEvent);
-stream.on('test:fail', () => { failed++; onEvent(); });
-stream.on('test:skip', onEvent);
-stream.on('test:diagnostic', onEvent);
-stream.on('test:start', onEvent);
-
-// Pretty output via spec reporter (Node 20+), fall back to TAP
-try {
-  const { spec } = await import('node:test/reporters');
-  if (typeof stream.compose === 'function') {
-    stream.compose(spec).pipe(process.stdout);
-  } else {
-    stream.pipe(process.stdout);
+for (const file of files) {
+  try {
+    await import(pathToFileURL(file).href);
+  } catch (err) {
+    failed++;
+    console.error(`\n✖ ${file}`);
+    console.error(err);
   }
-} catch {
-  stream.pipe(process.stdout);
 }
 
-// Normal stream end (all handles closed cleanly)
-stream.on('end', () => {
-  setTimeout(() => process.exit(failed > 0 ? 1 : 0), 100);
-});
-
-// Force exit on idle: only start checking after first test event,
-// then exit if no events for 2s (handles preventing stream end).
-const idle = setInterval(() => {
-  if (started && performance.now() - lastEvent > 2000) {
-    clearInterval(idle);
-    process.exit(failed > 0 ? 1 : 0);
-  }
-}, 200);
-idle.unref();
+// Give node:test a tick to finish running queued tests, then force exit
+setTimeout(() => {
+  process.exit(failed > 0 ? 1 : 0);
+}, 2000);
 "#,
     );
 
