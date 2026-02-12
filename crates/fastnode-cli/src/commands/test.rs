@@ -347,8 +347,18 @@ export default describe;
     let mut temp_files: Vec<PathBuf> = Vec::new();
     for js_file in &js_files {
         if let Ok(source) = std::fs::read_to_string(js_file) {
-            if source.contains("howth:mocha") {
-                let rewritten = source.replace("howth:mocha", &shim_str);
+            let needs_rewrite = source.contains("howth:mocha")
+                || source.contains("from 'mocha'")
+                || source.contains("from \"mocha\"")
+                || source.contains("require('mocha')")
+                || source.contains("require(\"mocha\")");
+            if needs_rewrite {
+                let rewritten = source
+                    .replace("howth:mocha", &shim_str)
+                    .replace("from 'mocha'", &format!("from '{shim_str}'"))
+                    .replace("from \"mocha\"", &format!("from \"{shim_str}\""))
+                    .replace("require('mocha')", &format!("require('{shim_str}')"))
+                    .replace("require(\"mocha\")", &format!("require(\"{shim_str}\")"));
                 let dir = js_file.parent().unwrap_or(cwd);
                 let stem = js_file
                     .file_stem()
@@ -516,9 +526,15 @@ fn transpile_test_file(path: &Path, mocha_shim: Option<&str>) -> Result<PathBuf>
         .transpile(&spec, &source)
         .map_err(|e| miette::miette!("Transpilation failed: {}", e))?;
 
-    // Rewrite howth:mocha to shim (or node:test) since the fallback path uses Node.js
+    // Rewrite mocha imports to shim (or node:test) since the fallback path uses Node.js
     let replacement = mocha_shim.unwrap_or("node:test");
-    let code = output.code.replace("howth:mocha", replacement);
+    let code = output
+        .code
+        .replace("howth:mocha", replacement)
+        .replace("from 'mocha'", &format!("from '{replacement}'"))
+        .replace("from \"mocha\"", &format!("from \"{replacement}\""))
+        .replace("require('mocha')", &format!("require('{replacement}')"))
+        .replace("require(\"mocha\")", &format!("require(\"{replacement}\")"));
     std::fs::write(&output_path, &code)
         .map_err(|e| miette::miette!("Failed to write transpiled file: {}", e))?;
 
