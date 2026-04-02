@@ -1,0 +1,16 @@
+# Kai module definitions
+# This file maps file paths to logical modules for better intent generation.
+# Commit this file to version control to share with your team.
+#
+# Example:
+#   modules:
+#     - name: Auth
+#       paths:
+#         - src/auth/**
+#         - lib/session.js
+#     - name: API
+#       paths:
+#         - src/routes/**
+#         - src/controllers/**
+
+modules: []

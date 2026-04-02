@@ -28,3 +28,4 @@ node_modules/
 
 # NoGlue - secrets are now in your vault
 .noglue/
+.kai
