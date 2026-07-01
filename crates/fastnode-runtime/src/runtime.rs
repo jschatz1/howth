@@ -117,6 +117,8 @@ pub struct RuntimeOptions {
     pub args: Option<Vec<String>>,
     /// Virtual modules served from memory instead of disk.
     pub virtual_modules: Option<crate::module_loader::VirtualModuleMap>,
+    /// Capability permissions. `None` = allow-all (Node-compatible default).
+    pub permissions: Option<crate::permissions::Permissions>,
 }
 
 /// Thread-local storage for script arguments (set before runtime creation).
@@ -325,6 +327,7 @@ fn op_howth_print_error(#[string] msg: &str) {
 #[op2]
 #[string]
 fn op_howth_read_file(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
+    crate::permissions::get().check_read(path)?;
     let bytes = std::fs::read(path).map_err(|e| format_fs_error(e, "open", path))?;
     match String::from_utf8(bytes) {
         Ok(s) => Ok(s),
@@ -338,12 +341,17 @@ fn op_howth_write_file(
     #[string] path: &str,
     #[string] contents: &str,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     std::fs::write(path, contents).map_err(|e| format_fs_error(e, "open", path))
 }
 
 /// Check if a file or directory exists.
 #[op2(fast)]
 fn op_howth_fs_exists(#[string] path: &str) -> bool {
+    // Probing existence is a read; a denied read reports "does not exist".
+    if crate::permissions::get().check_read(path).is_err() {
+        return false;
+    }
     std::path::Path::new(path).exists()
 }
 
@@ -353,6 +361,7 @@ fn op_howth_fs_mkdir(
     #[string] path: &str,
     recursive: bool,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     if recursive {
         std::fs::create_dir_all(path).map_err(|e| format_fs_error(e, "mkdir", path))
     } else {
@@ -373,6 +382,7 @@ pub struct DirEntry {
 #[op2]
 #[serde]
 fn op_howth_fs_readdir(#[string] path: &str) -> Result<Vec<DirEntry>, deno_core::error::AnyError> {
+    crate::permissions::get().check_read(path)?;
     let mut raw_entries: Vec<_> = std::fs::read_dir(path)
         .map_err(|e| format_fs_error(e, "scandir", path))?
         .filter_map(|entry| entry.ok())
@@ -432,6 +442,7 @@ fn op_howth_fs_stat(
     #[string] path: &str,
     follow_symlinks: bool,
 ) -> Result<FileStat, deno_core::error::AnyError> {
+    crate::permissions::get().check_read(path)?;
     let syscall = if follow_symlinks { "stat" } else { "lstat" };
     let metadata = if follow_symlinks {
         std::fs::metadata(path).map_err(|e| format_fs_error(e, syscall, path))?
@@ -500,6 +511,7 @@ fn op_howth_fs_stat(
 /// Delete a file.
 #[op2(fast)]
 fn op_howth_fs_unlink(#[string] path: &str) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     std::fs::remove_file(path).map_err(|e| format_fs_error(e, "unlink", path))
 }
 
@@ -509,6 +521,7 @@ fn op_howth_fs_truncate(
     #[string] path: &str,
     #[bigint] len: u64,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     let file = std::fs::OpenOptions::new()
         .write(true)
         .open(path)
@@ -523,6 +536,7 @@ fn op_howth_fs_rmdir(
     #[string] path: &str,
     recursive: bool,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     if recursive {
         std::fs::remove_dir_all(path).map_err(|e| format_fs_error(e, "rmdir", path))
     } else {
@@ -536,6 +550,8 @@ fn op_howth_fs_rename(
     #[string] old_path: &str,
     #[string] new_path: &str,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(old_path)?;
+    crate::permissions::get().check_write(new_path)?;
     std::fs::rename(old_path, new_path).map_err(|e| format_fs_error(e, "rename", old_path))
 }
 
@@ -545,6 +561,8 @@ fn op_howth_fs_copy(
     #[string] src: &str,
     #[string] dest: &str,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_read(src)?;
+    crate::permissions::get().check_write(dest)?;
     std::fs::copy(src, dest)?;
     Ok(())
 }
@@ -555,6 +573,7 @@ fn op_howth_fs_append(
     #[string] path: &str,
     #[string] contents: &str,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -568,6 +587,7 @@ fn op_howth_fs_append(
 #[op2]
 #[string]
 fn op_howth_fs_read_bytes(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
+    crate::permissions::get().check_read(path)?;
     let bytes = std::fs::read(path)?;
     // Return as base64 for efficient transfer
     Ok(base64_encode(&bytes))
@@ -579,6 +599,7 @@ fn op_howth_fs_write_bytes(
     #[string] path: &str,
     #[string] base64_data: &str,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     let bytes = base64_decode(base64_data)?;
     std::fs::write(path, bytes)?;
     Ok(())
@@ -588,6 +609,7 @@ fn op_howth_fs_write_bytes(
 #[op2]
 #[string]
 fn op_howth_fs_realpath(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
+    crate::permissions::get().check_read(path)?;
     dunce::canonicalize(path)
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| e.into())
@@ -597,6 +619,7 @@ fn op_howth_fs_realpath(#[string] path: &str) -> Result<String, deno_core::error
 #[op2]
 #[string]
 fn op_howth_fs_readlink(#[string] path: &str) -> Result<String, deno_core::error::AnyError> {
+    crate::permissions::get().check_read(path)?;
     std::fs::read_link(path)
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| format_fs_error(e, "readlink", path))
@@ -609,6 +632,7 @@ fn op_howth_fs_symlink(
     #[string] path: &str,
     #[string] link_type: &str,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     #[cfg(unix)]
     {
         let _ = link_type; // Suppress unused variable warning on Unix
@@ -633,6 +657,7 @@ fn op_howth_fs_chown(
     uid: u32,
     gid: u32,
 ) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -659,6 +684,7 @@ fn op_howth_fs_chown(
 /// Change file permissions (Unix only).
 #[op2(fast)]
 fn op_howth_fs_chmod(#[string] path: &str, mode: u32) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_write(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -678,6 +704,7 @@ fn op_howth_fs_chmod(#[string] path: &str, mode: u32) -> Result<(), deno_core::e
 /// Check file access permissions.
 #[op2(fast)]
 fn op_howth_fs_access(#[string] path: &str, mode: u32) -> Result<(), deno_core::error::AnyError> {
+    crate::permissions::get().check_read(path)?;
     let path = std::path::Path::new(path);
 
     // Mode flags: 0=exists, 1=execute, 2=write, 4=read
@@ -730,6 +757,23 @@ pub struct FileOpenResult {
 #[serde]
 fn op_howth_fs_open_fd(#[string] path: &str, #[string] flags: &str, mode: u32) -> FileOpenResult {
     use std::fs::OpenOptions;
+
+    // Any write/append/create/update flag needs write permission; plain reads need read.
+    let needs_write = matches!(
+        flags,
+        "r+" | "rs+" | "w" | "w+" | "wx+" | "a" | "a+" | "ax+"
+    );
+    let permit = if needs_write {
+        crate::permissions::get().check_write(path)
+    } else {
+        crate::permissions::get().check_read(path)
+    };
+    if let Err(e) = permit {
+        return FileOpenResult {
+            fd: 0,
+            error: Some(e.to_string()),
+        };
+    }
 
     let mut opts = OpenOptions::new();
 
@@ -1865,6 +1909,7 @@ async fn op_howth_dns_lookup(
     #[string] hostname: String,
     family: Option<u8>,
 ) -> Result<DnsLookupResult, deno_core::error::AnyError> {
+    crate::permissions::get().check_net_host(&hostname)?;
     let resolver = get_resolver();
 
     let response = resolver
@@ -2208,6 +2253,15 @@ fn op_howth_spawn_sync(
 ) -> SpawnSyncResult {
     use std::process::{Command, Stdio};
 
+    if let Err(e) = crate::permissions::get().check_run(command) {
+        return SpawnSyncResult {
+            status: -1,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(e.to_string()),
+        };
+    }
+
     let opts = options.unwrap_or_default();
     let use_shell = opts.shell.unwrap_or(false);
 
@@ -2282,6 +2336,15 @@ fn op_howth_exec_sync(
     #[serde] options: Option<SpawnOptions>,
 ) -> SpawnSyncResult {
     use std::process::{Command, Stdio};
+
+    if let Err(e) = crate::permissions::get().check_run(command) {
+        return SpawnSyncResult {
+            status: -1,
+            stdout: String::new(),
+            stderr: String::new(),
+            error: Some(e.to_string()),
+        };
+    }
 
     let opts = options.unwrap_or_default();
 
@@ -2391,6 +2454,14 @@ async fn op_howth_spawn_async(
     #[serde] options: Option<SpawnOptions>,
 ) -> SpawnAsyncResult {
     use std::process::Stdio;
+
+    if let Err(e) = crate::permissions::get().check_run(&command) {
+        return SpawnAsyncResult {
+            id: 0,
+            pid: 0,
+            error: Some(e.to_string()),
+        };
+    }
 
     let opts = options.unwrap_or_default();
     let use_shell = opts.shell.unwrap_or(false);
@@ -2717,6 +2788,7 @@ fn op_howth_http_listen(
     port: u16,
     #[string] hostname: String,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    crate::permissions::get().check_net(&hostname, port)?;
     use http_body_util::BodyExt;
     use http_body_util::Full;
     use hyper::body::Bytes;
@@ -4843,6 +4915,7 @@ async fn op_howth_tcp_connect(
     #[string] host: String,
     port: u16,
 ) -> Result<serde_json::Value, deno_core::error::AnyError> {
+    crate::permissions::get().check_net(&host, port)?;
     let addr = format!("{}:{}", host, port);
     let stream = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {
         deno_core::error::AnyError::msg(format!("TCP connect failed ({}): {}", addr, e))
@@ -5014,6 +5087,7 @@ async fn op_howth_tls_connect(
     #[string] _alpn: Option<String>,
     _reject_unauthorized: Option<bool>,
 ) -> Result<TlsConnectResult, deno_core::error::AnyError> {
+    crate::permissions::get().check_net(&host, port)?;
     let addr = format!("{}:{}", host, port);
 
     // Establish TCP connection first
@@ -5268,12 +5342,20 @@ fn op_howth_arch() -> &'static str {
 #[op2]
 #[string]
 fn op_howth_env_get(#[string] key: &str) -> Option<String> {
+    // A denied env var reads as unset.
+    if crate::permissions::get().check_env(key).is_err() {
+        return None;
+    }
     std::env::var(key).ok()
 }
 
 /// Set environment variable.
 #[op2(fast)]
 fn op_howth_env_set(#[string] key: &str, #[string] value: &str) {
+    // Silently ignore writes to env vars outside the grant.
+    if crate::permissions::get().check_env(key).is_err() {
+        return;
+    }
     std::env::set_var(key, value);
 }
 
@@ -5314,6 +5396,26 @@ pub struct FetchOptions {
     pub body: Option<String>,
 }
 
+/// Extract the host from an HTTP(S) URL for permission checks, without pulling
+/// in a URL parser: strip the scheme, then take up to the first `/`, `?`, `#`,
+/// drop any `user@` prefix and `:port` suffix.
+fn fetch_url_host(url: &str) -> Option<String> {
+    let rest = url
+        .split_once("://")
+        .map_or(url, |(_scheme, rest)| rest);
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(rest);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
 /// Fetch a URL (synchronous via blocking client, exposed as async op).
 /// Uses reqwest::blocking to make HTTP requests.
 #[op2(async)]
@@ -5322,6 +5424,11 @@ async fn op_howth_fetch(
     #[string] url: String,
     #[serde] options: Option<FetchOptions>,
 ) -> Result<FetchResponse, deno_core::error::AnyError> {
+    // Gate network access on the URL's host (port is implied by scheme).
+    if let Some(host) = fetch_url_host(&url) {
+        crate::permissions::get().check_net_host(&host)?;
+    }
+
     // Use std::thread::spawn since tokio spawn_blocking doesn't work well with current_thread
     let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -6088,6 +6195,12 @@ impl Runtime {
         // Set script args if provided (for process.argv)
         if let Some(args) = options.args {
             let _ = SCRIPT_ARGS.set(args);
+        }
+
+        // Install capability permissions before any user code runs. Absent =
+        // allow-all (Node-compatible); a sandbox is opt-in via CLI flags.
+        if let Some(permissions) = options.permissions {
+            crate::permissions::init(permissions);
         }
 
         let cwd = options

@@ -52,6 +52,71 @@ struct Cli {
     command: Option<Commands>,
 }
 
+/// Capability flags for `howth run`. howth is allow-all by default (Node
+/// compatible); these opt into a sandbox or selectively revoke access.
+///
+/// For each capability, `--allow-X` with no value permits everything, and
+/// `--allow-X=a,b` restricts it to a comma-separated allowlist. `--deny-X`
+/// revokes it entirely (applied after any allow). Path capabilities match by
+/// prefix; net entries are `host` or `host:port`; env/run entries are exact.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct PermissionFlags {
+    /// Deny all capabilities by default; grant back with --allow-* flags.
+    #[arg(long, help_heading = "Permissions")]
+    pub sandbox: bool,
+
+    /// Allow filesystem reads (optionally restrict to =PATHS).
+    #[arg(long, value_name = "PATHS", num_args = 0..=1, default_missing_value = "", help_heading = "Permissions")]
+    pub allow_read: Option<String>,
+    /// Allow filesystem writes (optionally restrict to =PATHS).
+    #[arg(long, value_name = "PATHS", num_args = 0..=1, default_missing_value = "", help_heading = "Permissions")]
+    pub allow_write: Option<String>,
+    /// Allow network access (optionally restrict to =HOSTS, e.g. api.example.com:443).
+    #[arg(long, value_name = "HOSTS", num_args = 0..=1, default_missing_value = "", help_heading = "Permissions")]
+    pub allow_net: Option<String>,
+    /// Allow spawning subprocesses (optionally restrict to =CMDS).
+    #[arg(long, value_name = "CMDS", num_args = 0..=1, default_missing_value = "", help_heading = "Permissions")]
+    pub allow_run: Option<String>,
+    /// Allow environment access (optionally restrict to =VARS).
+    #[arg(long, value_name = "VARS", num_args = 0..=1, default_missing_value = "", help_heading = "Permissions")]
+    pub allow_env: Option<String>,
+
+    /// Deny all filesystem reads.
+    #[arg(long, help_heading = "Permissions")]
+    pub deny_read: bool,
+    /// Deny all filesystem writes.
+    #[arg(long, help_heading = "Permissions")]
+    pub deny_write: bool,
+    /// Deny all network access.
+    #[arg(long, help_heading = "Permissions")]
+    pub deny_net: bool,
+    /// Deny spawning subprocesses.
+    #[arg(long, help_heading = "Permissions")]
+    pub deny_run: bool,
+    /// Deny environment access.
+    #[arg(long, help_heading = "Permissions")]
+    pub deny_env: bool,
+}
+
+impl PermissionFlags {
+    /// True if any permission flag was set (so we can keep the zero-overhead
+    /// allow-all path when none are).
+    #[must_use]
+    pub fn any_set(&self) -> bool {
+        self.sandbox
+            || self.allow_read.is_some()
+            || self.allow_write.is_some()
+            || self.allow_net.is_some()
+            || self.allow_run.is_some()
+            || self.allow_env.is_some()
+            || self.deny_read
+            || self.deny_write
+            || self.deny_net
+            || self.deny_run
+            || self.deny_env
+    }
+}
+
 #[derive(clap::Subcommand, Debug)]
 enum Commands {
     /// Print version information
@@ -135,6 +200,9 @@ enum Commands {
         /// Run in LocalSet mode (HTTP + JS on same thread for max performance)
         #[arg(long)]
         local: bool,
+
+        #[command(flatten)]
+        permissions: PermissionFlags,
 
         /// Arguments to pass to the script (after --)
         #[arg(last = true)]
@@ -685,6 +753,7 @@ fn main() -> Result<()> {
                 false, // native
                 false, // node
                 false, // local
+                &PermissionFlags::default(),
                 Channel::Stable,
                 cli.json,
             );
@@ -748,6 +817,7 @@ fn main() -> Result<()> {
         native,
         node,
         local,
+        permissions,
         args,
     }) = &cli.command
     {
@@ -760,6 +830,7 @@ fn main() -> Result<()> {
             *native,
             *node,
             *local,
+            permissions,
             Channel::Stable,
             cli.json,
         );
@@ -1014,6 +1085,7 @@ fn main() -> Result<()> {
                     false, // native
                     false, // node
                     false, // local
+                    &PermissionFlags::default(),
                     Channel::Stable,
                     cli.json,
                 );
