@@ -23,9 +23,11 @@
 mod module_loader;
 pub mod napi;
 mod ops;
+pub mod permissions;
 mod runtime;
 
 pub use module_loader::{HowthModuleLoader, VirtualModuleMap};
+pub use permissions::Permissions;
 pub use runtime::{create_local_server_future, Runtime, RuntimeError, RuntimeOptions};
 
 /// Run a JavaScript file and return the exit code.

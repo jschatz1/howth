@@ -46,9 +46,19 @@ pub fn run(
     native: bool,
     node: bool,
     local: bool,
+    permissions: &crate::PermissionFlags,
     channel: Channel,
     json: bool,
 ) -> Result<()> {
+    // Permissions only apply to the native runtime path. Warn (rather than
+    // silently ignore) if a sandbox was requested for a path that can't enforce it.
+    if permissions.any_set() && (daemon || node) {
+        eprintln!(
+            "warning: permission flags (--sandbox/--allow-*/--deny-*) are ignored \
+             when running via {} — they apply to the native runtime only",
+            if daemon { "--daemon" } else { "--node" }
+        );
+    }
     // First, check if entry is a package.json script
     if let Some(script_cmd) = get_package_script(cwd, entry) {
         return run_script(cwd, entry, &script_cmd, args, json);
@@ -63,7 +73,7 @@ pub fn run(
         // --node forces Node.js subprocess
         // Otherwise use native (either explicitly via --native or by default)
         if !node {
-            return run_native(cwd, entry_path, args, local, json);
+            return run_native(cwd, entry_path, args, local, permissions, json);
         }
         // Fall through to Node.js execution
     }
@@ -163,11 +173,91 @@ fn run_script(
     std::process::exit(status.code().unwrap_or(1));
 }
 
+/// Parse a `--allow-X` value into a scope: empty (`--allow-X` with no value)
+/// means "all" (`None`); otherwise split the comma list into an allowlist.
+#[cfg(feature = "native-runtime")]
+fn parse_scope(value: &str) -> Option<Vec<String>> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(
+            value
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        )
+    }
+}
+
+/// Convert CLI permission flags into a runtime `Permissions` set. Returns `None`
+/// when no flag was given, preserving the zero-overhead allow-all default.
+///
+/// Precedence: base (`--sandbox` = deny-all, else allow-all) → `--allow-*`
+/// grants/restrictions → `--deny-*` revocations (deny always wins).
+#[cfg(feature = "native-runtime")]
+fn build_permissions(flags: &crate::PermissionFlags) -> Option<fastnode_runtime::Permissions> {
+    use fastnode_runtime::Permissions;
+
+    if !flags.any_set() {
+        return None;
+    }
+
+    let mut p = if flags.sandbox {
+        Permissions::sandboxed()
+    } else {
+        Permissions::allow_all()
+    };
+
+    if let Some(v) = &flags.allow_read {
+        p = p.allow_read(parse_scope(v));
+    }
+    if let Some(v) = &flags.allow_write {
+        p = p.allow_write(parse_scope(v));
+    }
+    if let Some(v) = &flags.allow_net {
+        p = p.allow_net(parse_scope(v));
+    }
+    if let Some(v) = &flags.allow_run {
+        p = p.allow_run(parse_scope(v));
+    }
+    if let Some(v) = &flags.allow_env {
+        p = p.allow_env(parse_scope(v));
+    }
+
+    if flags.deny_read {
+        p = p.deny_read();
+    }
+    if flags.deny_write {
+        p = p.deny_write();
+    }
+    if flags.deny_net {
+        p = p.deny_net();
+    }
+    if flags.deny_run {
+        p = p.deny_run();
+    }
+    if flags.deny_env {
+        p = p.deny_env();
+    }
+
+    Some(p)
+}
+
 /// Run using native V8 runtime (no Node.js subprocess).
 /// When `local` is true, runs within a LocalSet for same-thread HTTP handling.
 #[cfg(feature = "native-runtime")]
-fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool) -> Result<()> {
+fn run_native(
+    cwd: &Path,
+    entry: &Path,
+    args: &[String],
+    local: bool,
+    permissions: &crate::PermissionFlags,
+    json: bool,
+) -> Result<()> {
     use fastnode_runtime::{create_local_server_future, Runtime, RuntimeOptions};
+
+    let permissions = build_permissions(permissions);
 
     // Resolve entry path
     let entry_path = if entry.is_absolute() {
@@ -201,6 +291,7 @@ fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool
                 cwd: Some(cwd.to_path_buf()),
                 main_module: Some(entry_path.clone()),
                 args: Some(script_args),
+                permissions: permissions.clone(),
                 ..Default::default()
             })
             .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
@@ -238,6 +329,7 @@ fn run_native(cwd: &Path, entry: &Path, args: &[String], local: bool, json: bool
                 cwd: Some(cwd.to_path_buf()),
                 main_module: Some(entry_path.clone()),
                 args: Some(script_args),
+                permissions: permissions.clone(),
                 ..Default::default()
             })
             .map_err(|e| miette::miette!("Failed to create runtime: {}", e))?;
