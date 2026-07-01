@@ -11,7 +11,7 @@ use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 use serde_json::Value;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Exit code for validation errors.
@@ -50,15 +50,11 @@ pub fn run(
     channel: Channel,
     json: bool,
 ) -> Result<()> {
-    // Permissions only apply to the native runtime path. Warn (rather than
-    // silently ignore) if a sandbox was requested for a path that can't enforce it.
-    if permissions.any_set() && (daemon || node) {
-        eprintln!(
-            "warning: permission flags (--sandbox/--allow-*/--deny-*) are ignored \
-             when running via {} — they apply to the native runtime only",
-            if daemon { "--daemon" } else { "--node" }
-        );
-    }
+    // Enforcement differs by execution path:
+    //   - native runtime (run_native)  → howth op-level permission gates
+    //   - node subprocess (execute_plan) → OS-level sandbox around `node`
+    // The `--daemon` path only *plans* in the daemon and still executes locally,
+    // so it is covered by whichever local path runs below (no warning needed).
     // First, check if entry is a package.json script
     if let Some(script_cmd) = get_package_script(cwd, entry) {
         return run_script(cwd, entry, &script_cmd, args, json);
@@ -89,9 +85,9 @@ pub fn run(
     let _ = (native, node, local);
 
     if daemon {
-        run_via_daemon(cwd, entry_path, args, dry_run, channel, json)
+        run_via_daemon(cwd, entry_path, args, dry_run, permissions, channel, json)
     } else {
-        run_local(cwd, entry_path, args, dry_run, channel, json)
+        run_local(cwd, entry_path, args, dry_run, permissions, channel, json)
     }
 }
 
@@ -374,6 +370,7 @@ fn run_local(
     entry: &Path,
     args: &[String],
     dry_run: bool,
+    permissions: &crate::PermissionFlags,
     channel: Channel,
     json: bool,
 ) -> Result<()> {
@@ -390,7 +387,7 @@ fn run_local(
                 output_plan_local(&plan, json);
                 Ok(())
             } else {
-                execute_plan(&plan, cwd, json)
+                execute_plan(&plan, cwd, permissions, json)
             }
         }
         Err(e) => {
@@ -426,7 +423,12 @@ fn needs_transpilation(path: &Path) -> bool {
 }
 
 /// Execute the run plan by running the file with Node.
-fn execute_plan(plan: &RunPlanOutput, cwd: &Path, json: bool) -> Result<()> {
+fn execute_plan(
+    plan: &RunPlanOutput,
+    cwd: &Path,
+    permissions: &crate::PermissionFlags,
+    json: bool,
+) -> Result<()> {
     let resolved_entry = if let Some(entry) = &plan.resolved_entry {
         entry
     } else {
@@ -479,11 +481,13 @@ fn execute_plan(plan: &RunPlanOutput, cwd: &Path, json: bool) -> Result<()> {
         (entry_path.to_path_buf(), None)
     };
 
-    // Execute with Node
-    let mut cmd = Command::new("node");
-    cmd.arg(&file_to_run)
-        .args(&plan.args)
-        .current_dir(cwd)
+    // Execute with Node, applying an OS-level sandbox derived from the
+    // permission flags (env limits always; fs/net/run where the platform
+    // supports it). Resolve node's absolute path so the sandbox can exec it
+    // without relying on PATH.
+    let node_bin = which::which("node").unwrap_or_else(|_| PathBuf::from("node"));
+    let mut cmd = crate::sandbox::node_command(&node_bin, &file_to_run, &plan.args, cwd, permissions);
+    cmd.current_dir(cwd)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -532,6 +536,7 @@ fn run_via_daemon(
     entry: &Path,
     args: &[String],
     dry_run: bool,
+    permissions: &crate::PermissionFlags,
     channel: Channel,
     json: bool,
 ) -> Result<()> {
@@ -547,7 +552,9 @@ fn run_via_daemon(
         runtime.block_on(async { send_run_request(&endpoint, &entry_str, args, &cwd_str).await });
 
     match result {
-        Ok((response, _server_version)) => handle_daemon_response(response, cwd, dry_run, json),
+        Ok((response, _server_version)) => {
+            handle_daemon_response(response, cwd, dry_run, permissions, json)
+        }
         Err(e) => {
             let exit_code = EXIT_INTERNAL_ERROR;
             if json {
@@ -569,7 +576,13 @@ fn run_via_daemon(
 }
 
 /// Handle daemon response.
-fn handle_daemon_response(response: Response, cwd: &Path, dry_run: bool, json: bool) -> Result<()> {
+fn handle_daemon_response(
+    response: Response,
+    cwd: &Path,
+    dry_run: bool,
+    permissions: &crate::PermissionFlags,
+    json: bool,
+) -> Result<()> {
     match response {
         Response::RunPlan { plan } => {
             if dry_run {
@@ -590,7 +603,7 @@ fn handle_daemon_response(response: Response, cwd: &Path, dry_run: bool, json: b
                     resolved_imports: vec![],
                     resolver: Default::default(),
                 };
-                execute_plan(&local_plan, cwd, json)
+                execute_plan(&local_plan, cwd, permissions, json)
             }
         }
         Response::Error { code, message } => {

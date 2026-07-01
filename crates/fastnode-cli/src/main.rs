@@ -25,6 +25,7 @@
 
 mod commands;
 mod logging;
+mod sandbox;
 
 use clap::Parser;
 use fastnode_core::config::Channel;
