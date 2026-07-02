@@ -1,0 +1,62 @@
+# Kai review analysis. On a PR (which the control plane maps to a Kai "review"
+# event), this captures the change, analyzes it, and posts the Finding to the
+# control plane for the review inbox (atlas.kaicontext.com/<org>/<repo>/findings).
+#
+# Runs in the kai-ci toolbox image (kai + git + jq + curl). The runner injects
+# KAILAB_TOKEN + KAILAB_URL (so kai's LLM calls route through kailab -> OpenRouter,
+# like the TUI) plus the standard GITHUB_* vars.
+name: kai-review
+
+on:
+  review:
+    types: [opened, synchronize]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    container:
+      image: registry.kaicontext.com/kai-ci:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need base + head history to form the changeset
+
+      - name: Analyze the change and post the Finding
+        run: |
+          set -euo pipefail
+          PR="${GITHUB_HEAD_REF:-0}"
+          BASE="${GITHUB_BASE_REF:-main}"
+
+          # Authenticate kai to kailab so its LLM calls route through the proxy
+          # -> OpenRouter (same as the TUI). Token + URL come from the runner.
+          mkdir -p "$HOME/.kai"
+          jq -n --arg t "${KAILAB_TOKEN:-}" --arg u "${KAILAB_URL:-}" \
+            '{access_token:$t, server_url:$u}' > "$HOME/.kai/credentials.json"
+          chmod 600 "$HOME/.kai/credentials.json"
+
+          kai init >/dev/null 2>&1 || true
+
+          # Snapshot the base, then the PR head → @snap:prev / @snap:last.
+          git fetch --no-tags origin "$BASE" >/dev/null 2>&1 || true
+          git checkout -q "origin/$BASE" 2>/dev/null || git checkout -q "$BASE" 2>/dev/null || true
+          kai capture >/dev/null
+          git checkout -q "$GITHUB_SHA" 2>/dev/null || true
+          kai capture >/dev/null
+
+          # Open a review over the last two snapshots and analyze it.
+          REVIEW_ID="$(kai review open -m "PR #${PR}" 2>&1 | grep -oE 'kai-[0-9]+' | head -1)"
+          [ -n "$REVIEW_ID" ] || REVIEW_ID="$(kai review list 2>/dev/null | grep -oE 'kai-[0-9]+' | head -1)"
+          echo "review id: $REVIEW_ID"
+          kai review analyze "$REVIEW_ID" --format json > finding.json
+
+          # Ingest to the control plane's internal endpoint (in-cluster URL).
+          jq -n \
+            --arg repo "${GITHUB_REPOSITORY}" \
+            --arg pr "${PR}" \
+            --arg run "${GITHUB_RUN_ID}" \
+            --arg review "${REVIEW_ID}" \
+            --slurpfile finding finding.json \
+            '{repo_full_name:$repo, pr_number:($pr|tonumber? // 0), run_id:$run, review_id:$review, finding:$finding[0]}' \
+          | curl -fsS -X POST "${GITHUB_SERVER_URL}/-/analysis/findings" \
+              -H "Content-Type: application/json" \
+              --data @-
