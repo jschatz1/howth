@@ -44,8 +44,10 @@ jobs:
           kai capture >/dev/null
 
           # Open a review over the last two snapshots and analyze it.
-          REVIEW_ID="$(kai review open -m "PR #${PR}" 2>&1 | grep -oE 'kai-[0-9]+' | head -1)"
-          [ -n "$REVIEW_ID" ] || REVIEW_ID="$(kai review list 2>/dev/null | grep -oE 'kai-[0-9]+' | head -1)"
+          # `review open` prints "Review opened: <12-char hex>" (not "kai-<n>").
+          REVIEW_ID="$(kai review open -m "PR #${PR}" 2>&1 | sed -n 's/^Review opened:[[:space:]]*//p' | head -1)"
+          # Fallback: first data row of `review list` (row 1 header, row 2 rule).
+          [ -n "$REVIEW_ID" ] || REVIEW_ID="$(kai review list 2>/dev/null | awk 'NR==3{print $1}')"
           echo "review id: $REVIEW_ID"
           kai review analyze "$REVIEW_ID" --format json > finding.json
 
