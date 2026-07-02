@@ -23,7 +23,7 @@ jobs:
 
       - name: Analyze the change and post the Finding
         run: |
-          set -euo pipefail
+          set -eu  # pod shell is dash (/bin/sh) — no `pipefail`
           PR="${GITHUB_HEAD_REF:-0}"
           BASE="${GITHUB_BASE_REF:-main}"
 
