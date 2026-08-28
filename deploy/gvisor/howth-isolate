@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+#
+# howth-isolate — run `howth` inside a gVisor (runsc) container, deriving the
+# container's filesystem/network/env exposure from howth's own permission flags.
+#
+# This is the outer containment tier. It maps:
+#   --allow-read=PATHS   -> read-only bind mounts
+#   --allow-write=PATHS  -> read-write bind mounts
+#   --allow-net[=...]    -> container networking on (else --network=none)
+#   --allow-env=VARS     -> forward those host env vars into the container
+#   --sandbox            -> deny-by-default (no network, only granted mounts)
+# and then runs `howth <your args>` under `--runtime=runsc`, passing the SAME
+# flags through so howth's in-process op-level gates also apply inside.
+#
+# Usage:
+#   howth-isolate run --sandbox --allow-read=/data --allow-net app.js -- arg1
+#
+# Env knobs:
+#   HOWTH_IMAGE    container image to run          (default: howth:gvisor)
+#   HOWTH_RUNTIME  OCI runtime                      (default: runsc)
+#   DRY_RUN=1      print the docker command, don't execute (for testing)
+#
+# The script does not require gVisor to be installed to *print* the command
+# (DRY_RUN=1), so its mapping logic is verifiable anywhere.
+
+set -euo pipefail
+
+IMAGE="${HOWTH_IMAGE:-howth:gvisor}"
+RUNTIME="${HOWTH_RUNTIME:-runsc}"
+
+# Split a comma list into words, trimming blanks.
+split_list() {
+    local IFS=','
+    for item in $1; do
+        item="${item#"${item%%[![:space:]]*}"}" # ltrim
+        item="${item%"${item##*[![:space:]]}"}" # rtrim
+        [ -n "$item" ] && printf '%s\n' "$item"
+    done
+}
+
+# Resolve a path to absolute (best effort; the path may not exist yet for writes)
+# and lightly normalize so equivalent spellings dedupe (e.g. "." vs the cwd).
+abspath() {
+    local p="$1"
+    case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+    # collapse /./ , strip trailing /. , squeeze // -> /
+    p=$(printf '%s' "$p" | sed -e 's|/\./|/|g' -e 's|/\.$||' -e 's|//*|/|g')
+    [ -z "$p" ] && p="/"
+    [ "$p" != "/" ] && p="${p%/}"  # strip trailing slash (keep root)
+    printf '%s\n' "$p"
+}
+
+net_enabled=0
+declare -a ro_paths=()
+declare -a rw_paths=()
+declare -a env_vars=()
+
+# Scan the passed-through args for the flags that shape the container.
+for arg in "$@"; do
+    case "$arg" in
+        --allow-net|--allow-net=*)
+            net_enabled=1
+            ;;
+        --allow-read=*)
+            while IFS= read -r p; do ro_paths+=("$(abspath "$p")"); done \
+                < <(split_list "${arg#--allow-read=}")
+            ;;
+        --allow-write=*)
+            while IFS= read -r p; do rw_paths+=("$(abspath "$p")"); done \
+                < <(split_list "${arg#--allow-write=}")
+            ;;
+        --allow-env=*)
+            while IFS= read -r v; do env_vars+=("$v"); done \
+                < <(split_list "${arg#--allow-env=}")
+            ;;
+        # Bare --allow-read/--allow-write/--allow-env (grant-all) are honored by
+        # howth in-process; at the container layer we can't bind "everything"
+        # meaningfully, so we mount the workdir (below) and leave the rest to
+        # howth's gates. Note it so the user isn't surprised.
+        --allow-read|--allow-write)
+            echo "howth-isolate: note: bare '$arg' grants all at the howth layer;" \
+                 "the container only binds the working directory + explicit paths." >&2
+            ;;
+    esac
+done
+
+# Build a de-duplicated mount set. The working directory is always mounted so
+# the entry file is loadable; read-write wins over read-only for the same path.
+declare -a mount_paths=()
+declare -a mount_modes=()
+
+# upsert PATH MODE — add or upgrade a mount (rw overrides ro).
+upsert_mount() {
+    local path="$1" mode="$2" i
+    for i in "${!mount_paths[@]}"; do
+        if [ "${mount_paths[$i]}" = "$path" ]; then
+            [ "$mode" = "rw" ] && mount_modes[$i]="rw"
+            return 0
+        fi
+    done
+    mount_paths+=("$path")
+    mount_modes+=("$mode")
+}
+
+# Workdir first (read-only by default; upgraded below if a write grant covers it).
+upsert_mount "$PWD" "ro"
+if [ "${#ro_paths[@]}" -gt 0 ]; then
+    for p in "${ro_paths[@]}"; do [ -n "$p" ] && upsert_mount "$p" "ro"; done
+fi
+if [ "${#rw_paths[@]}" -gt 0 ]; then
+    for p in "${rw_paths[@]}"; do [ -n "$p" ] && upsert_mount "$p" "rw"; done
+fi
+
+declare -a docker_args=(run --rm -i --runtime="$RUNTIME")
+
+if [ "$net_enabled" -eq 1 ]; then
+    docker_args+=(--network=bridge)
+else
+    docker_args+=(--network=none)
+fi
+
+docker_args+=(-w "$PWD")
+for i in "${!mount_paths[@]}"; do
+    docker_args+=(-v "${mount_paths[$i]}:${mount_paths[$i]}:${mount_modes[$i]}")
+done
+if [ "${#env_vars[@]}" -gt 0 ]; then
+    for v in "${env_vars[@]}"; do [ -n "$v" ] && docker_args+=(-e "$v"); done
+fi
+
+docker_args+=("$IMAGE" "$@")
+
+if [ "${DRY_RUN:-0}" = "1" ]; then
+    # Print a copy-pasteable command.
+    printf 'docker'
+    for a in "${docker_args[@]}"; do printf ' %q' "$a"; done
+    printf '\n'
+    exit 0
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "howth-isolate: docker not found on PATH" >&2
+    exit 127
+fi
+
+exec docker "${docker_args[@]}"
